@@ -2,10 +2,12 @@ import SwiftUI
 
 struct ScheduleView: View {
     @EnvironmentObject private var model: AppModel
-    @State private var selectedCourse: Course?
+    @Binding var path: [Course]
+    let isActive: Bool
     @State private var showDatePicker = false
+    @State private var datePickerGeneration: UUID?
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
                     Section {
@@ -20,9 +22,15 @@ struct ScheduleView: View {
             .courseRefreshable(enabled: model.isConnected) { await model.refresh() }
             .navigationTitle("课表")
             .appNavigationStyle()
+            .navigationDestination(for: Course.self) { course in
+                CourseDetailView(course: course, isActive: isActive, accountGeneration: model.accountGeneration)
+            }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
-                    Button { showDatePicker = true } label: {
+                    Button {
+                        datePickerGeneration = model.accountGeneration
+                        showDatePicker = true
+                    } label: {
                         Image(systemName: "calendar.badge.clock")
                     }
                     .accessibilityLabel("选择日期")
@@ -38,11 +46,11 @@ struct ScheduleView: View {
                 #endif
             }
         }
-        .sheet(item: $selectedCourse) { CourseDetailView(course: $0) }
         .sheet(isPresented: $showDatePicker) {
             NavigationStack {
                 DatePicker("查询日期", selection: Binding(get: { model.selectedDate }, set: { date in
-                    Task { await model.selectDate(date) }
+                    guard datePickerGeneration == model.accountGeneration else { return }
+                    selectDate(date)
                 }), displayedComponents: .date)
                 .datePickerStyle(.graphical).environment(\.timeZone, SchoolDate.calendar.timeZone).padding()
                 .navigationTitle("选择日期").appNavigationStyle(inline: true)
@@ -52,6 +60,10 @@ struct ScheduleView: View {
             .presentationDetents([.medium, .large])
             #endif
             .appSheetSize(width: 420, height: 390)
+        }
+        .onChange(of: model.accountGeneration) { _ in
+            showDatePicker = false
+            datePickerGeneration = nil
         }
     }
 
@@ -64,7 +76,7 @@ struct ScheduleView: View {
                 Spacer()
                 Button { shiftWeek(1) } label: { Image(systemName: "chevron.right").frame(width: 36, height: 36) }.accessibilityLabel("下一周")
             }
-            WeekStrip(selectedDate: model.selectedDate) { date in Task { await model.selectDate(date) } }
+            WeekStrip(selectedDate: model.selectedDate, select: selectDate)
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 12)
@@ -84,7 +96,7 @@ struct ScheduleView: View {
             if model.isCached { CachedCoursesBanner(date: model.selectedDate) }
             if !model.isConnected {
                 CompatibleContentUnavailableView("连接你的课堂", systemImage: "calendar", description: "登录后即可查询学校课表。") {
-                    Button("连接学校账号") { model.showLogin = true }.buttonStyle(.borderedProminent)
+                    Button("连接学校账号") { model.presentLogin() }.buttonStyle(.borderedProminent).disabled(!model.canChangeAccount)
                 }
             } else if model.isRefreshing(on: model.selectedDate) && model.selectedCourses.isEmpty {
                 ProgressView("正在同步课程…").frame(maxWidth: .infinity).padding(40)
@@ -92,12 +104,12 @@ struct ScheduleView: View {
                 CompatibleContentUnavailableView("这一天没有课程", systemImage: "cup.and.saucer", description: LocalizedStringKey(emptyScheduleDescription))
             } else {
                 ForEach(Array(model.selectedCourses.enumerated()), id: \.element.id) { index, course in
-                    CourseRow(course: course, index: index) { selectedCourse = course }
+                    CourseRow(course: course, index: index) { path.append(course) }
                 }
             }
             if let notice = model.notice(on: model.selectedDate), !model.isCached { Text(notice).font(.caption).foregroundStyle(Palette.secondary) }
             if !SchoolDate.calendar.isDateInToday(model.selectedDate) {
-                Button("回到今天") { Task { await model.selectDate(.now) } }
+                Button("回到今天") { selectDate(.now) }
                     .font(.system(size: 13, weight: .medium)).frame(maxWidth: .infinity).padding()
             }
         }
@@ -116,6 +128,14 @@ struct ScheduleView: View {
 
     private func shiftWeek(_ direction: Int) {
         guard let date = SchoolDate.calendar.date(byAdding: .day, value: direction * 7, to: model.selectedDate) else { return }
-        Task { await model.selectDate(date) }
+        selectDate(date)
+    }
+
+    private func selectDate(_ date: Date) {
+        let generation = model.accountGeneration
+        Task {
+            guard generation == model.accountGeneration else { return }
+            await model.selectDate(date)
+        }
     }
 }

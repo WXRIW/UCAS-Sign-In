@@ -1,6 +1,5 @@
 import SwiftUI
 import UserNotifications
-import WidgetKit
 
 struct AttendanceRecord: Codable, Identifiable {
     var id = UUID()
@@ -19,7 +18,17 @@ final class AppModel: ObservableObject {
     @Published private var isAuthenticating = false
     @Published private var refreshTasks: [String: Task<Void, Never>] = [:]
     @Published var signingID: String?
-    @Published var showLogin = false
+    @Published var loginRequest: LoginRequest?
+    @Published var showAccountManagement = false
+    @Published private(set) var accounts: [StoredAccount] = []
+    @Published private(set) var activeAccountID: String?
+    @Published private(set) var accountGeneration = UUID()
+    @Published private var isRecovering = false
+    var showLogin: Bool {
+        get { loginRequest != nil }
+        set { if newValue { presentLogin() } else { loginRequest = nil } }
+    }
+    var canChangeAccount: Bool { !isAuthenticating && !isRecovering && signingID == nil }
     @Published var notice: String?
     @Published var errorMessage: String?
     @Published var lastUpdated: Date?
@@ -27,15 +36,21 @@ final class AppModel: ObservableObject {
     @Published private var courseNotices: [String: String] = [:]
     @Published private var courseFreshness: [String: Bool] = [:]
     @Published var records: [AttendanceRecord] = []
-    @Published var remindersEnabled = UserDefaults.standard.bool(forKey: "remindersEnabled")
-    @Published var autoSignEnabled = UserDefaults.standard.bool(forKey: "autoSignEnabled")
+    @Published private(set) var remindersEnabled = false
+    @Published private(set) var autoSignEnabled = false
     let service: QingxinService
-    #if os(macOS)
-    private let keychain = KeychainStore(service: "\(Bundle.main.bundleIdentifier ?? "cn.ucas.signin.mac").credentials")
-    #else
-    private let keychain = KeychainStore()
-    #endif
-    private var generation = UUID()
+    private let accountStore: any AccountStore
+    private let defaults: UserDefaults
+    private let notifications: any NotificationClient
+    private let widgets: any WidgetClient
+    private var vault = AccountVault()
+    private var accountsLoaded = false
+    private var recoveryTask: Task<SchoolSession?, Never>?
+    private var recoveryAttempts: Set<String> = []
+    private var generation: UUID {
+        get { accountGeneration }
+        set { accountGeneration = newValue }
+    }
     private var refreshSequence = 0
     private var courseRefreshSequences: [String: Int] = [:]
     private var reminderGeneration = UUID()
@@ -44,12 +59,23 @@ final class AppModel: ObservableObject {
     private var restored = false
     private var automaticRefreshPaused = false
 
-    init(service: QingxinService = QingxinService()) {
+    init(service: QingxinService = QingxinService(), accountStore: (any AccountStore)? = nil,
+         defaults: UserDefaults = .standard, notifications: (any NotificationClient)? = nil,
+         widgets: (any WidgetClient)? = nil) {
         self.service = service
+        self.defaults = defaults
+        self.notifications = notifications ?? LiveNotificationClient()
+        self.widgets = widgets ?? LiveWidgetClient()
+        #if os(macOS)
+        let keychain = KeychainStore(service: "\(Bundle.main.bundleIdentifier ?? "cn.ucas.signin.mac").credentials")
+        #else
+        let keychain = KeychainStore()
+        #endif
+        self.accountStore = accountStore ?? KeychainAccountStore(keychain: keychain, defaults: defaults)
     }
 
     var isCached: Bool { isCached(on: selectedDate) }
-    var isLoading: Bool { isAuthenticating || !refreshTasks.isEmpty }
+    var isLoading: Bool { isAuthenticating || isRecovering || !refreshTasks.isEmpty }
     func isRefreshing(on date: Date) -> Bool {
         refreshTasks[SchoolDate.key(date)] != nil
     }
@@ -61,7 +87,10 @@ final class AppModel: ObservableObject {
     func needsCourseRefresh(_ course: Course) -> Bool {
         !isDemo && courseFreshness[normalizedDay(course.day)] != true
     }
-    func canSign(_ course: Course) -> Bool {
+    func canSign(_ course: Course, accountGeneration expectedGeneration: UUID? = nil) -> Bool {
+        guard expectedGeneration == nil || expectedGeneration == generation,
+              !isAuthenticating, !isRecovering, !automaticRefreshPaused, !showLogin,
+              !accounts.contains(where: { $0.id == activeAccountID && $0.requiresLogin }) else { return false }
         guard let current = courses.first(where: {
             $0.id == course.id && normalizedDay($0.day) == normalizedDay(course.day)
         }) else { return false }
@@ -86,74 +115,163 @@ final class AppModel: ObservableObject {
     var accountName: String { isDemo ? "演示同学" : session?.name ?? (session == nil ? "尚未登录" : "同学") }
     var accountStudentNo: String? { isDemo ? "2026123456" : session?.studentNo }
 
+    private func loadAccounts() throws {
+        guard !accountsLoaded else { return }
+        vault = try accountStore.load()
+        accountsLoaded = true
+        updateAccountList()
+    }
+
+    private func updateAccountList() {
+        accounts = vault.accounts.sorted {
+            $0.lastUsedAt == $1.lastUsedAt ? $0.id < $1.id : $0.lastUsedAt > $1.lastUsedAt
+        }
+    }
+
+    private func commit(_ updated: AccountVault) throws {
+        try accountStore.save(updated)
+        vault = updated
+        updateAccountList()
+    }
+
     func restore() async {
         guard !restored else { return }
         restored = true
+        // Demo launch arguments never read or migrate the user's real credentials.
         if ProcessInfo.processInfo.arguments.contains("--demo") { enterDemo(); return }
         do {
-            session = try keychain.loadSession()
-            if session != nil { loadRecords(); await refresh() }
-        } catch { errorMessage = "无法读取本机登录信息，请重新登录。" }
+            try loadAccounts()
+            if let account = vault.accounts.first(where: { $0.id == vault.activeAccountID }) {
+                activate(account)
+                if account.requiresLogin { requestLogin(for: account.id) }
+                else { await refresh() }
+            }
+        } catch { errorMessage = "无法读取本机登录信息：\(error.localizedDescription)" }
     }
 
-    func login(username: String, password: String, remember: Bool) async -> Bool {
-        guard !isLoading else { return false }
+    func presentLogin(accountID: String? = nil) {
+        guard canChangeAccount else { return }
+        if let accountID, !accounts.contains(where: { $0.id == accountID }) { return }
+        loginRequest = LoginRequest(accountID: accountID)
+    }
+
+    private func requestLogin(for accountID: String) {
+        guard activeAccountID == accountID else { return }
+        showAccountManagement = false
+        // An old refresh must not replace a form the user is already submitting.
+        if loginRequest == nil { loginRequest = LoginRequest(accountID: accountID) }
+    }
+
+    func login(username: String, password: String, remember: Bool, requestID: UUID) async -> Bool {
+        guard canChangeAccount, let request = loginRequest, request.id == requestID else { return false }
         let token = generation
         isAuthenticating = true
-        defer { if generation == token { isAuthenticating = false } }
+        defer { isAuthenticating = false }
         do {
+            try loadAccounts()
             let result = try await service.login(username: username, password: password)
-            guard generation == token else { return false }
-            try keychain.save(session: result)
-            if remember { try keychain.save(credentials: StoredCredentials(username: username, password: password)) }
-            else { try keychain.clearCredentials() }
-            generation = UUID()
-            cancelRefreshes()
-            reminderGeneration = UUID()
-            signingID = nil
-            courseFreshness.removeAll()
-            automaticRefreshPaused = false
-            UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
-            WidgetSnapshotStore.clear()
-            WidgetCenter.shared.reloadAllTimelines()
-            session = result
-            isDemo = false
-            courses = []
-            autoAttempts.removeAll()
-            records = []
-            selectedDate = .now
-            loadRecords()
-            showLogin = false
-            isAuthenticating = false
-            await refresh()
+            guard generation == token, loginRequest?.id == requestID else { return false }
+            if let expected = request.accountID, result.studentNo != expected {
+                throw APIError(code: "ACCOUNT_MISMATCH", message: "登录结果与所选账户不符，请使用该账户的账号和密码。")
+            }
+            var updated = vault
+            var account = updated.accounts.first(where: { $0.id == result.studentNo })
+                ?? StoredAccount(session: result)
+            account.session = result
+            account.loginUsername = username.trimmingCharacters(in: .whitespacesAndNewlines)
+            account.credentials = remember ? StoredCredentials(username: account.loginUsername, password: password) : nil
+            account.requiresLogin = false
+            account.lastUsedAt = .now
+            updated.upsert(account)
+            try commit(updated)
+            recoveryAttempts = recoveryAttempts.filter { !$0.hasPrefix("\(account.id)|") }
+            loginRequest = nil
+            activate(account)
+            let activatedGeneration = generation
+            Task {
+                guard self.generation == activatedGeneration else { return }
+                await self.refresh()
+            }
             return true
         } catch {
-            if generation == token { errorMessage = error.localizedDescription }
+            if generation == token, loginRequest?.id == requestID { errorMessage = error.localizedDescription }
             return false
         }
     }
 
-    func savedCredentials() -> StoredCredentials? { try? keychain.loadCredentials() }
+    func savedCredentials(for accountID: String?) -> StoredCredentials? {
+        if let accountID { return accounts.first(where: { $0.id == accountID })?.credentials }
+        // An orphaned legacy password can only fill the initial connection form.
+        guard accounts.isEmpty else { return nil }
+        return try? accountStore.legacyCredentials()
+    }
 
-    func enterDemo() {
+    func switchAccount(id: String) async {
+        guard canChangeAccount, id != activeAccountID || isDemo else { return }
+        do {
+            try loadAccounts()
+            guard var account = vault.accounts.first(where: { $0.id == id }) else { return }
+            account.lastUsedAt = .now
+            var updated = vault
+            updated.upsert(account)
+            try commit(updated)
+            loginRequest = nil
+            activate(account)
+            if account.requiresLogin { requestLogin(for: id) }
+            else { await refresh() }
+        } catch { errorMessage = "切换账户失败：\(error.localizedDescription)" }
+    }
+
+    /// Invalidate all work before exposing a new identity to any view or client.
+    private func resetAccountState() {
         generation = UUID()
         cancelRefreshes()
         reminderGeneration = UUID()
-        UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
-        WidgetSnapshotStore.clear()
-        WidgetCenter.shared.reloadAllTimelines()
-        isAuthenticating = false
+        recoveryTask?.cancel()
+        recoveryTask = nil
+        isRecovering = false
+        notifications.removeAll()
+        widgets.clear()
+        courseFreshness.removeAll()
+        automaticRefreshPaused = false
         signingID = nil
-        session = nil
-        isDemo = true
-        selectedDate = .now
-        courses = Self.demoCourses(on: selectedDate)
+        courses = []
         records = []
+        lastUpdated = nil
+        notice = nil
+        errorMessage = nil
+        selectedDate = .now
+        session = nil
+        activeAccountID = nil
+        isDemo = false
+        autoSignEnabled = false
+        remindersEnabled = false
+    }
+
+    private func activate(_ account: StoredAccount) {
+        resetAccountState()
+        session = account.session
+        activeAccountID = account.id
+        autoSignEnabled = account.preferences.autoSignEnabled
+        remindersEnabled = account.preferences.remindersEnabled
+        automaticRefreshPaused = account.requiresLogin
+        loadRecords()
+        if loadCache(for: account.session, date: selectedDate) {
+            courseFreshness[SchoolDate.key(selectedDate)] = false
+            notice = "正在显示本机缓存，同步成功后即可签到。"
+            courseNotices[SchoolDate.key(selectedDate)] = notice
+            publishWidget()
+        }
+    }
+
+    func enterDemo() {
+        guard canChangeAccount else { return }
+        resetAccountState()
+        isDemo = true
+        courses = Self.demoCourses(on: selectedDate)
         lastUpdated = .now
         courseUpdates[SchoolDate.key(selectedDate)] = lastUpdated
-        courseFreshness.removeAll()
-        notice = nil
-        showLogin = false
+        loginRequest = nil
     }
 
     func refresh() async {
@@ -177,6 +295,10 @@ final class AppModel: ObservableObject {
             return
         }
         guard let session else { return }
+        if accounts.first(where: { $0.id == activeAccountID })?.requiresLogin == true {
+            requestLogin(for: session.studentNo)
+            return
+        }
         let accountToken = generation
         refreshSequence += 1
         let requestSequence = refreshSequence
@@ -194,9 +316,21 @@ final class AppModel: ObservableObject {
             if generation == accountToken { refreshTasks.removeValue(forKey: SchoolDate.key(date)) }
         }
         guard !Task.isCancelled, generation == accountToken else { return }
+        var requestSession = session
         do {
-            let result = try await service.courses(session: session, date: date)
-            guard !Task.isCancelled, generation == accountToken else { return }
+            let result: CourseQueryResult
+            do {
+                result = try await service.courses(session: session, date: date)
+            } catch let error as APIError where error.isSessionExpired {
+                guard let renewed = await recoverSession(session, accountToken: accountToken) else { throw error }
+                guard !Task.isCancelled, generation == accountToken else { return }
+                requestSession = renewed
+                // Only this read is retried. A second expiry ends this recovery cycle.
+                result = try await service.courses(session: renewed, date: date)
+            }
+            guard !Task.isCancelled, generation == accountToken,
+                  self.session?.sessionId == requestSession.sessionId,
+                  !accounts.contains(where: { $0.id == activeAccountID && $0.requiresLogin }) else { return }
             let returnedDays = Set(result.courses.map { normalizedDay($0.day) }).union([queriedDay])
             // A weekly fallback may overlap a newer request for another date.
             let acceptedDays = Set(returnedDays.filter { courseRefreshSequences[$0, default: 0] <= requestSequence })
@@ -221,12 +355,12 @@ final class AppModel: ObservableObject {
             publishWidget()
             if remindersEnabled { await scheduleReminders() }
         } catch {
-            guard !Task.isCancelled, generation == accountToken else { return }
+            guard !Task.isCancelled, generation == accountToken,
+                  self.session?.sessionId == requestSession.sessionId else { return }
             if error is CancellationError { return }
             if let apiError = error as? APIError, apiError.isSessionExpired {
-                automaticRefreshPaused = true
-                errorMessage = "登录已过期，请重新登录学校账号。"
-                showLogin = true
+                markLoginRequired(for: session.studentNo)
+                requestLogin(for: session.studentNo)
                 return
             }
             guard courseRefreshSequences[queriedDay] == requestSequence else { return }
@@ -238,6 +372,84 @@ final class AppModel: ObservableObject {
                 errorMessage = error.localizedDescription
             }
         }
+    }
+
+    private func markLoginRequired(for accountID: String) {
+        guard activeAccountID == accountID else { return }
+        automaticRefreshPaused = true
+        courseFreshness = courseFreshness.mapValues { _ in false }
+        reminderGeneration = UUID()
+        notifications.removeAll()
+        var updated = vault
+        if let index = updated.accounts.firstIndex(where: { $0.id == accountID }) {
+            updated.accounts[index].requiresLogin = true
+            do { try commit(updated) }
+            catch {
+                // Keep the in-memory account paused even when Keychain is unavailable.
+                vault = updated
+                updateAccountList()
+                errorMessage = "无法保存登录状态：\(error.localizedDescription)"
+            }
+        }
+        notice = "登录已过期，请重新登录学校账号。"
+        for day in courseFreshness.keys { courseNotices[day] = notice }
+    }
+
+    private func recoverSession(_ failedSession: SchoolSession, accountToken: UUID) async -> SchoolSession? {
+        guard generation == accountToken, activeAccountID == failedSession.studentNo else { return nil }
+        guard !accounts.contains(where: { $0.id == activeAccountID && $0.requiresLogin }) else {
+            requestLogin(for: failedSession.studentNo)
+            return nil
+        }
+        if let recoveryTask { return await recoveryTask.value }
+        if let current = session, current.sessionId != failedSession.sessionId { return current }
+        if loginRequest != nil || isAuthenticating {
+            markLoginRequired(for: failedSession.studentNo)
+            return nil
+        }
+        let attemptKey = "\(failedSession.studentNo)|\(failedSession.sessionId)"
+        guard let account = accounts.first(where: { $0.id == failedSession.studentNo }),
+              !account.requiresLogin, let credentials = account.credentials,
+              recoveryAttempts.insert(attemptKey).inserted else {
+            markLoginRequired(for: failedSession.studentNo)
+            requestLogin(for: failedSession.studentNo)
+            return nil
+        }
+        isRecovering = true
+        automaticRefreshPaused = true
+        courseFreshness = courseFreshness.mapValues { _ in false }
+        reminderGeneration = UUID()
+        notifications.removeAll()
+        let task = Task<SchoolSession?, Never> {
+            defer {
+                if self.generation == accountToken {
+                    self.isRecovering = false
+                    self.recoveryTask = nil
+                }
+            }
+            do {
+                let result = try await self.service.login(username: credentials.username, password: credentials.password)
+                guard !Task.isCancelled, self.generation == accountToken else { return nil }
+                guard result.studentNo == failedSession.studentNo else {
+                    throw APIError(code: "ACCOUNT_MISMATCH", message: "保存的凭据与该账户不符，请重新登录。")
+                }
+                var updated = self.vault
+                guard let index = updated.accounts.firstIndex(where: { $0.id == result.studentNo }) else { return nil }
+                updated.accounts[index].session = result
+                updated.accounts[index].requiresLogin = false
+                try self.commit(updated)
+                self.session = result
+                self.automaticRefreshPaused = false
+                return result
+            } catch {
+                guard !Task.isCancelled, self.generation == accountToken else { return nil }
+                self.markLoginRequired(for: failedSession.studentNo)
+                self.requestLogin(for: failedSession.studentNo)
+                return nil
+            }
+        }
+        recoveryTask = task
+        return await task.value
     }
 
     private func cancelRefreshes() {
@@ -255,10 +467,10 @@ final class AppModel: ObservableObject {
         await refresh(on: date)
     }
 
-    func sign(_ course: Course) async {
-        guard canSign(course) else { return }
+    func sign(_ course: Course, accountGeneration expectedGeneration: UUID? = nil) async {
+        guard canSign(course, accountGeneration: expectedGeneration) else { return }
         let token = generation
-        autoAttempts.insert("\(course.day)-\(course.id)")
+        autoAttempts.insert(attemptKey(for: course))
         signingID = course.id
         defer { if token == generation { signingID = nil } }
         if isDemo {
@@ -271,7 +483,7 @@ final class AppModel: ObservableObject {
             signInFeedback()
             return
         }
-        guard let session else { showLogin = true; return }
+        guard let session else { return }
         do {
             let result = try await service.sign(course: course, session: session)
             guard token == generation else { return }
@@ -295,7 +507,12 @@ final class AppModel: ObservableObject {
         } catch {
             guard token == generation else { return }
             errorMessage = "未能确认签到结果：\(error.localizedDescription) 请先刷新课程状态，再决定是否重试。"
-            if let error = error as? APIError, error.isSessionExpired { showLogin = true }
+            if let error = error as? APIError, error.isSessionExpired {
+                if await recoverSession(session, accountToken: token) != nil, generation == token {
+                    // The submission is never repeated after restoring authentication.
+                    await refresh(on: CourseTime.parse(day: course.day, time: "00:00") ?? selectedDate)
+                }
+            }
         }
     }
 
@@ -313,9 +530,13 @@ final class AppModel: ObservableObject {
         guard let schoolNow = try? await service.schoolNow(), !Task.isCancelled, generation == token, autoSignEnabled,
               todayIsFresh, !isLoading, signingID == nil else { return }
         guard let course = todayCourses.first(where: { !$0.signed && CourseTime.isWithinSignWindow($0, now: schoolNow) }) else { return }
-        let key = "\(course.day)-\(course.id)"
+        let key = attemptKey(for: course)
         guard autoAttempts.insert(key).inserted else { return }
-        await sign(course)
+        await sign(course, accountGeneration: token)
+    }
+
+    private func attemptKey(for course: Course) -> String {
+        "\(activeAccountID ?? "demo")|\(course.day)|\(course.id)"
     }
 
     private func signInFeedback() {
@@ -324,20 +545,42 @@ final class AppModel: ObservableObject {
         #endif
     }
 
+    private func savePreferences(autoSign: Bool? = nil, reminders: Bool? = nil) -> Bool {
+        if isDemo {
+            if let autoSign { autoSignEnabled = autoSign }
+            if let reminders { remindersEnabled = reminders }
+            return true
+        }
+        guard let id = activeAccountID, let index = vault.accounts.firstIndex(where: { $0.id == id }) else { return false }
+        var updated = vault
+        if let autoSign { updated.accounts[index].preferences.autoSignEnabled = autoSign }
+        if let reminders { updated.accounts[index].preferences.remindersEnabled = reminders }
+        do {
+            try commit(updated)
+            autoSignEnabled = updated.accounts[index].preferences.autoSignEnabled
+            remindersEnabled = updated.accounts[index].preferences.remindersEnabled
+            return true
+        } catch {
+            errorMessage = "偏好未能保存：\(error.localizedDescription)"
+            return false
+        }
+    }
+
     func setAutoSign(_ enabled: Bool) {
-        autoSignEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: "autoSignEnabled")
+        _ = savePreferences(autoSign: enabled)
     }
 
     func setReminders(_ enabled: Bool) async {
+        if isDemo { remindersEnabled = enabled; return }
+        guard activeAccountID != nil else { return }
         let token = generation
         reminderGeneration = UUID()
         let settingToken = reminderGeneration
+        var allowed = false
         if enabled {
             do {
-                let allowed = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
+                allowed = try await notifications.requestAuthorization()
                 guard generation == token, reminderGeneration == settingToken else { return }
-                remindersEnabled = allowed
                 if !allowed {
                     #if os(macOS)
                     errorMessage = "通知尚未开启。请前往系统设置 → 通知 → 果壳签到，允许课程提醒。"
@@ -345,21 +588,24 @@ final class AppModel: ObservableObject {
                     errorMessage = "通知尚未开启。可前往设置 → 果壳签到 → 通知，允许课程提醒。"
                     #endif
                 }
-            } catch { remindersEnabled = false; errorMessage = error.localizedDescription }
-        } else { remindersEnabled = false }
-        UserDefaults.standard.set(remindersEnabled, forKey: "remindersEnabled")
+            } catch {
+                guard generation == token, reminderGeneration == settingToken else { return }
+                errorMessage = error.localizedDescription
+            }
+        }
+        guard generation == token, reminderGeneration == settingToken,
+              savePreferences(reminders: enabled && allowed) else { return }
         if remindersEnabled { await scheduleReminders() }
-        else { UNUserNotificationCenter.current().removeAllPendingNotificationRequests() }
+        else { notifications.removeAll() }
     }
 
     private func scheduleReminders() async {
-        guard !isDemo, session != nil else { return }
+        guard !isDemo, session != nil, !automaticRefreshPaused else { return }
         let accountToken = generation
         let requestToken = UUID()
         reminderGeneration = requestToken
-        let center = UNUserNotificationCenter.current()
-        center.removeAllPendingNotificationRequests()
-        for course in courses.prefix(60) where !course.signed {
+        notifications.removeAll()
+        for course in courses.prefix(60) where !course.signed && !needsCourseRefresh(course) {
             guard generation == accountToken, reminderGeneration == requestToken, remindersEnabled else { return }
             guard let start = course.startDate else { continue }
             let reminder = start.addingTimeInterval(-10 * 60)
@@ -373,40 +619,49 @@ final class AppModel: ObservableObject {
             let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
             let identifier = "\(requestToken)-\(course.day)-\(course.id)"
             do {
-                try await center.add(UNNotificationRequest(identifier: identifier, content: content, trigger: trigger))
+                try await notifications.add(UNNotificationRequest(identifier: identifier, content: content, trigger: trigger))
                 guard generation == accountToken, reminderGeneration == requestToken, remindersEnabled else {
-                    center.removePendingNotificationRequests(withIdentifiers: [identifier])
+                    notifications.remove(ids: [identifier])
                     return
                 }
             }
             catch {
+                guard generation == accountToken, reminderGeneration == requestToken, remindersEnabled else { return }
                 notice = "部分课程提醒未能保存，请重新开启提醒。"
                 courseNotices[normalizedDay(course.day)] = notice
             }
         }
     }
 
-    func logout() {
-        if !isDemo {
-            do { try keychain.clear() }
-            catch { errorMessage = "本机凭据未能清除，请重试退出。"; return }
-            for key in UserDefaults.standard.dictionaryRepresentation().keys where key.hasPrefix("courses-") || key.hasPrefix("records-") {
-                UserDefaults.standard.removeObject(forKey: key)
+    func removeAccount(id: String) {
+        guard canChangeAccount else { return }
+        do {
+            try loadAccounts()
+            guard vault.accounts.contains(where: { $0.id == id }) else { return }
+            var updated = vault
+            updated.remove(id: id)
+            try commit(updated)
+            for key in defaults.dictionaryRepresentation().keys
+                where key.hasPrefix("courses-\(id)-") || key == "records-\(id)" {
+                defaults.removeObject(forKey: key)
             }
+            autoAttempts = autoAttempts.filter { !$0.hasPrefix("\(id)|") }
+            recoveryAttempts = recoveryAttempts.filter { !$0.hasPrefix("\(id)|") }
+            if activeAccountID == id {
+                loginRequest = nil
+                resetAccountState()
+            }
+        } catch { errorMessage = "本机账户未能移除：\(error.localizedDescription)" }
+    }
+
+    func logout() {
+        guard canChangeAccount else { return }
+        if isDemo {
+            loginRequest = nil
+            resetAccountState()
+        } else if let id = activeAccountID {
+            removeAccount(id: id)
         }
-        generation = UUID()
-        cancelRefreshes()
-        reminderGeneration = UUID()
-        courseFreshness.removeAll()
-        automaticRefreshPaused = false
-        session = nil; isDemo = false; courses = []; records = []
-        isAuthenticating = false; signingID = nil; lastUpdated = nil; notice = nil
-        autoAttempts.removeAll()
-        setAutoSign(false)
-        UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
-        WidgetSnapshotStore.save(WidgetSnapshot(courses: []))
-        WidgetCenter.shared.reloadAllTimelines()
-        Task { await service.clearClock() }
     }
 
     private func markSigned(_ course: Course) {
@@ -423,16 +678,16 @@ final class AppModel: ObservableObject {
                 ?? (course.teacher.isEmpty ? "教室暂未提供" : "教师 · \(course.teacher)")
             return WidgetCourse(id: course.id, name: course.name, location: location, startTime: start, endTime: end, isCheckedIn: course.signed)
         }
-        WidgetSnapshotStore.save(WidgetSnapshot(courses: values))
-        WidgetCenter.shared.reloadAllTimelines()
+        guard let updatedAt = lastUpdated(on: .now) else { return }
+        widgets.save(WidgetSnapshot(courses: values, updatedAt: updatedAt))
     }
     private func saveCache(for session: SchoolSession, date: Date) {
         let datedCourses = courses.filter { normalizedDay($0.day) == SchoolDate.key(date) }
         guard let data = try? JSONEncoder().encode(CachedCourses(courses: datedCourses, updatedAt: lastUpdated(on: date) ?? .now)) else { return }
-        UserDefaults.standard.set(data, forKey: "courses-\(session.studentNo)-\(SchoolDate.key(date))")
+        defaults.set(data, forKey: "courses-\(session.studentNo)-\(SchoolDate.key(date))")
     }
     private func loadCache(for session: SchoolSession, date: Date) -> Bool {
-        guard let data = UserDefaults.standard.data(forKey: "courses-\(session.studentNo)-\(SchoolDate.key(date))"),
+        guard let data = defaults.data(forKey: "courses-\(session.studentNo)-\(SchoolDate.key(date))"),
               let cache = try? JSONDecoder().decode(CachedCourses.self, from: data) else { return false }
         mergeCourses(cache.courses, replacing: date); lastUpdated = cache.updatedAt
         courseUpdates[SchoolDate.key(date)] = cache.updatedAt
@@ -448,10 +703,10 @@ final class AppModel: ObservableObject {
     }
     private func saveRecords() {
         guard let session, let data = try? JSONEncoder().encode(Array(records.prefix(100))) else { return }
-        UserDefaults.standard.set(data, forKey: "records-\(session.studentNo)")
+        defaults.set(data, forKey: "records-\(session.studentNo)")
     }
     private func loadRecords() {
-        guard let session, let data = UserDefaults.standard.data(forKey: "records-\(session.studentNo)"),
+        guard let session, let data = defaults.data(forKey: "records-\(session.studentNo)"),
               let saved = try? JSONDecoder().decode([AttendanceRecord].self, from: data) else { return }
         records = saved
     }

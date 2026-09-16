@@ -26,12 +26,17 @@ struct MacAppCommands: Commands {
             .keyboardShortcut("r")
             .disabled(!model.isConnected || model.isRefreshing(on: selection == 1 ? model.selectedDate : .now) || model.showLogin)
             Divider()
-            Button("连接学校账号…") {
+            Button("添加学校账户…") {
                 openWindow(id: "main")
-                model.showLogin = true
+                model.presentLogin()
             }
             .keyboardShortcut("l", modifiers: [.command, .shift])
-            .disabled(model.showLogin || model.isLoading)
+            .disabled(model.showLogin || !model.canChangeAccount)
+            Button("切换与管理账户…") {
+                openWindow(id: "main")
+                model.showAccountManagement = true
+            }
+            .disabled(model.showLogin || !model.canChangeAccount)
         }
     }
 

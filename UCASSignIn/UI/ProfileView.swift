@@ -5,16 +5,22 @@ import AppKit
 import UIKit
 #endif
 
+enum ProfileDestination: Hashable {
+    case records
+    case openSource
+    case disclaimer
+}
+
 struct ProfileView: View {
     @EnvironmentObject private var model: AppModel
+    @Binding var path: [ProfileDestination]
     @AppStorage("accountDetailsHidden") private var accountDetailsHidden = false
-    @State private var showRecords = false
     @State private var showLogout = false
-    @State private var showOpenSource = false
-    @State private var showDisclaimer = false
+    @State private var accountToRemove: String?
+    @State private var logoutWasDemo = false
     @State private var showNotificationSettingsHelp = false
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 25) {
                     accountCard
@@ -29,34 +35,47 @@ struct ProfileView: View {
                         }.toggleStyle(.switch)
                         Text(autoSignExplanation)
                             .font(.system(size: 11)).lineSpacing(4).foregroundStyle(Palette.secondary)
-                    }.padding(21).cardSurface()
+                    }.padding(21).cardSurface().disabled(!model.isConnected || !model.canChangeAccount)
                     VStack(spacing: 0) {
-                        Button { showRecords = true } label: { menuRow("本机签到记录", symbol: "clock.arrow.circlepath") }.buttonStyle(.plain)
+                        Button { model.showAccountManagement = true } label: {
+                            menuRow("切换与管理账户", symbol: "person.2")
+                        }.buttonStyle(.plain)
+                            .disabled(!model.canChangeAccount)
+                            .accessibilityIdentifier("accounts.manage")
                         Divider().padding(.leading, 48)
-                        Button { showOpenSource = true } label: {
+                        Button { path.append(.records) } label: { menuRow("本机签到记录", symbol: "clock.arrow.circlepath") }.buttonStyle(.plain)
+                            .accessibilityIdentifier("profile.records")
+                        Divider().padding(.leading, 48)
+                        Button { path.append(.openSource) } label: {
                             menuRow("项目源码与致谢", symbol: "chevron.left.forwardslash.chevron.right")
                         }.buttonStyle(.plain)
                             .accessibilityIdentifier("profile.openSource")
                         Divider().padding(.leading, 48)
-                        Button { showDisclaimer = true } label: {
+                        Button { path.append(.disclaimer) } label: {
                             menuRow("免责声明", symbol: "doc.text")
                         }.buttonStyle(.plain)
+                            .accessibilityIdentifier("profile.disclaimer")
                         Divider().padding(.leading, 48)
                         notificationSettingsButton
                     }.padding(.horizontal, 18).cardSurface()
                     VStack(alignment: .leading, spacing: 9) {
                         Label("安心留在本机", systemImage: "lock.shield").font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.green)
-                        Text("凭据使用系统钥匙串保存；课程缓存和签到记录保留在此设备，退出时清除。App 不请求定位权限。")
+                        Text("各账户的会话和可选密码由系统钥匙串保存；课程缓存、签到记录与课堂偏好分别保留在此设备，移除账户时仅清除该账户的数据。App 不请求定位权限。")
                             .font(.system(size: 12)).lineSpacing(5).foregroundStyle(Palette.secondary)
                     }.padding(.horizontal, 4)
                     if model.isConnected {
-                        Button(role: model.isDemo ? nil : .destructive) { showLogout = true } label: {
-                            Text(model.isDemo ? "退出演示模式" : "退出登录")
+                        Button(role: model.isDemo ? nil : .destructive) {
+                            accountToRemove = model.activeAccountID
+                            logoutWasDemo = model.isDemo
+                            showLogout = true
+                        } label: {
+                            Text(model.isDemo ? "退出演示模式" : "退出并移除此账户")
                                 .font(.system(size: 14, weight: .medium))
                                 .foregroundStyle(model.isDemo ? Palette.secondary : .red)
                                 .frame(maxWidth: .infinity).padding(18).cardSurface()
                                 .contentShape(RoundedRectangle(cornerRadius: 22))
-                        }.buttonStyle(.plain)
+                        }.buttonStyle(.plain).disabled(!model.canChangeAccount)
+                            .accessibilityIdentifier("profile.logout")
                     }
                     Text("果壳签到 · 1.0\n开源许可 · AGPL-3.0")
                         .font(.system(size: 10)).lineSpacing(5).foregroundStyle(Palette.secondary)
@@ -68,6 +87,16 @@ struct ProfileView: View {
             .background(Palette.background)
             .navigationTitle("账户")
             .appNavigationStyle()
+            .navigationDestination(for: ProfileDestination.self) { destination in
+                switch destination {
+                case .records:
+                    recordsView
+                case .openSource:
+                    OpenSourceView()
+                case .disclaimer:
+                    DisclaimerView()
+                }
+            }
         }
         #if os(macOS)
         .alert("系统通知设置", isPresented: $showNotificationSettingsHelp) {
@@ -77,11 +106,20 @@ struct ProfileView: View {
             Text("在“系统设置 → 通知”中找到“果壳签到”，即可调整通知、声音与横幅。若列表中尚未出现，请先开启本页的“课程提醒”。")
         }
         #endif
-        .confirmationDialog(model.isDemo ? "退出演示模式？" : "退出并清除本机账号数据？", isPresented: $showLogout, titleVisibility: .visible) {
-            Button("退出", role: model.isDemo ? nil : .destructive) { model.logout() }
-        }.sheet(isPresented: $showRecords) { recordsView }
-            .sheet(isPresented: $showOpenSource) { OpenSourceView() }
-            .sheet(isPresented: $showDisclaimer) { DisclaimerView() }
+        .confirmationDialog(logoutWasDemo ? "退出演示模式？" : "退出并移除此账户？", isPresented: $showLogout, titleVisibility: .visible) {
+            Button(logoutWasDemo ? "退出" : "退出并移除此账户", role: logoutWasDemo ? nil : .destructive) {
+                if logoutWasDemo { model.logout() }
+                else if let accountID = accountToRemove { model.removeAccount(id: accountID) }
+                accountToRemove = nil
+            }
+            .disabled(!model.canChangeAccount)
+        } message: {
+            Text(logoutWasDemo ? "退出后仍可选择本机保存的学校账户。" : "仅清除此账户在本机的登录信息、课程缓存、签到记录和课堂偏好，其他账户会保留。")
+        }
+        .onChange(of: model.accountGeneration) { _ in
+            showLogout = false
+            accountToRemove = nil
+        }
     }
     private var canConnectAccount: Bool { model.isDemo || !model.isConnected }
 
@@ -123,9 +161,7 @@ struct ProfileView: View {
 
     private var accountDisplayName: String {
         guard accountDetailsHidden, model.isConnected else { return model.accountName }
-        let name = model.accountName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, name != "同学" else { return "同学" }
-        return "\(name.prefix(1))同学"
+        return AccountPrivacy.name(model.accountName, hidden: accountDetailsHidden)
     }
 
     private var accountCard: some View {
@@ -151,8 +187,9 @@ struct ProfileView: View {
     @ViewBuilder
     private var accountCardBody: some View {
         if canConnectAccount {
-            Button { model.showLogin = true } label: { accountCardContent }
+            Button { model.presentLogin() } label: { accountCardContent }
                 .buttonStyle(.plain)
+                .disabled(!model.canChangeAccount)
                 .accessibilityIdentifier("profile.connectAccount")
                 .accessibilityHint("打开学校账号登录")
         } else {
@@ -177,8 +214,9 @@ struct ProfileView: View {
                         .font(.system(size: 11)).foregroundStyle(Palette.green)
                         .fixedSize(horizontal: false, vertical: true)
                 } else if let session = model.session, session.name == nil {
-                    Button("重新登录以同步姓名") { model.showLogin = true }
+                    Button("重新登录以同步姓名") { model.presentLogin(accountID: model.activeAccountID) }
                         .font(.system(size: 11)).foregroundStyle(Palette.green)
+                        .disabled(!model.canChangeAccount)
                 } else {
                     Text("中国科学院大学 · 轻新课堂")
                         .font(.system(size: 11)).foregroundStyle(Palette.secondary)
@@ -216,26 +254,31 @@ struct ProfileView: View {
         }.padding(.vertical, 20).contentShape(Rectangle())
     }
     private var recordsView: some View {
-        NavigationStack {
-            Group {
-                if model.records.isEmpty {
-                    CompatibleContentUnavailableView("还没有签到记录", systemImage: "checkmark.seal", description: "在此设备完成签到后，结果会显示在这里。")
-                } else {
-                    List(model.records) { record in
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Text(record.courseName).font(.headline)
-                                Spacer()
-                                Image(systemName: record.succeeded ? "checkmark.circle.fill" : "exclamationmark.circle")
-                                    .foregroundStyle(record.succeeded ? Palette.green : .orange)
-                            }
-                            Text(record.message).font(.subheadline).foregroundStyle(.secondary)
-                            Text(SchoolDate.text(record.date, "M月d日 HH:mm:ss")).font(.caption).foregroundStyle(.secondary)
-                        }.padding(.vertical, 5)
-                    }
+        Group {
+            if model.records.isEmpty {
+                CompatibleContentUnavailableView("还没有签到记录", systemImage: "checkmark.seal", description: "在此设备完成签到后，结果会显示在这里。")
+            } else {
+                List(model.records) { record in
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text(record.courseName).font(.headline)
+                            Spacer()
+                            Image(systemName: record.succeeded ? "checkmark.circle.fill" : "exclamationmark.circle")
+                                .foregroundStyle(record.succeeded ? Palette.green : .orange)
+                        }
+                        Text(record.message).font(.subheadline).foregroundStyle(.secondary)
+                        Text(SchoolDate.text(record.date, "M月d日 HH:mm:ss")).font(.caption).foregroundStyle(.secondary)
+                    }.padding(.vertical, 5)
+                        .listRowBackground(Palette.surface)
                 }
-            }.navigationTitle(model.isDemo ? "演示签到记录" : "本机签到记录").appNavigationStyle(inline: true)
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { showRecords = false } } }
-        }.appSheetSize(width: 580, height: 620)
+                .scrollContentBackground(.hidden)
+            }
+        }
+        .frame(maxWidth: 680)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Palette.background)
+        .accessibilityIdentifier("records.content")
+        .navigationTitle(model.isDemo ? "演示签到记录" : "本机签到记录")
+        .appNavigationStyle(inline: true)
     }
 }

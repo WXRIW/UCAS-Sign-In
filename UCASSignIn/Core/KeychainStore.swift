@@ -3,7 +3,7 @@ import Foundation
 import Security
 #endif
 
-public struct StoredCredentials: Codable, Sendable {
+public struct StoredCredentials: Codable, Equatable, Sendable {
     public let username: String
     public let password: String
 
@@ -13,9 +13,16 @@ public struct StoredCredentials: Codable, Sendable {
     }
 }
 
+/// The small storage boundary used to test account persistence without real credentials.
+public protocol KeychainDataStorage {
+    func data(for account: String) throws -> Data?
+    func setData(_ data: Data, for account: String) throws
+    func removeData(for account: String) throws
+}
+
 /// Sessions and explicitly remembered passwords stay in this device's Keychain.
 /// The default UI should not persist passwords without the user's choice.
-public struct KeychainStore: Sendable {
+public struct KeychainStore: KeychainDataStorage, Sendable {
     private let service: String
 
     public init(service: String = "cn.ucas.signin.credentials") {
@@ -35,8 +42,11 @@ public struct KeychainStore: Sendable {
     }
 
     private func save<T: Encodable>(_ value: T, account: String) throws {
+        try setData(JSONEncoder().encode(value), for: account)
+    }
+
+    public func setData(_ data: Data, for account: String) throws {
         #if canImport(Security)
-        let data = try JSONEncoder().encode(value)
         let query = baseQuery(account: account)
         var attributes: [String: Any] = [kSecValueData as String: data]
         #if !os(macOS)
@@ -57,6 +67,12 @@ public struct KeychainStore: Sendable {
     }
 
     private func load<T: Decodable>(_ type: T.Type, account: String) throws -> T? {
+        guard let data = try data(for: account) else { return nil }
+        do { return try JSONDecoder().decode(type, from: data) }
+        catch { throw APIError(code: "KEYCHAIN_INVALID_DATA", message: "已保存的登录信息无法读取，请重新登录") }
+    }
+
+    public func data(for account: String) throws -> Data? {
         #if canImport(Security)
         var query = baseQuery(account: account)
         query[kSecReturnData as String] = true
@@ -65,14 +81,17 @@ public struct KeychainStore: Sendable {
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess, let data = result as? Data else { throw storageError(status) }
-        do { return try JSONDecoder().decode(type, from: data) }
-        catch { throw APIError(code: "KEYCHAIN_INVALID_DATA", message: "已保存的登录信息无法读取，请重新登录") }
+        return data
         #else
         throw APIError(code: "KEYCHAIN_UNAVAILABLE", message: "当前系统不支持安全凭据存储")
         #endif
     }
 
     private func delete(account: String) throws {
+        try removeData(for: account)
+    }
+
+    public func removeData(for account: String) throws {
         #if canImport(Security)
         let status = SecItemDelete(baseQuery(account: account) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else { throw storageError(status) }

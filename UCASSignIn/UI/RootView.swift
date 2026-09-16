@@ -5,6 +5,15 @@ struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Binding var selection: Int
     @State private var refreshTodayOnSelection = false
+    @State private var todayPath: [Course] = []
+    @State private var schedulePath: [Course] = []
+    @State private var profilePath: [ProfileDestination] = []
+    @State private var deferLoginPresentation = false
+    @State private var pendingLogin: PendingLogin?
+    @State private var presentedLogin: LoginRequest?
+    @State private var presentedLoginID: UUID?
+
+    private enum PendingLogin { case add, reauthenticate(String) }
 
     var body: some View {
         navigation
@@ -14,12 +23,28 @@ struct RootView: View {
             refreshTodayOnSelection = false
             if shouldRefresh { Task { await model.refresh(on: .now) } }
         }
-        .sheet(isPresented: $model.showLogin) { LoginView() }
-        .alert("温馨提示", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
+        .onChange(of: model.accountGeneration) { _ in
+            resetNavigation()
+            model.showAccountManagement = false
+        }
+        .onChange(of: model.showAccountManagement) { presented in
+            if presented { deferLoginPresentation = true }
+        }
+        .onChange(of: model.loginRequest?.id) { _ in synchronizeLoginPresentation() }
+        .onAppear { synchronizeLoginPresentation() }
+        .sheet(item: loginPresentation, onDismiss: finishLoginPresentation) { LoginView(request: $0) }
+        .sheet(isPresented: accountManagementPresentation, onDismiss: finishAccountManagement) {
+            AccountManagementView { accountID in
+                pendingLogin = accountID.map(PendingLogin.reauthenticate) ?? .add
+                model.showAccountManagement = false
+            }
+        }
+        .alert("温馨提示", isPresented: Binding(get: { model.errorMessage != nil && model.loginRequest == nil }, set: { if !$0 { model.errorMessage = nil } })) {
             Button("知道了", role: .cancel) { model.errorMessage = nil }
         } message: { Text(model.errorMessage ?? "") }
         .onOpenURL { url in
             guard url.scheme == "ucas-signin" else { return }
+            todayPath.removeAll()
             selectTab(0, refreshToday: true)
         }
         .task(id: scenePhase) {
@@ -46,6 +71,8 @@ struct RootView: View {
             .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 240)
             .safeAreaInset(edge: .bottom) {
                 VStack(alignment: .leading, spacing: 7) {
+                    AccountMenu()
+                    Divider()
                     Label("果壳签到", systemImage: "leaf.fill")
                         .font(.headline).foregroundStyle(Palette.green)
                     Text(model.isDemo ? "演示模式 · 示例课表" : "国科大轻新课堂")
@@ -54,27 +81,101 @@ struct RootView: View {
                 .frame(maxWidth: .infinity, alignment: .leading).padding(18)
             }
         } detail: {
-            switch selection {
-            case 1: ScheduleView()
-            case 2: ProfileView()
-            default: TodayView(openSchedule: { selectTab(1) })
+            Group {
+                switch selection {
+                case 1: ScheduleView(path: activePath($schedulePath, for: 1), isActive: selection == 1)
+                case 2: ProfileView(path: activePath($profilePath, for: 2))
+                default: TodayView(path: activePath($todayPath, for: 0), isActive: selection == 0, openSchedule: { selectTab(1) })
+                }
             }
+            .id(selection)
         }
         .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 820, minHeight: 620)
         #else
         TabView(selection: $selection) {
-            TodayView(openSchedule: { selectTab(1) })
+            TodayView(path: $todayPath, isActive: selection == 0, openSchedule: { selectTab(1) })
                 .tabItem { Label("今日", systemImage: "square.grid.2x2") }
                 .tag(0)
-            ScheduleView()
+            ScheduleView(path: $schedulePath, isActive: selection == 1)
                 .tabItem { Label("课表", systemImage: "calendar") }
                 .tag(1)
-            ProfileView()
+            ProfileView(path: $profilePath)
                 .tabItem { Label("账户", systemImage: "person.crop.circle") }
                 .tag(2)
         }
         #endif
+    }
+
+    #if os(macOS)
+    // NavigationSplitView resets its outgoing stack when the sidebar selection changes.
+    // Keep that teardown write from erasing the inactive section's saved path.
+    private func activePath<Value>(_ path: Binding<[Value]>, for index: Int) -> Binding<[Value]> {
+        Binding(get: { path.wrappedValue }, set: { value in
+            guard selection == index else { return }
+            path.wrappedValue = value
+        })
+    }
+    #endif
+
+    private func resetNavigation() {
+        refreshTodayOnSelection = false
+        todayPath.removeAll()
+        schedulePath.removeAll()
+        profilePath.removeAll()
+    }
+
+    private var loginPresentation: Binding<LoginRequest?> {
+        let presentationID = presentedLoginID
+        return Binding(get: { presentedLogin }, set: { value in
+            // A dismissed sheet may only clear the request it actually presented.
+            guard presentedLoginID == presentationID else { return }
+            presentedLogin = value
+            if value == nil, model.loginRequest?.id == presentationID {
+                model.loginRequest = nil
+            }
+        })
+    }
+
+    private var accountManagementPresentation: Binding<Bool> {
+        Binding(get: { model.showAccountManagement && presentedLoginID == nil }, set: { presented in
+            guard presentedLoginID == nil else { return }
+            model.showAccountManagement = presented
+        })
+    }
+
+    private func synchronizeLoginPresentation() {
+        if let presentationID = presentedLoginID {
+            // Keep the old ID through dismissal, and queue any replacement in the model.
+            if model.loginRequest?.id != presentationID { presentedLogin = nil }
+            return
+        }
+        guard !model.showAccountManagement, !deferLoginPresentation,
+              let request = model.loginRequest else { return }
+        presentedLoginID = request.id
+        presentedLogin = request
+    }
+
+    private func finishLoginPresentation() {
+        let dismissedID = presentedLoginID
+        presentedLogin = nil
+        presentedLoginID = nil
+        if model.loginRequest?.id == dismissedID { model.loginRequest = nil }
+        synchronizeLoginPresentation()
+    }
+
+    private func finishAccountManagement() {
+        deferLoginPresentation = false
+        guard let request = pendingLogin else {
+            synchronizeLoginPresentation()
+            return
+        }
+        pendingLogin = nil
+        switch request {
+        case .add: model.presentLogin()
+        case .reauthenticate(let accountID): model.presentLogin(accountID: accountID)
+        }
+        synchronizeLoginPresentation()
     }
 
     private func selectTab(_ index: Int, refreshToday: Bool = false) {
@@ -91,11 +192,12 @@ struct RootView: View {
 
 struct TodayView: View {
     @EnvironmentObject private var model: AppModel
+    @Binding var path: [Course]
+    let isActive: Bool
     var openSchedule: () -> Void
-    @State private var selectedCourse: Course?
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 26) {
                     introduction
@@ -103,7 +205,8 @@ struct TodayView: View {
                         if model.isDemo { demoBanner }
                         if model.isCached(on: .now) { CachedCoursesBanner(date: .now) }
                         if let course = model.featuredCourse {
-                            FeaturedCourseCard(course: course, openDetail: { selectedCourse = course })
+                            FeaturedCourseCard(course: course, accountGeneration: model.accountGeneration, openDetail: { path.append(course) })
+                                .id(model.accountGeneration)
                         } else if model.todayCourses.isEmpty {
                             emptyDay
                         }
@@ -130,6 +233,7 @@ struct TodayView: View {
             .toolbar {
                 #if os(iOS)
                 ToolbarItem(placement: .topBarLeading) { brandMark }
+                ToolbarItem(placement: .topBarTrailing) { AccountMenu() }
                 #endif
                 #if os(macOS)
                 ToolbarItem(placement: .primaryAction) {
@@ -142,8 +246,10 @@ struct TodayView: View {
                 #endif
             }
             .courseRefreshable(enabled: model.isConnected) { await model.refresh(on: .now) }
+            .navigationDestination(for: Course.self) { course in
+                CourseDetailView(course: course, isActive: isActive, accountGeneration: model.accountGeneration)
+            }
         }
-        .sheet(item: $selectedCourse) { CourseDetailView(course: $0) }
     }
 
     private var brandMark: some View {
@@ -173,7 +279,7 @@ struct TodayView: View {
             Text("演示模式").fontWeight(.medium)
             Text("· 示例课表").foregroundStyle(Palette.secondary)
             Spacer()
-            Button("连接账号") { model.showLogin = true }.fontWeight(.semibold)
+            Button("连接账号") { model.presentLogin() }.fontWeight(.semibold).disabled(!model.canChangeAccount)
         }.font(.system(size: 11)).foregroundStyle(Palette.green)
             .padding(.horizontal, 13).padding(.vertical, 10)
             .background(Palette.pale, in: RoundedRectangle(cornerRadius: 12))
@@ -212,7 +318,7 @@ struct TodayView: View {
                 }.buttonStyle(.plain).fixedSize()
             }
             ForEach(Array(model.todayCourses.enumerated()), id: \.element.id) { index, course in
-                CourseRow(course: course, index: index) { selectedCourse = course }
+                CourseRow(course: course, index: index) { path.append(course) }
             }
             if let updated = model.lastUpdated(on: .now) {
                 HStack(spacing: 4) {
@@ -243,9 +349,10 @@ struct TodayView: View {
             Text("一堂课，也不匆忙。").font(.system(size: 25, weight: .bold, design: .serif)).foregroundStyle(Palette.ink)
             Text("连接学校账号，查看当天课程、完成签到，\n让每一次到课都井井有条。")
                 .font(.system(size: 14)).lineSpacing(7).foregroundStyle(Palette.secondary)
-            PrimaryButton(title: "连接学校账号") { model.showLogin = true }
+            PrimaryButton(title: "连接学校账号") { model.presentLogin() }.disabled(!model.canChangeAccount)
             Button("先体验一下 →") { model.enterDemo() }
                 .font(.system(size: 13, weight: .medium)).foregroundStyle(Palette.green).frame(maxWidth: .infinity)
+                .disabled(!model.canChangeAccount)
         }.padding(24).cardSurface()
     }
 }
@@ -276,6 +383,7 @@ struct WeekStrip: View {
 struct FeaturedCourseCard: View {
     @EnvironmentObject private var model: AppModel
     let course: Course
+    let accountGeneration: UUID
     var openDetail: () -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -295,14 +403,14 @@ struct FeaturedCourseCard: View {
                 .font(.system(size: 11)).foregroundStyle(.white.opacity(0.68))
                 .padding(.top, 9)
             HStack(spacing: 10) {
-                Button { Task { await model.sign(course) } } label: {
+                Button { Task { await model.sign(course, accountGeneration: accountGeneration) } } label: {
                     HStack(spacing: 7) {
                         if model.signingID == course.id { ProgressView().tint(Palette.hero) }
                         else { Image(systemName: course.signed ? "checkmark.circle.fill" : "checkmark.circle").font(.system(size: 17)) }
                         Text(course.signed ? "已完成签到" : "一键签到").font(.system(size: 14, weight: .semibold))
                     }.foregroundStyle(Palette.hero).frame(maxWidth: .infinity).padding(.vertical, 14)
                         .background(Palette.accent, in: RoundedRectangle(cornerRadius: 13))
-                }.buttonStyle(.plain).disabled(!model.canSign(course))
+                }.buttonStyle(.plain).disabled(!model.canSign(course, accountGeneration: accountGeneration))
                 Button(action: openDetail) {
                     Image(systemName: "qrcode").font(.system(size: 21)).foregroundStyle(.white)
                         .frame(width: 49, height: 47).background(.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 13))

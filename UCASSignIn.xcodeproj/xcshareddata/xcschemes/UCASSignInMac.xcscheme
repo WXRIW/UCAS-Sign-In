@@ -6,12 +6,18 @@
             <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="B80000000000000000000001" BuildableName="UCASSignInMac.app" BlueprintName="UCASSignInMac" ReferencedContainer="container:UCASSignIn.xcodeproj"/>
          </BuildActionEntry>
          <BuildActionEntry buildForTesting="YES" buildForRunning="NO" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="YES">
+            <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="C80000000000000000000001" BuildableName="UCASSignInMacTests.xctest" BlueprintName="UCASSignInMacTests" ReferencedContainer="container:UCASSignIn.xcodeproj"/>
+         </BuildActionEntry>
+         <BuildActionEntry buildForTesting="YES" buildForRunning="NO" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="YES">
             <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="B80000000000000000000003" BuildableName="UCASSignInMacUITests.xctest" BlueprintName="UCASSignInMacUITests" ReferencedContainer="container:UCASSignIn.xcodeproj"/>
          </BuildActionEntry>
       </BuildActionEntries>
    </BuildAction>
    <TestAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.IDEFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv="YES">
       <Testables>
+         <TestableReference skipped="NO" parallelizable="NO">
+            <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="C80000000000000000000001" BuildableName="UCASSignInMacTests.xctest" BlueprintName="UCASSignInMacTests" ReferencedContainer="container:UCASSignIn.xcodeproj"/>
+         </TestableReference>
          <TestableReference skipped="NO" parallelizable="NO">
             <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="B80000000000000000000003" BuildableName="UCASSignInMacUITests.xctest" BlueprintName="UCASSignInMacUITests" ReferencedContainer="container:UCASSignIn.xcodeproj"/>
          </TestableReference>

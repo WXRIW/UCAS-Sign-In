@@ -2,13 +2,12 @@ import SwiftUI
 
 @main
 struct UCASSignInApp: App {
-    @StateObject private var model = AppModel()
+    @StateObject private var model = AppLaunchEnvironment.makeModel()
     @State private var selection = 0
     var body: some Scene {
         #if os(macOS)
         Window("果壳签到", id: "main") {
-            RootView(selection: $selection).environmentObject(model).tint(Palette.green)
-                .task { await model.restore() }
+            appContent
         }
         .defaultSize(width: 1000, height: 760)
         .windowResizability(.contentMinSize)
@@ -18,9 +17,18 @@ struct UCASSignInApp: App {
         }
         #else
         WindowGroup {
-            RootView(selection: $selection).environmentObject(model).tint(Palette.green)
-                .task { await model.restore() }
+            appContent
         }
         #endif
+    }
+
+    @ViewBuilder private var appContent: some View {
+        if AppLaunchEnvironment.isUnitTestHost {
+            Color.clear
+        } else {
+            RootView(selection: $selection).environmentObject(model).tint(Palette.green)
+                .defaultAppStorage(AppLaunchEnvironment.defaults)
+                .task { await model.restore() }
+        }
     }
 }
