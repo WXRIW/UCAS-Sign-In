@@ -1,6 +1,10 @@
-# 果壳签到
+<p align="center">
+  <img src="UCASSignInMac/Resources/MacAssets.xcassets/MacAppIcon.appiconset/icon_512x512@2x.png" width="128" height="128" alt="果壳签到应用图标">
+</p>
 
-面向国科大轻新课堂的 iOS、iPadOS 与原生 macOS 客户端，支持课表查询、课程签到、动态二维码、课程提醒与桌面小组件。
+<h1 align="center">果壳签到</h1>
+
+<p align="center">面向国科大轻新课堂的 iOS、iPadOS 与 macOS 客户端，支持课表查询、课程签到、动态二维码、课程提醒与桌面小组件。</p>
 
 ## 功能概览
 
