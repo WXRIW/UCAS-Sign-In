@@ -5,7 +5,7 @@ struct LoginView: View {
     let request: LoginRequest
     @State private var username = ""
     @State private var password = ""
-    @State private var remember = false
+    @State private var remember = true
     @State private var submitting = false
     @State private var loginError: String?
     @State private var attemptedAutofill = false
@@ -59,7 +59,7 @@ struct LoginView: View {
                     Button { model.enterDemo() } label: {
                         Text("先体验演示模式").font(.system(size: 13, weight: .medium)).frame(maxWidth: .infinity)
                     }.padding(.top, 8).disabled(submitting || !model.canChangeAccount)
-                }.padding(28).padding(.top, 20)
+                }.appPagePadding(28).padding(.top, 20)
             }.background(Palette.background)
                 .appNavigationStyle(inline: true)
                 .toolbar { ToolbarItem(placement: .cancellationAction) {

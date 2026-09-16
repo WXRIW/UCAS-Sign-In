@@ -20,8 +20,8 @@ public protocol KeychainDataStorage {
     func removeData(for account: String) throws
 }
 
-/// Sessions and explicitly remembered passwords stay in this device's Keychain.
-/// The default UI should not persist passwords without the user's choice.
+/// Sessions and remembered passwords stay in this device's Keychain.
+/// Passwords are persisted only when the remember-password option is enabled.
 public struct KeychainStore: KeychainDataStorage, Sendable {
     private let service: String
 

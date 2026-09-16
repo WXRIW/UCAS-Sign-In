@@ -97,7 +97,7 @@ struct AccountManagementView: View {
                         .accessibilityIdentifier("accounts.add")
                     Label("会话与可选密码由系统钥匙串保护。移除账户仅清除该账户在本机的凭据、课程缓存、签到记录和课堂偏好。", systemImage: "lock.shield")
                         .font(.system(size: 11)).lineSpacing(4).foregroundStyle(Palette.secondary)
-                }.padding(24).frame(maxWidth: 640).frame(maxWidth: .infinity)
+                }.appPagePadding().frame(maxWidth: 640).frame(maxWidth: .infinity)
             }
             .background(Palette.background)
             .navigationTitle("切换与管理账户")

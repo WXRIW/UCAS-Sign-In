@@ -223,7 +223,7 @@ struct TodayView: View {
                         Text("专注课堂，把琐事交给果壳").font(.system(size: 11)).tracking(1)
                     }.foregroundStyle(Palette.secondary.opacity(0.75))
                         .frame(maxWidth: .infinity).padding(.top, 3).padding(.bottom, 16)
-                }.padding(.horizontal, 24).padding(.top, 17)
+                }.appPageHorizontalPadding().padding(.top, 17)
                     .frame(maxWidth: 680).frame(maxWidth: .infinity)
             }
             .accessibilityIdentifier("today.scroll")
@@ -393,7 +393,6 @@ struct FeaturedCourseCard: View {
                     Text(course.signed ? "到课已记录" : CourseTime.isInProgress(course, now: .now) ? "正在上课，专注当下" : "下一堂，准备就绪").tracking(1)
                 }.font(.system(size: 11, weight: .medium)).foregroundStyle(Palette.accent)
                 Spacer()
-                Image(systemName: "arrow.up.right").font(.system(size: 13)).foregroundStyle(.white.opacity(0.6))
             }
             Text(course.name).font(.system(size: 27, weight: .semibold)).foregroundStyle(.white)
                 .padding(.top, 22).padding(.bottom, 12)

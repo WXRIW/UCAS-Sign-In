@@ -80,7 +80,7 @@ struct ProfileView: View {
                     Text("果壳签到 · 1.0\n开源许可 · AGPL-3.0")
                         .font(.system(size: 10)).lineSpacing(5).foregroundStyle(Palette.secondary)
                         .multilineTextAlignment(.center).frame(maxWidth: .infinity).padding(.vertical, 8)
-                }.padding(24)
+                }.appPagePadding()
                     .frame(maxWidth: 680).frame(maxWidth: .infinity)
             }
             .accessibilityIdentifier("profile.scroll")
@@ -272,6 +272,7 @@ struct ProfileView: View {
                         .listRowBackground(Palette.surface)
                 }
                 .scrollContentBackground(.hidden)
+                .appListPageMargins()
             }
         }
         .frame(maxWidth: 680)

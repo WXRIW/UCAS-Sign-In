@@ -1,4 +1,18 @@
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
+
+enum PageLayout {
+    static let phoneMargin: CGFloat = 16
+
+    static func horizontalMargin(default value: CGFloat = 24) -> CGFloat {
+        #if os(iOS)
+        if UIDevice.current.userInterfaceIdiom == .phone { return phoneMargin }
+        #endif
+        return value
+    }
+}
 
 extension View {
     /// Keeps the shared navigation content native to each platform.
@@ -7,6 +21,31 @@ extension View {
         #if os(iOS)
         self.navigationBarTitleDisplayMode(inline ? .inline : .large)
             .toolbarBackground(Palette.background, for: .navigationBar)
+            .background(PhoneNavigationMargins())
+        #else
+        self
+        #endif
+    }
+
+    func appPageHorizontalPadding(default value: CGFloat = 24) -> some View {
+        padding(.horizontal, PageLayout.horizontalMargin(default: value))
+    }
+
+    func appPagePadding(_ vertical: CGFloat = 24) -> some View {
+        appPageHorizontalPadding(default: vertical).padding(.vertical, vertical)
+    }
+
+    @ViewBuilder
+    func appListPageMargins() -> some View {
+        #if os(iOS)
+        if UIDevice.current.userInterfaceIdiom == .phone {
+            if #available(iOS 17.0, *) {
+                self.contentMargins(.horizontal, PageLayout.phoneMargin, for: .scrollContent)
+            } else {
+                // Inset-grouped lists already provide a 20-point content margin.
+                self.listStyle(.insetGrouped).padding(.horizontal, PageLayout.phoneMargin - 20)
+            }
+        } else { self }
         #else
         self
         #endif
@@ -22,3 +61,33 @@ extension View {
         #endif
     }
 }
+
+#if os(iOS)
+/// Use the same public UIKit margins for native titles and SwiftUI page content.
+private struct PhoneNavigationMargins: UIViewControllerRepresentable {
+    func makeUIViewController(context: Context) -> Controller { Controller() }
+    func updateUIViewController(_ controller: Controller, context: Context) { controller.alignMargins() }
+
+    final class Controller: UIViewController {
+        override func viewWillAppear(_ animated: Bool) {
+            super.viewWillAppear(animated)
+            alignMargins()
+        }
+
+        override func viewDidLayoutSubviews() {
+            super.viewDidLayoutSubviews()
+            alignMargins()
+        }
+
+        func alignMargins() {
+            guard traitCollection.userInterfaceIdiom == .phone,
+                  let bar = navigationController?.navigationBar else { return }
+            var margins = bar.directionalLayoutMargins
+            guard margins.leading != PageLayout.phoneMargin || margins.trailing != PageLayout.phoneMargin else { return }
+            margins.leading = PageLayout.phoneMargin
+            margins.trailing = PageLayout.phoneMargin
+            bar.directionalLayoutMargins = margins
+        }
+    }
+}
+#endif

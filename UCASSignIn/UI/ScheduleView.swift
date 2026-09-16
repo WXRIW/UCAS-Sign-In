@@ -78,7 +78,7 @@ struct ScheduleView: View {
             }
             WeekStrip(selectedDate: model.selectedDate, select: selectDate)
         }
-        .padding(.horizontal, 24)
+        .appPageHorizontalPadding()
         .padding(.vertical, 12)
         .frame(maxWidth: 680)
         .frame(maxWidth: .infinity)
@@ -113,7 +113,7 @@ struct ScheduleView: View {
                     .font(.system(size: 13, weight: .medium)).frame(maxWidth: .infinity).padding()
             }
         }
-        .padding(24)
+        .appPagePadding()
         .frame(maxWidth: 680)
         .frame(maxWidth: .infinity)
     }

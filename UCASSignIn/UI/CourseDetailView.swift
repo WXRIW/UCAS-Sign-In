@@ -49,29 +49,9 @@ struct CourseDetailView: View {
                     CachedCoursesBanner(date: date)
                 }
                 VStack(spacing: 20) {
-                    TimelineView(.animation(minimumInterval: 0.2, paused: !canRefreshQR)) { context in
-                        VStack(spacing: 18) {
-                            if canRefreshQR, model.isDemo, let qrImage {
-                                qrGraphic(qrImage)
-                                Label("演示二维码 · 无签到效力", systemImage: "sparkles")
-                                    .font(.system(size: 12)).foregroundStyle(Palette.green)
-                            } else if let snapshot, snapshot.expiresAt > context.date, canRefreshQR, let qrImage {
-                                qrGraphic(qrImage)
-                                VStack(spacing: 9) {
-                                    let remaining = max(0, snapshot.expiresAt.timeIntervalSince(context.date))
-                                    ProgressView(value: min(1, remaining / snapshot.validityDuration)).tint(Palette.green)
-                                    Text("学校时间已同步 · \(Int(ceil(remaining))) 秒后刷新")
-                                        .font(.system(size: 11)).monospacedDigit().foregroundStyle(Palette.secondary)
-                                }.frame(width: 220)
-                            } else {
-                                VStack(spacing: 15) {
-                                    if qrError == nil { ProgressView() }
-                                    else { Image(systemName: "wifi.exclamationmark").font(.system(size: 35)).foregroundStyle(Palette.secondary) }
-                                    Text(qrError == nil ? "正在同步学校时间…" : "二维码暂不可用")
-                                        .font(.system(size: 13)).foregroundStyle(Palette.secondary)
-                                }.frame(width: 230, height: 265)
-                            }
-                        }
+                    // Follow the display's animation cadence without changing QR refresh timing.
+                    TimelineView(.animation(paused: !canRefreshQR || snapshot == nil)) { context in
+                        qrContent(at: context.date)
                     }
                     if let qrError {
                         Text(qrError).font(.system(size: 12)).foregroundStyle(Palette.secondary).multilineTextAlignment(.center)
@@ -89,7 +69,7 @@ struct CourseDetailView: View {
                    let notice = model.notice(on: date), !model.needsCourseRefresh(currentCourse) {
                     Text(notice).font(.system(size: 12)).foregroundStyle(Palette.green)
                 }
-            }.padding(25)
+            }.appPagePadding(25)
                 .frame(maxWidth: 680).frame(maxWidth: .infinity)
         }
         .accessibilityIdentifier("courseDetail.scroll")
@@ -105,6 +85,44 @@ struct CourseDetailView: View {
     }
     private var formattedDay: String {
         course.startDate.map { SchoolDate.text($0, "M月d日") } ?? course.day
+    }
+    private func qrContent(at date: Date) -> some View {
+        let remaining = max(0, snapshot?.expiresAt.timeIntervalSince(date) ?? 0)
+        let showsQR = canRefreshQR && qrImage != nil && (model.isDemo || remaining > 0)
+        let showsCountdown = showsQR && !model.isDemo
+
+        return VStack(spacing: 18) {
+            // Keep the same canvas while replacing an expired QR with its loading state.
+            Color.clear.frame(width: 250, height: 250)
+                .overlay {
+                    if showsQR, let qrImage {
+                        qrGraphic(qrImage)
+                    } else {
+                        VStack(spacing: 15) {
+                            if qrError == nil { ProgressView() }
+                            else { Image(systemName: "wifi.exclamationmark").font(.system(size: 35)).foregroundStyle(Palette.secondary) }
+                            Text(qrError == nil ? "正在同步学校时间…" : "二维码暂不可用")
+                                .font(.system(size: 13)).foregroundStyle(Palette.secondary)
+                        }
+                    }
+                }
+            // Invisible countdown content still reserves its platform-specific height.
+            VStack(spacing: 9) {
+                ProgressView(value: min(1, remaining / max(0.1, snapshot?.validityDuration ?? 1)))
+                    .progressViewStyle(.linear).tint(Palette.green)
+                Text("学校时间已同步 · \(Int(ceil(remaining))) 秒后刷新")
+                    .font(.system(size: 11)).monospacedDigit().foregroundStyle(Palette.secondary)
+            }
+            .frame(width: 220)
+            .opacity(showsCountdown ? 1 : 0)
+            .accessibilityHidden(!showsCountdown)
+            .overlay {
+                if showsQR && model.isDemo {
+                    Label("演示二维码 · 无签到效力", systemImage: "sparkles")
+                        .font(.system(size: 12)).foregroundStyle(Palette.green)
+                }
+            }
+        }
     }
     private func qrGraphic(_ image: CGImage) -> some View {
         Image(decorative: image, scale: 1).interpolation(.none).resizable().scaledToFit()

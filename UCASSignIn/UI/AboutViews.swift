@@ -17,7 +17,7 @@ struct OpenSourceView: View {
                             description: "Android 客户端、签到流程与课程小组件的实现参考。")
                 Text("两个参考项目均采用 GNU Affero General Public License v3.0（AGPL-3.0）。原作者及贡献者保留其相应版权。果壳签到沿用 AGPL-3.0 开源许可。")
                     .font(.system(size: 12)).lineSpacing(5).foregroundStyle(Palette.secondary)
-            }.padding(24)
+            }.appPagePadding()
                 .frame(maxWidth: 680).frame(maxWidth: .infinity)
         }
         .accessibilityIdentifier("openSource.scroll")
@@ -90,7 +90,7 @@ struct DisclaimerView: View {
                 statement("无担保声明", "在适用法律允许的范围内，本软件按“现状”提供，不作适销性、特定用途适用性或持续可用性的担保。本声明不排除或限制依法不得免除的责任，具体开源许可条款请见“项目源码与致谢”。")
                 Text("更新日期：2026 年 9 月 16 日")
                     .font(.system(size: 11)).foregroundStyle(Palette.secondary)
-            }.padding(24)
+            }.appPagePadding()
                 .frame(maxWidth: 680).frame(maxWidth: .infinity)
         }
         .accessibilityIdentifier("disclaimer.scroll")
