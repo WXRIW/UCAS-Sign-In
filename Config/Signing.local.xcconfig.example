@@ -1,0 +1,11 @@
+// Copy to Signing.local.xcconfig and fill in your Apple Developer Team ID.
+DEVELOPMENT_TEAM =
+
+// Use unique identifiers registered under your team.
+// The widget and UI tests derive their bundle IDs from this app identifier.
+APP_BUNDLE_IDENTIFIER = com.example.guokesignin
+APP_GROUP_IDENTIFIER = group.com.example.guokesignin
+
+// macOS App Group is $(TeamIdentifierPrefix)$(MAC_APP_GROUP_SUFFIX).
+// Mac bundle identifiers derive .mac, .mac.widget and .mac.uitests automatically.
+MAC_APP_GROUP_SUFFIX = com.example.guokesignin

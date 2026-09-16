@@ -1,0 +1,10 @@
+// Shared defaults for simulator builds. Configure device signing in the local file.
+DEVELOPMENT_TEAM =
+APP_BUNDLE_IDENTIFIER = cn.ucas.signin
+APP_GROUP_IDENTIFIER = group.cn.ucas.signin
+
+// macOS uses a Team-prefixed group. The suffix is shared by the Mac app and widget.
+MAC_APP_GROUP_SUFFIX = cn.ucas.signin
+
+// Optional, ignored by Git. See Signing.local.xcconfig.example.
+#include? "Signing.local.xcconfig"

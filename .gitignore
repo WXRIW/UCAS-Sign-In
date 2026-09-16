@@ -1,0 +1,40 @@
+# macOS and editor state
+.DS_Store
+._*
+*~
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Xcode / Swift Package Manager build products
+.build/
+.swiftpm/
+DerivedData/
+build/
+artifacts/
+scripts/
+xcuserdata/
+*.xcuserstate
+*.xcresult
+*.xcarchive
+*.ipa
+*.app
+*.dSYM/
+*.dSYM.zip
+*.log
+
+# Local signing configuration and credentials
+Config/Signing.local.xcconfig
+*.mobileprovision
+*.provisionprofile
+*.p12
+*.p8
+*.cer
+*.key
+*.pem
+.env
+.env.*
+!.env.example
+
+# Keep shared schemes, project files, entitlements and Package.resolved in Git.
