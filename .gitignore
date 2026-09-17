@@ -23,10 +23,8 @@ xcuserdata/
 *.dSYM.zip
 *.log
 
-# Local helper scripts
-/scripts/
-
 # Local platform development tests and tools
+/scripts/local/
 /apps/android/tests/
 /apps/android/tools/
 /apps/windows/tests/
@@ -63,6 +61,8 @@ BundleArtifacts/
 *.msixbundle
 *.appx
 *.appxbundle
+*.msixupload
+*.appxupload
 *.keystore
 *.jks
 *.pfx

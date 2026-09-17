@@ -48,6 +48,8 @@
       <SubType>Designer</SubType>
     </AppxManifest>
     <Content Include="Assets\*.png" />
+    <None Include="Package.appxmanifest.in" />
+    <None Include="Package.StoreAssociation.xml" Condition="Exists('Package.StoreAssociation.xml')" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\UCASSignIn.Windows\UCASSignIn.Windows.csproj">
@@ -55,9 +57,9 @@
       <EntryPoint>true</EntryPoint>
     </ProjectReference>
   </ItemGroup>
-  <Import Project="$(WapProjPath)Microsoft.DesktopBridge.targets" />
   <ItemGroup>
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.4654" PrivateAssets="all" />
   </ItemGroup>
   <Import Project="Signing.local.props" Condition="Exists('Signing.local.props')" />
+  <Import Project="$(WapProjPath)Microsoft.DesktopBridge.targets" />
 </Project>
