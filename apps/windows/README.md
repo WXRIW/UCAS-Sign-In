@@ -1,6 +1,6 @@
 # Windows 客户端
 
-C# / .NET 10 / WinUI 3。默认以 unpackaged、自包含程序运行；独立 Windows Application Packaging Project 提供 MSIX。最低 Windows 10 1809，支持 x64、ARM64。本文以 x64 为主要构建与发布平台，ARM64 的对应配置见补充说明。
+C# / .NET 10 / WinUI 3。默认以 unpackaged、自包含程序运行；独立 Windows Application Packaging Project 提供 MSIX。最低 Windows 10 1809，支持 x64、ARM64。本文以 x64 为主要开发平台，ARM64 的对应配置见补充说明。
 
 ## 工程
 
@@ -8,7 +8,7 @@ C# / .NET 10 / WinUI 3。默认以 unpackaged、自包含程序运行；独立 W
 - `UCASSignIn.Windows/`：应用入口、ViewModels、原生界面及 DPAPI/通知服务。
 - `UCASSignIn.Windows.Package/`：独立 `.wapproj`，默认不随解决方案构建，需单独选择。
 
-不依赖 Android 工作负载。安装 .NET SDK 10.0.303、Visual Studio WinUI 开发工具和 Windows SDK 10.0.26100；MSIX 构建另需 Windows Application Packaging 工具。
+不依赖 Android 工作负载。安装 .NET SDK 10.0.100 或更新的 .NET 10 SDK、Visual Studio WinUI 开发工具和 Windows SDK 10.0.26100。
 
 ## 构建与运行
 
@@ -23,31 +23,7 @@ dotnet build apps/windows/UCASSignIn.Windows/UCASSignIn.Windows.csproj --no-rest
 
 构建 ARM64 版本时，将上述 restore、build 命令中的 `-p:Platform=x64` 改为 `-p:Platform=ARM64`。
 
-运行输出目录的 `UCASSignIn.Windows.exe`。`--demo` 可直接进入无网络演示模式。普通应用构建使用 `dotnet`；包含 `.wapproj` 的构建使用 Visual Studio Developer PowerShell 中的 `MSBuild.exe`。
-
-## 发布
-
-发布 x64 便携版：
-
-```powershell
-dotnet publish apps/windows/UCASSignIn.Windows/UCASSignIn.Windows.csproj -c Release -p:Platform=x64 -r win-x64 -o artifacts/windows/win-x64
-```
-
-以 x64 配置启动 MSIX 打包，生成包含 x64、ARM64 的安装包束：
-
-```powershell
-MSBuild.exe apps/windows/UCASSignIn.Windows.Package/UCASSignIn.Windows.Package.wapproj /restore /p:Configuration=Release /p:Platform=x64 /p:AppxBundle=Always /p:AppxBundlePlatforms="x64|arm64" /p:AppxPackageSigningEnabled=false
-```
-
-如需 ARM64 便携版，使用对应的平台、运行时与输出目录：
-
-```powershell
-dotnet publish apps/windows/UCASSignIn.Windows/UCASSignIn.Windows.csproj -c Release -p:Platform=ARM64 -r win-arm64 -o artifacts/windows/win-arm64
-```
-
-便携版应分发完整输出目录，不能只复制 EXE。打包结果位于 `artifacts/windows/msix/`。默认开发身份为 `UCASSignIn.Development`，未绑定商店，默认不签名；未签名包用于验证，不能直接安装。
-
-安装测试或正式发布时，在打包工程放置被 Git 忽略的 `Signing.local.props`，配置 `AppxPackageSigningEnabled`、证书路径或指纹，并使证书 Publisher 与清单一致。私钥、证书密码及正式商店身份不提交到仓库。
+运行输出目录的 `UCASSignIn.Windows.exe`。`--demo` 可直接进入无网络演示模式。
 
 ## 平台行为
 

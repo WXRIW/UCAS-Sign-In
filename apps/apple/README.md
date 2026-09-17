@@ -49,6 +49,8 @@ cp Config/Signing.local.xcconfig.example Config/Signing.local.xcconfig
 
 ## 构建与测试
 
+Apple 各应用与 Widget 的版本来自仓库根目录 `eng/version.json`，生成配置位于 `eng/generated/Version.xcconfig`。修改版本时使用根目录 `tools/Versioning`，不要直接编辑 Xcode target 的版本字段。
+
 在 Apple 项目目录（`apps/apple/`）验证无签名模拟器构建，并运行核心逻辑测试：
 
 ```sh

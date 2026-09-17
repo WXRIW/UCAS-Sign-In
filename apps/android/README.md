@@ -6,7 +6,7 @@ C# / .NET 10 for Android，原生 Material 3，无 MAUI、无 WebView。最低 A
 
 - `UCASSignIn.Android.slnx`：包含 Android 应用、共享核心与核心测试。
 - `UCASSignIn.Android/`：MainActivity、Fragment、ViewModel、Android 系统服务及资源。
-- 安装 .NET SDK 10.0.303、`android` 工作负载、Android SDK 36 和兼容 JDK；无需 Windows App SDK。
+- 安装 .NET SDK 10.0.100 或更新的 .NET 10 SDK、`android` 工作负载、Android SDK 36 和兼容 JDK；无需 Windows App SDK。
 
 ## 构建
 
@@ -26,23 +26,7 @@ dotnet build apps/android/UCASSignIn.Android/UCASSignIn.Android.csproj -c Debug
 dotnet build apps/android/UCASSignIn.Android/UCASSignIn.Android.csproj -c Release
 ```
 
-Debug 输出包含 ARM64 与 x86_64 的开发密钥签名 APK，既可安装到真机，也可用于模拟器。Release 默认包含 ARM 与 ARM64，生成 APK 和 AAB；本机构建产物使用开发签名时仅用于测试，正式分发必须使用自己的持久签名密钥。两种配置分别维护依赖锁文件，可在还原命令中加入 `--locked-mode -p:Configuration=Debug` 或 `Release` 验证。
-
-输出位于应用的 `bin/<配置>/net10.0-android/`，发布时复制到仓库根目录 `artifacts/android/`。需要正式签名时，在应用目录建立 Git 忽略的 `Signing.local.props`：
-
-```xml
-<Project>
-  <PropertyGroup>
-    <AndroidKeyStore>true</AndroidKeyStore>
-    <AndroidSigningKeyStore>本机密钥库绝对路径</AndroidSigningKeyStore>
-    <AndroidSigningKeyAlias>发布别名</AndroidSigningKeyAlias>
-    <AndroidSigningStorePass>env:UCAS_STORE_PASSWORD</AndroidSigningStorePass>
-    <AndroidSigningKeyPass>env:UCAS_KEY_PASSWORD</AndroidSigningKeyPass>
-  </PropertyGroup>
-</Project>
-```
-
-密钥与密码不提交。若目标打包工具不支持环境变量密码前缀，使用其支持的本地密码文件配置；不要把密码写入命令行历史。
+Debug 输出包含 ARM64 与 x86_64 的开发密钥签名 APK，既可安装到真机，也可用于模拟器。Debug 与 Release 分别维护依赖锁文件，可在还原命令中加入 `--locked-mode -p:Configuration=Debug` 或 `Release` 验证。普通构建输出位于应用的 `bin/<配置>/net10.0-android/`。
 
 ## 界面与系统能力
 
