@@ -26,7 +26,7 @@ struct CourseMetadataView: View {
     }
 }
 
-private struct CourseMetadataLabelStyle: LabelStyle {
+struct CourseMetadataLabelStyle: LabelStyle {
     func makeBody(configuration: Configuration) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 4) {
             configuration.icon

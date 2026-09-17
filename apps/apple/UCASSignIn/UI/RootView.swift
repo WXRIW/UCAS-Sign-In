@@ -407,6 +407,7 @@ struct FeaturedCourseCard: View {
             Text(course.name).font(.system(size: 27, weight: .semibold)).foregroundStyle(.white)
                 .padding(.top, 22).padding(.bottom, 12)
             Label(course.timeRange, systemImage: "clock")
+                .labelStyle(CourseMetadataLabelStyle())
                 .font(.system(size: 11)).foregroundStyle(.white.opacity(0.68))
             CourseMetadataView(course: course)
                 .font(.system(size: 11)).foregroundStyle(.white.opacity(0.68))
