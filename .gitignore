@@ -23,7 +23,8 @@ xcuserdata/
 *.dSYM.zip
 *.log
 
-# Local Apple helper scripts
+# Local helper scripts
+/scripts/
 /apps/apple/scripts/
 
 # Local platform development tests and tools
@@ -33,6 +34,7 @@ xcuserdata/
 /apps/windows/tools/
 
 # Local signing configuration and credentials
+.local/
 /apps/apple/Config/Signing.local.xcconfig
 *.mobileprovision
 *.provisionprofile
