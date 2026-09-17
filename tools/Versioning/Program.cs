@@ -176,7 +176,7 @@ static class VersioningTool
         const string token = "@WINDOWS_PACKAGE_VERSION@";
         if (template.Split(token).Length != 2)
             throw new InvalidOperationException("Package.appxmanifest.in must contain exactly one Windows package version token.");
-        return template.Replace(token, $"{release.Version}.{release.Build}");
+        return template.Replace(token, $"{release.Version}.0");
     }
 
     static string FindRepositoryRoot()
