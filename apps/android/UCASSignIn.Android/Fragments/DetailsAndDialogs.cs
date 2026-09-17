@@ -309,6 +309,40 @@ public sealed partial class MainPageFragment
                 Add(Card(Column(Across(Text(r.CourseName, 16, true), Text(r.Succeeded ? "✓" : "!", 18, color: Green)), Text(r.Message, 13, color: Secondary), Text(r.Date.ToOffset(CourseTime.ShanghaiOffset).ToString("M月d日 HH:mm:ss"), 11, color: Secondary))));
             return;
         }
+        if (Route == "about")
+        {
+            var mark = new ImageView(Ui);
+            mark.SetImageResource(Resource.Drawable.app_icon);
+            mark.SetScaleType(ImageView.ScaleType.CenterInside);
+            mark.LayoutParameters = new LinearLayout.LayoutParams(D(104), D(104));
+            var appName = Text("果壳签到", 28, true);
+            appName.Gravity = GravityFlags.Center;
+            var positioning = Text("为国科大轻新课堂打造的多平台原生客户端", 14, color: Secondary);
+            positioning.Gravity = GravityFlags.Center;
+            var hero = Column(mark, appName, positioning, LicenseBadge("版本 " + Information.DisplayVersion));
+            hero.Gravity = GravityFlags.CenterHorizontal;
+            Add(hero, 28);
+            Add(Card(Column(
+                IconLabel(Resource.Drawable.ic_check_circle, "功能概览", 17),
+                Text("支持课表查询、课程签到、动态二维码、课程提醒与多账户切换。", 14, color: Secondary))), 20);
+            Add(Card(Column(
+                IconLabel(Resource.Drawable.ic_document, "数据与隐私", 17),
+                Text("• 登录请求直接发送至学校 HTTPS 服务，不经过自建服务器", 14, color: Secondary),
+                Text("• 各账户的会话和可选密码由 Android Keystore 保护", 14, color: Secondary),
+                Text("• 课程缓存、签到记录与课堂偏好按账户保存在本机", 14, color: Secondary),
+                Text("• 移除账户时仅清除该账户的数据", 14, color: Secondary),
+                Text("• App 不申请定位权限", 14, color: Secondary))), 20);
+            var source = Tap(Across(
+                SettingLabel(Resource.Drawable.ic_code, "项目源码与致谢", "源代码、开源许可与贡献者"),
+                Icon(Resource.Drawable.ic_chevron_right, 11, Secondary)),
+                () => Navigate("source"), "项目源码与致谢");
+            source.SetPadding(0, D(8), 0, D(8));
+            Add(Card(source), 20);
+            var license = Text("开源许可 · AGPL-3.0", 11, color: Secondary);
+            license.Gravity = GravityFlags.Center;
+            Add(license, 0);
+            return;
+        }
         if (Route == "source")
         {
             Add(Text("项目源码", Information.SectionTitleSize, true));

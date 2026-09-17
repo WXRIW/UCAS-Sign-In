@@ -258,7 +258,7 @@ final class UCASSignInUITests: XCTestCase {
         let pages = [
             (entry: "profile.settings", title: "设置", content: "settings.scroll"),
             (entry: "profile.records", title: "演示签到记录", content: "records.content"),
-            (entry: "profile.openSource", title: "项目源码与致谢", content: "openSource.scroll"),
+            (entry: "profile.about", title: "关于", content: "about.scroll"),
             (entry: "profile.disclaimer", title: "免责声明", content: "disclaimer.scroll")
         ]
         for page in pages {
@@ -275,6 +275,13 @@ final class UCASSignInUITests: XCTestCase {
             capture(app, name: "14-\(page.title)-子页面")
             returnToParent(from: page.title, to: "账户", in: app)
         }
+
+        tapAfterScrolling(app.buttons["profile.about"], in: app)
+        tapAfterScrolling(app.buttons["about.openSource"], in: app)
+        XCTAssertTrue(app.navigationBars["项目源码与致谢"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.scrollViews["openSource.scroll"].exists)
+        returnToParent(from: "项目源码与致谢", to: "关于", in: app)
+        returnToParent(from: "关于", to: "账户", in: app)
     }
 
     @MainActor

@@ -18,7 +18,8 @@ public sealed partial class MainPageFragment
     bool scenePrivacy, backPreview;
     ITransitionSeekController? backSeek;
     bool AnimationsEnabled => !OperatingSystem.IsAndroidVersionAtLeast(26) || ValueAnimator.AreAnimatorsEnabled();
-    static int Depth(string? route) => route is null ? 0 : 1;
+    static int Depth(string? route) => route is null ? 0 : route == "source" ? 2 : 1;
+    static string? ParentRoute(string? route) => route == "source" ? "about" : null;
     string SceneKey(string? route) => Host.Vm.Page + ":" + (route ?? "root");
     public MaterialToolbar ActiveToolbar => activeScene!.Toolbar;
 
@@ -136,7 +137,7 @@ public sealed partial class MainPageFragment
         if (Route is null || activeScene is null || Host.DialogOpen || backPreview || !AnimationsEnabled) return;
         var current = activeScene;
         var route = Route;
-        string? parent = null;
+        var parent = ParentRoute(route);
         TransitionManager.EndTransitions(sceneHost!);
         qrCancellation?.Cancel();
         var preview = GetScene(parent);
@@ -204,6 +205,7 @@ public sealed partial class MainPageFragment
         "detail" => "课程签到",
         "settings" => "设置",
         "records" => Model.IsDemo ? "演示签到记录" : "本机签到记录",
+        "about" => "关于",
         "source" => "项目源码与致谢",
         "disclaimer" => "免责声明",
         _ => null

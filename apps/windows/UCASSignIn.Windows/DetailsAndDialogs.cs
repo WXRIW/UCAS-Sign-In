@@ -404,6 +404,48 @@ public sealed partial class MainWindow
                 Page.Children.Add(Card(Column(Across(Text(r.CourseName, 16, true), Text(r.Succeeded ? "✓" : "!", 18, color: Green)), Text(r.Message, 13, color: Secondary), Text(r.Date.ToOffset(CourseTime.ShanghaiOffset).ToString("M月d日 HH:mm:ss"), 11, color: Secondary))));
             return;
         }
+        if (route == "about")
+        {
+            var mark = new Image
+            {
+                Width = 96,
+                Height = 96,
+                Source = new BitmapImage(new Uri("ms-appx:///Assets/BrandIcon.png")),
+                HorizontalAlignment = HorizontalAlignment.Center
+            };
+            var name = Text("果壳签到", 28, true);
+            name.HorizontalAlignment = HorizontalAlignment.Center;
+            var slogan = Text("为国科大轻新课堂打造的多平台原生客户端", 14, color: Secondary);
+            slogan.HorizontalAlignment = HorizontalAlignment.Center;
+            slogan.TextAlignment = TextAlignment.Center;
+            var version = Text("版本 " + Information.DisplayVersion, 12, true, Green);
+            version.HorizontalAlignment = HorizontalAlignment.Center;
+            var hero = Column(mark, name, slogan, version);
+            hero.Spacing = 12;
+            Page.Children.Add(hero);
+            Page.Children.Add(Card(Column(
+                Leading(new FontIcon { Glyph = "\uE9D5", FontSize = 20, Foreground = Green }, Text("功能概览", 17, true)),
+                Text("支持课表查询、课程签到、动态二维码、课程提醒与多账户切换。", 14, color: Secondary))));
+            Page.Children.Add(Card(Column(
+                Leading(new FontIcon { Glyph = "\uE72E", FontSize = 20, Foreground = Green }, Text("数据与隐私", 17, true)),
+                Text("• 登录请求直接发送至学校 HTTPS 服务，不经过自建服务器", 14, color: Secondary),
+                Text("• 各账户的会话和可选密码由 Windows DPAPI 加密保存在本机", 14, color: Secondary),
+                Text("• 课程缓存、签到记录与课堂偏好按账户隔离", 14, color: Secondary),
+                Text("• 移除账户时仅清除该账户的数据", 14, color: Secondary),
+                Text("• App 不申请定位权限", 14, color: Secondary))));
+            var source = ActionCard(Across(
+                Leading(new FontIcon { Glyph = "\uE943", FontSize = 20, Foreground = Green },
+                    Column(Text("项目源码与致谢", 15, true), Text("源代码、开源许可与贡献者", 12, color: Secondary))),
+                new FontIcon { Glyph = "\uE76C", FontSize = 10, Foreground = Secondary }),
+                () => Navigate("source"));
+            source.MinHeight = 68;
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(source, "项目源码与致谢");
+            Page.Children.Add(source);
+            var license = Text("开源许可 · AGPL-3.0", 12, color: Secondary);
+            license.HorizontalAlignment = HorizontalAlignment.Center;
+            Page.Children.Add(license);
+            return;
+        }
         if (route == "source")
         {
             Page.Children.Add(Text("项目源码", Information.SectionTitleSize, true));

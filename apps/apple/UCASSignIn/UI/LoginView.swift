@@ -54,7 +54,7 @@ struct LoginView: View {
                     PrimaryButton(title: "登录并同步课程", loading: submitting, action: submit)
                         .disabled(username.trimmingCharacters(in: .whitespaces).isEmpty || password.isEmpty || submitting || !model.canChangeAccount)
                         .opacity(username.isEmpty || password.isEmpty ? 0.5 : 1)
-                    Label("此账户的登录会话会保存在系统钥匙串；勾选后也会保存密码，供登录过期时自动恢复。", systemImage: "lock.shield")
+                    Label("此账户的登录会话会保存在 Apple Keychain；勾选后也会保存密码，供登录过期时自动恢复。", systemImage: "lock.shield")
                         .font(.system(size: 11)).foregroundStyle(Palette.secondary).lineSpacing(4)
                     Button { model.enterDemo() } label: {
                         Text("先体验演示模式").font(.system(size: 13, weight: .medium)).frame(maxWidth: .infinity)

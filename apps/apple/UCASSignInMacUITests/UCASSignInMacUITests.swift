@@ -124,7 +124,7 @@ final class UCASSignInMacUITests: XCTestCase {
         let pages = [
             (entry: "profile.settings", content: "settings.scroll"),
             (entry: "profile.records", content: "records.content"),
-            (entry: "profile.openSource", content: "openSource.scroll"),
+            (entry: "profile.about", content: "about.scroll"),
             (entry: "profile.disclaimer", content: "disclaimer.scroll")
         ]
         for page in pages {
@@ -141,6 +141,12 @@ final class UCASSignInMacUITests: XCTestCase {
             capture(app, name: "Mac-\(page.entry)-子页面")
             returnToParent(content: "profile.scroll", in: app)
         }
+
+        clickAfterScrolling(app.buttons["profile.about"], in: app.scrollViews["profile.scroll"])
+        clickAfterScrolling(app.buttons["about.openSource"], in: app.scrollViews["about.scroll"])
+        XCTAssertTrue(app.scrollViews["openSource.scroll"].waitForExistence(timeout: 5))
+        returnToParent(content: "about.scroll", in: app)
+        returnToParent(content: "profile.scroll", in: app)
     }
 
     @MainActor

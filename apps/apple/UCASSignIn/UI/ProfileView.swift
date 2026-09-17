@@ -3,6 +3,7 @@ import SwiftUI
 enum ProfileDestination: Hashable {
     case settings
     case records
+    case about
     case openSource
     case disclaimer
 }
@@ -26,31 +27,25 @@ struct ProfileView: View {
                             .disabled(!model.canChangeAccount)
                             .accessibilityIdentifier("accounts.manage")
                         PreferenceDivider()
+                        Button { path.append(.records) } label: { PreferenceNavigationRow(title: "本机签到记录", symbol: "clock.arrow.circlepath") }.buttonStyle(.plain)
+                            .accessibilityIdentifier("profile.records")
+                    }.padding(.horizontal, PreferenceRowLayout.horizontalPadding).cardSurface()
+                    VStack(spacing: 0) {
                         Button { path.append(.settings) } label: {
                             PreferenceNavigationRow(title: "设置", symbol: "gearshape")
                         }.buttonStyle(.plain)
                             .accessibilityIdentifier("profile.settings")
                         PreferenceDivider()
-                        Button { path.append(.records) } label: { PreferenceNavigationRow(title: "本机签到记录", symbol: "clock.arrow.circlepath") }.buttonStyle(.plain)
-                            .accessibilityIdentifier("profile.records")
-                    }.padding(.horizontal, PreferenceRowLayout.horizontalPadding).cardSurface()
-                    VStack(spacing: 0) {
-                        Button { path.append(.openSource) } label: {
-                            PreferenceNavigationRow(title: "项目源码与致谢", symbol: "chevron.left.forwardslash.chevron.right")
+                        Button { path.append(.about) } label: {
+                            PreferenceNavigationRow(title: "关于", symbol: "info.circle")
                         }.buttonStyle(.plain)
-                            .accessibilityIdentifier("profile.openSource")
+                            .accessibilityIdentifier("profile.about")
                         PreferenceDivider()
                         Button { path.append(.disclaimer) } label: {
                             PreferenceNavigationRow(title: "免责声明", symbol: "doc.text")
                         }.buttonStyle(.plain)
                             .accessibilityIdentifier("profile.disclaimer")
                     }.padding(.horizontal, PreferenceRowLayout.horizontalPadding).cardSurface()
-                    VStack(alignment: .leading, spacing: 9) {
-                        Label("安心留在本机", systemImage: "lock.shield").font(PreferenceTypography.section).foregroundStyle(Palette.green)
-                        Text("各账户的会话和可选密码由系统钥匙串保存；课程缓存、签到记录与课堂偏好分别保留在此设备，移除账户时仅清除该账户的数据。App 不请求定位权限。")
-                            .font(PreferenceTypography.detail).lineSpacing(5).foregroundStyle(Palette.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }.padding(.horizontal, 4)
                     if model.isConnected {
                         Button(role: model.isDemo ? nil : .destructive) {
                             accountToRemove = model.activeAccountID
@@ -65,7 +60,7 @@ struct ProfileView: View {
                         }.buttonStyle(.plain).disabled(!model.canChangeAccount)
                             .accessibilityIdentifier("profile.logout")
                     }
-                    Text("果壳签到 · 1.0\n开源许可 · AGPL-3.0")
+                    Text("果壳签到 · \(UpdateCoordinator.currentVersion)")
                         .font(PreferenceTypography.footer).lineSpacing(5).foregroundStyle(Palette.secondary)
                         .multilineTextAlignment(.center).frame(maxWidth: .infinity).padding(.vertical, 8)
                 }.appPagePadding()
@@ -81,6 +76,8 @@ struct ProfileView: View {
                     SettingsView()
                 case .records:
                     recordsView
+                case .about:
+                    AboutView { path.append(.openSource) }
                 case .openSource:
                     OpenSourceView()
                 case .disclaimer:

@@ -1,5 +1,101 @@
 import SwiftUI
 
+struct AboutView: View {
+    let openSource: () -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 26) {
+                VStack(spacing: 15) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 28, style: .continuous)
+                            .fill(Color.white)
+                            .frame(width: 104, height: 104)
+                            .shadow(color: .black.opacity(0.08), radius: 16, y: 7)
+                        Image("BrandIcon")
+                            .renderingMode(.original)
+                            .resizable().scaledToFit()
+                            .frame(width: 72, height: 72)
+                    }
+                    VStack(spacing: 7) {
+                        Text("果壳签到")
+                            .font(.system(size: 28, weight: .bold, design: .rounded))
+                            .foregroundStyle(Palette.ink)
+                        Text("为国科大轻新课堂打造的多平台原生客户端")
+                            .font(PreferenceTypography.body)
+                            .foregroundStyle(Palette.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    Text("版本 \(UpdateCoordinator.currentVersion)")
+                        .font(PreferenceTypography.caption.weight(.semibold))
+                        .foregroundStyle(Palette.green)
+                        .padding(.horizontal, 13).padding(.vertical, 7)
+                        .background(Palette.pale, in: Capsule())
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 18)
+
+                VStack(alignment: .leading, spacing: 16) {
+                    Label("功能概览", systemImage: "checklist")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(Palette.ink)
+                    Text("支持课表查询、课程签到、动态二维码、课程提醒与多账户切换。")
+                        .font(PreferenceTypography.body).lineSpacing(5)
+                        .foregroundStyle(Palette.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(20).cardSurface()
+
+                VStack(alignment: .leading, spacing: 16) {
+                    Label("数据与隐私", systemImage: "lock.shield.fill")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(Palette.ink)
+                    VStack(alignment: .leading, spacing: 11) {
+                        privacyPoint("登录请求直接发送至学校 HTTPS 服务，不经过自建服务器")
+                        privacyPoint("各账户的会话和可选密码由 Apple Keychain 保存")
+                        privacyPoint("课程缓存、签到记录与课堂偏好按账户保存在本机")
+                        privacyPoint("移除账户时仅清除该账户的数据")
+                        privacyPoint("App 不申请定位权限")
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(20).cardSurface()
+
+                Button(action: openSource) {
+                    PreferenceNavigationRow(title: "项目源码与致谢", symbol: "chevron.left.forwardslash.chevron.right")
+                        .padding(.horizontal, PreferenceRowLayout.horizontalPadding)
+                        .cardSurface()
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("about.openSource")
+
+                Text("开源许可 · AGPL-3.0")
+                    .font(PreferenceTypography.footer)
+                    .foregroundStyle(Palette.secondary)
+            }
+            .appPagePadding()
+            .frame(maxWidth: 680).frame(maxWidth: .infinity)
+        }
+        .accessibilityIdentifier("about.scroll")
+        .background(Palette.background)
+        .navigationTitle("关于")
+        .appNavigationStyle(inline: true)
+    }
+
+    private func privacyPoint(_ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Circle()
+                .fill(Palette.green)
+                .frame(width: 5, height: 5)
+            Text(text)
+                .font(PreferenceTypography.body).lineSpacing(4)
+                .foregroundStyle(Palette.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
 struct OpenSourceView: View {
     var body: some View {
         ScrollView {

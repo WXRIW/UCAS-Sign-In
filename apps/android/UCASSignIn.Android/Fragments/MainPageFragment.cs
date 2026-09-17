@@ -482,16 +482,15 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
         var menuStart = body!.ChildCount;
         var menu = new LinearLayout(Ui) { Orientation = Orientation.Vertical };
         Menu(Resource.Drawable.ic_people, "切换与管理账户", () => { ManageAccounts(); return Task.CompletedTask; });
-        Menu(Resource.Drawable.ic_settings, "设置", () => Navigate("settings"));
         Menu(Resource.Drawable.ic_history, "本机签到记录", () => Navigate("records"));
         AddMenuCard();
         menu = new LinearLayout(Ui) { Orientation = Orientation.Vertical };
-        Menu(Resource.Drawable.ic_code, "项目源码与致谢", () => Navigate("source"));
+        Menu(Resource.Drawable.ic_settings, "设置", () => Navigate("settings"));
+        Menu(Resource.Drawable.ic_leaf, "关于", () => Navigate("about"));
         Menu(Resource.Drawable.ic_document, "免责声明", () => Navigate("disclaimer"));
         AddMenuCard();
 
         var menuEnd = body.ChildCount;
-        Add(Column(Text("安心留在本机", 13, true, Green), Text("各账户的会话和可选密码由 Android Keystore 保护；课程缓存、签到记录与课堂偏好分别保留在此设备，移除账户时仅清除该账户的数据。App 不请求定位权限。", 12, color: Secondary)), 16);
         if (Model.IsConnected)
         {
             var exitAccount = Button(Model.IsDemo ? "退出演示模式" : "退出并移除此账户", () => { ConfirmRemove(Model.IsDemo ? null : a); return Task.CompletedTask; });
@@ -500,7 +499,7 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
             exitAccount.Gravity = GravityFlags.Center;
             Add(exitAccount, 16);
         }
-        var footer = Text($"果壳签到 · {Information.DisplayVersion}\n开源许可 · AGPL-3.0", 10, color: Secondary);
+        var footer = Text($"果壳签到 · {Information.DisplayVersion}", 10, color: Secondary);
         footer.Gravity = GravityFlags.Center;
         Add(footer, 0);
         ArrangeColumns(i => i < menuStart || i >= menuEnd);
@@ -583,7 +582,7 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
     {
         if (Route is null)
             return false;
-        Route = null;
+        Route = Route == "source" ? "about" : null;
         CurrentDetail = null;
         Host.DetailCourseId = null;
         Host.DetailCourseDay = null;

@@ -142,6 +142,7 @@ public sealed partial class MainWindow
             "detail" => "课程签到",
             "settings" => "设置",
             "records" => Model.IsDemo ? "演示签到记录" : "本机签到记录",
+            "about" => "关于",
             "source" => "项目源码与致谢",
             "disclaimer" => "免责声明",
             _ => section == "today" ? "果壳签到" : section == "schedule" ? "课表" : "账户"
@@ -382,15 +383,13 @@ public sealed partial class MainWindow
         Page.Children.Add(accountHeader);
         var menu = new StackPanel { Spacing = 4 };
         Menu("切换与管理账户", "\uE716", ManageAccounts);
-        Menu("设置", "\uE713", () => Navigate("settings"));
         Menu("本机签到记录", "\uE81C", () => Navigate("records"));
         Page.Children.Add(Column(Text("账户与数据", 14, true), menu));
         menu = new StackPanel { Spacing = 4 };
-        Menu("项目源码与致谢", "\uE943", () => Navigate("source"));
+        Menu("设置", "\uE713", () => Navigate("settings"));
+        Menu("关于", "\uE946", () => Navigate("about"));
         Menu("免责声明", "\uE8A5", () => Navigate("disclaimer"));
         Page.Children.Add(Column(Text("关于", 14, true), menu));
-        Page.Children.Add(Leading(new FontIcon { Glyph = "\uE72E", FontSize = 16, Foreground = Secondary },
-            Text("会话和可选密码由 Windows DPAPI 加密保存在本机，课程缓存与签到记录按账户隔离。移除账户仅清除该账户的本机数据。", 12, color: Secondary)));
         if (Model.IsConnected)
         {
             var exitAccount = Button(Model.IsDemo ? "退出演示模式" : "退出并移除此账户", () => Model.IsDemo ? ConfirmExitDemo() : Remove(a!));
@@ -403,7 +402,7 @@ public sealed partial class MainWindow
                 Model.IsDemo ? Hover : Brush(dark ? "39272B" : "FCEDEC"), Model.IsDemo ? Pressed : Brush(dark ? "492D33" : "F8DDDB"));
             Page.Children.Add(exitAccount);
         }
-        var foot = Text($"果壳签到 {Information.DisplayVersion} · AGPL-3.0", 12, color: Secondary);
+        var foot = Text($"果壳签到 {Information.DisplayVersion}", 12, color: Secondary);
         foot.TextAlignment = TextAlignment.Center;
         Page.Children.Add(foot);
         void Menu(string title, string glyph, Func<Task> action)
@@ -479,7 +478,7 @@ public sealed partial class MainWindow
     }
     void GoBack(object sender, RoutedEventArgs e)
     {
-        route = null;
+        route = route == "source" ? "about" : null;
         detail = null;
         Render(NavigationMotion.Back);
     }
@@ -495,5 +494,5 @@ public sealed partial class MainWindow
         return Navigate("detail");
     }
     Task Records() => Navigate("records");
-    Task About() => Navigate("source");
+    Task About() => Navigate("about");
 }
