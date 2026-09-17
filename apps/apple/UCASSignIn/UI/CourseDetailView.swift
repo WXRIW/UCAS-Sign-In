@@ -88,11 +88,11 @@ struct CourseDetailView: View {
     }
     private func qrContent(at date: Date) -> some View {
         let remaining = max(0, snapshot?.expiresAt.timeIntervalSince(date) ?? 0)
-        let showsQR = canRefreshQR && qrImage != nil && (model.isDemo || remaining > 0)
+        let showsQR = canRefreshQR && qrImage != nil
         let showsCountdown = showsQR && !model.isDemo
 
         return VStack(spacing: 18) {
-            // Keep the same canvas while replacing an expired QR with its loading state.
+            // Keep the current image visible until the refresh supplies its replacement.
             Color.clear.frame(width: 250, height: 250)
                 .overlay {
                     if showsQR, let qrImage {
@@ -110,7 +110,7 @@ struct CourseDetailView: View {
             VStack(spacing: 9) {
                 ProgressView(value: min(1, remaining / max(0.1, snapshot?.validityDuration ?? 1)))
                     .progressViewStyle(.linear).tint(Palette.green)
-                Text("学校时间已同步 · \(Int(ceil(remaining))) 秒后刷新")
+                Text(remaining > 0 ? "学校时间已同步 · \(Int(ceil(remaining))) 秒后刷新" : "正在刷新…")
                     .font(.system(size: 11)).monospacedDigit().foregroundStyle(Palette.secondary)
             }
             .frame(width: 220)
