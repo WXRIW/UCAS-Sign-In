@@ -8,7 +8,7 @@ struct MacAppCommands: Commands {
 
     var body: some Commands {
         CommandGroup(replacing: .appSettings) {
-            Button("账户与偏好设置…") { navigate(to: 2) }
+            Button("设置…") { navigate(to: 2); model.showSettings = true }
                 .keyboardShortcut(",")
                 .disabled(model.showLogin)
         }

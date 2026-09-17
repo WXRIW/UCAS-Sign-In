@@ -65,7 +65,7 @@ struct AccountMenu: View {
     private func menuTitle(_ account: StoredAccount) -> String {
         let name = AccountPrivacy.name(account.session.name, hidden: accountDetailsHidden)
         let number = AccountPrivacy.studentNo(account.id, hidden: accountDetailsHidden)
-        return "\(name) · \(number)\(account.requiresLogin ? " · 需重新登录" : "")"
+        return "\(name) · \(number)\(account.requiresLogin ? " · 需要重新登录" : "")"
     }
 }
 

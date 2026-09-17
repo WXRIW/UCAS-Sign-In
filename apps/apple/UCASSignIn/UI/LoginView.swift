@@ -26,7 +26,7 @@ struct LoginView: View {
                     }
                     VStack(alignment: .leading, spacing: 17) {
                         VStack(alignment: .leading, spacing: 9) {
-                            Text("学校账号").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.ink)
+                            Text("账户").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.ink)
                             TextField("SEP 邮箱 / 轻新课堂学号", text: $username)
                                 .textContentType(.username)
                                 .textFieldStyle(.plain)

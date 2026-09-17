@@ -4,17 +4,13 @@ struct OpenSourceView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                Text("项目源码")
-                    .font(.system(size: 25, weight: .bold, design: .serif)).foregroundStyle(Palette.ink)
+                sectionTitle("项目源码")
                 sourceRepositoryCard
-                Text("致谢")
-                    .font(.system(size: 20, weight: .semibold)).foregroundStyle(Palette.ink)
+                sectionTitle("致谢")
                 Text("轻新课堂接口实现参考了以下项目，感谢原作者及贡献者的开源分享。")
                     .font(.system(size: 14)).lineSpacing(5).foregroundStyle(Palette.secondary)
-                projectCard(name: "UCAS-Course-Sign-in", author: "lccipher",
-                            description: "课程查询、签到与二维码生成的接口实现。")
-                projectCard(name: "UCAS-Sign-in", author: "zhan-nine",
-                            description: "Android 客户端、签到流程与课程小组件的实现参考。")
+                projectCard(name: "UCAS-Course-Sign-in", author: "lccipher")
+                projectCard(name: "UCAS-Sign-in", author: "zhan-nine")
                 Text("两个参考项目均采用 GNU Affero General Public License v3.0（AGPL-3.0）。原作者及贡献者保留其相应版权。果壳签到沿用 AGPL-3.0 开源许可。")
                     .font(.system(size: 12)).lineSpacing(5).foregroundStyle(Palette.secondary)
             }.appPagePadding()
@@ -26,30 +22,15 @@ struct OpenSourceView: View {
     }
 
     private var sourceRepositoryCard: some View {
-        Link(destination: URL(string: "https://github.com/WXRIW/UCAS-Sign-In")!) {
-            VStack(alignment: .leading, spacing: 16) {
-                HStack(alignment: .top, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("UCAS-Sign-In")
-                            .font(.system(size: 17, weight: .semibold)).foregroundStyle(Palette.ink)
-                        Text("WXRIW")
-                            .font(.system(size: 12)).foregroundStyle(Palette.secondary)
-                    }
-                    Spacer(minLength: 0)
-                    Image(systemName: "arrow.up.right").foregroundStyle(Palette.green)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-                Text("查看源码与使用说明")
-                    .font(.system(size: 12)).lineSpacing(4).foregroundStyle(Palette.secondary)
-            }
-            .padding(20).cardSurface()
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("opensource.repository")
-        .accessibilityHint("在浏览器中打开 GitHub 源码仓库")
+        projectCard(name: "UCAS-Sign-In", author: "WXRIW",
+                    repositoryIdentifier: "opensource.repository")
     }
 
-    private func projectCard(name: String, author: String, description: String) -> some View {
+    private func sectionTitle(_ title: String) -> some View {
+        Text(title).font(.system(size: 22, weight: .semibold)).foregroundStyle(Palette.ink)
+    }
+
+    private func projectCard(name: String, author: String, repositoryIdentifier: String = "") -> some View {
         let repository = "https://github.com/\(author)/\(name)"
         return VStack(alignment: .leading, spacing: 16) {
             Link(destination: URL(string: repository)!) {
@@ -62,14 +43,16 @@ struct OpenSourceView: View {
                     Image(systemName: "arrow.up.right").foregroundStyle(Palette.green)
                 }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
             }
-            Text(description).font(.system(size: 12)).lineSpacing(4).foregroundStyle(Palette.secondary)
+            .buttonStyle(.plain)
+            .accessibilityIdentifier(repositoryIdentifier)
+            .accessibilityHint("在浏览器中打开 GitHub 源码仓库")
             Divider().overlay(Palette.line)
             HStack {
                 Text("AGPL-3.0").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.green)
                     .padding(.horizontal, 10).padding(.vertical, 6)
                     .background(Palette.pale, in: Capsule())
                 Spacer()
-                Link("查看协议 ↗", destination: URL(string: repository + "/blob/main/LICENSE")!)
+                Link("查看协议", destination: URL(string: repository + "/blob/main/LICENSE")!)
                     .font(.system(size: 12, weight: .medium)).foregroundStyle(Palette.green)
                     .accessibilityLabel("查看 \(name) 的 AGPL-3.0 协议")
             }

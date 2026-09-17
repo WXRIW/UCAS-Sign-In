@@ -121,15 +121,15 @@ final class UCASSignInUITests: XCTestCase {
         selectTab("今日", in: app)
         XCTAssertTrue(app.staticTexts["一堂课，也不匆忙。"].waitForExistence(timeout: 5))
         capture(app, name: "06-欢迎页")
-        tapAfterScrolling(app.buttons["连接学校账号"], in: app)
+        tapAfterScrolling(app.buttons["连接账户"], in: app)
 
         XCTAssertTrue(app.staticTexts["连接你的课堂。"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.textFields["SEP 邮箱 / 轻新课堂学号"].exists)
         XCTAssertTrue(app.secureTextFields["对应账号的密码"].exists)
         XCTAssertTrue(app.buttons["取消"].isHittable)
-        capture(app, name: "07-连接学校账号")
+        capture(app, name: "07-连接账户")
         app.buttons["取消"].tap()
-        XCTAssertTrue(app.buttons["连接学校账号"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["连接账户"].waitForExistence(timeout: 5))
     }
 
     @MainActor
@@ -256,6 +256,7 @@ final class UCASSignInUITests: XCTestCase {
         let app = launchDemo()
         selectTab("账户", in: app)
         let pages = [
+            (entry: "profile.settings", title: "设置", content: "settings.scroll"),
             (entry: "profile.records", title: "演示签到记录", content: "records.content"),
             (entry: "profile.openSource", title: "项目源码与致谢", content: "openSource.scroll"),
             (entry: "profile.disclaimer", title: "免责声明", content: "disclaimer.scroll")
@@ -492,6 +493,33 @@ final class UCASSignInUITests: XCTestCase {
         tapAfterScrolling(relaunched.buttons["accounts.manage"], in: relaunched)
         XCTAssertTrue(relaunched.buttons["accounts.row.2026000002"].waitForExistence(timeout: 5))
         XCTAssertFalse(relaunched.buttons["accounts.row.2026000001"].exists)
+    }
+
+    @MainActor
+    func testSettingsThemePersistsWithoutLeavingPage() {
+        let app = launchAccounts()
+        selectTab("账户", in: app)
+        XCTAssertFalse(app.switches["settings.reminders"].exists)
+        tapAfterScrolling(app.buttons["profile.settings"], in: app)
+        let appearance = app.segmentedControls["settings.appearance"]
+        XCTAssertTrue(appearance.waitForExistence(timeout: 5))
+        appearance.buttons["深色"].tap()
+        XCTAssertTrue(appearance.buttons["深色"].isSelected)
+        XCTAssertTrue(app.navigationBars["设置"].exists)
+        XCTAssertTrue(app.switches["settings.reminders"].exists)
+        XCTAssertTrue(app.switches["settings.autoSign"].exists)
+        capture(app, name: "设置-深色")
+        app.terminate()
+        let relaunched = launchAccounts(reset: false)
+        selectTab("账户", in: relaunched)
+        tapAfterScrolling(relaunched.buttons["profile.settings"], in: relaunched)
+        let restored = relaunched.segmentedControls["settings.appearance"]
+        XCTAssertTrue(restored.waitForExistence(timeout: 5))
+        XCTAssertTrue(restored.buttons["深色"].isSelected)
+        restored.buttons["浅色"].tap()
+        XCTAssertTrue(restored.buttons["浅色"].isSelected)
+        restored.buttons["跟随系统"].tap()
+        returnToParent(from: "设置", to: "账户", in: relaunched)
     }
 
     @MainActor

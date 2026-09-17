@@ -3,6 +3,7 @@ import SwiftUI
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.scenePhase) private var scenePhase
+    @AppStorage("appearanceMode") private var appearance = AppAppearance.system
     @Binding var selection: Int
     @State private var refreshTodayOnSelection = false
     @State private var todayPath: [Course] = []
@@ -27,11 +28,12 @@ struct RootView: View {
             resetNavigation()
             model.showAccountManagement = false
         }
+        .onChange(of: model.showSettings) { _ in openRequestedSettings() }
         .onChange(of: model.showAccountManagement) { presented in
             if presented { deferLoginPresentation = true }
         }
         .onChange(of: model.loginRequest?.id) { _ in synchronizeLoginPresentation() }
-        .onAppear { synchronizeLoginPresentation() }
+        .onAppear { synchronizeLoginPresentation(); openRequestedSettings() }
         .sheet(item: loginPresentation, onDismiss: finishLoginPresentation) { LoginView(request: $0) }
         .sheet(isPresented: accountManagementPresentation, onDismiss: finishAccountManagement) {
             AccountManagementView { accountID in
@@ -42,6 +44,7 @@ struct RootView: View {
         .alert("温馨提示", isPresented: Binding(get: { model.errorMessage != nil && model.loginRequest == nil }, set: { if !$0 { model.errorMessage = nil } })) {
             Button("知道了", role: .cancel) { model.errorMessage = nil }
         } message: { Text(model.errorMessage ?? "") }
+        .preferredColorScheme(appearance.colorScheme)
         .onOpenURL { url in
             guard url.scheme == "ucas-signin" else { return }
             todayPath.removeAll()
@@ -123,6 +126,13 @@ struct RootView: View {
         todayPath.removeAll()
         schedulePath.removeAll()
         profilePath.removeAll()
+    }
+
+    private func openRequestedSettings() {
+        guard model.showSettings else { return }
+        selection = 2
+        profilePath = [.settings]
+        model.showSettings = false
     }
 
     private var loginPresentation: Binding<LoginRequest?> {
@@ -347,9 +357,9 @@ struct TodayView: View {
         VStack(alignment: .leading, spacing: 22) {
             Image(systemName: "book.closed").font(.system(size: 40, weight: .ultraLight)).foregroundStyle(Palette.green)
             Text("一堂课，也不匆忙。").font(.system(size: 25, weight: .bold, design: .serif)).foregroundStyle(Palette.ink)
-            Text("连接学校账号，查看当天课程、完成签到，\n让每一次到课都井井有条。")
+            Text("连接账户，查看当天课程、完成签到，\n让每一次到课都井井有条。")
                 .font(.system(size: 14)).lineSpacing(7).foregroundStyle(Palette.secondary)
-            PrimaryButton(title: "连接学校账号") { model.presentLogin() }.disabled(!model.canChangeAccount)
+            PrimaryButton(title: "连接账户") { model.presentLogin() }.disabled(!model.canChangeAccount)
             Button("先体验一下 →") { model.enterDemo() }
                 .font(.system(size: 13, weight: .medium)).foregroundStyle(Palette.green).frame(maxWidth: .infinity)
                 .disabled(!model.canChangeAccount)

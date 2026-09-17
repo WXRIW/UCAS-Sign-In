@@ -122,6 +122,7 @@ final class UCASSignInMacUITests: XCTestCase {
         let app = launchDemo()
         selectSidebar("profile", in: app)
         let pages = [
+            (entry: "profile.settings", content: "settings.scroll"),
             (entry: "profile.records", content: "records.content"),
             (entry: "profile.openSource", content: "openSource.scroll"),
             (entry: "profile.disclaimer", content: "disclaimer.scroll")
@@ -135,7 +136,7 @@ final class UCASSignInMacUITests: XCTestCase {
             assertSidebarAvailable(in: app)
             app.typeKey("1", modifierFlags: .command)
             XCTAssertTrue(app.scrollViews["today.scroll"].waitForExistence(timeout: 5))
-            app.typeKey(",", modifierFlags: .command)
+            app.typeKey("3", modifierFlags: .command)
             XCTAssertTrue(content.waitForExistence(timeout: 5))
             capture(app, name: "Mac-\(page.entry)-子页面")
             returnToParent(content: "profile.scroll", in: app)
@@ -145,7 +146,7 @@ final class UCASSignInMacUITests: XCTestCase {
     @MainActor
     func testAccountPrivacyAndLoginSheetCancellation() {
         let app = launchDemo()
-        app.typeKey(",", modifierFlags: .command)
+        app.typeKey("3", modifierFlags: .command)
         let toggle = app.buttons["profile.privacyToggle"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 5))
         if toggle.label == "显示账户信息" { toggle.click() }
@@ -362,6 +363,30 @@ final class UCASSignInMacUITests: XCTestCase {
         clickAfterScrolling(relaunched.buttons["accounts.manage"], in: relaunched.scrollViews["profile.scroll"])
         XCTAssertTrue(relaunched.buttons["accounts.row.2026000002"].waitForExistence(timeout: 5))
         XCTAssertFalse(relaunched.buttons["accounts.row.2026000001"].exists)
+    }
+
+    @MainActor
+    func testSettingsShortcutAndThemePersistence() {
+        let app = launchAccounts()
+        app.typeKey(",", modifierFlags: .command)
+        XCTAssertTrue(app.scrollViews["settings.scroll"].waitForExistence(timeout: 5))
+        let appearance = app.segmentedControls["settings.appearance"]
+        XCTAssertTrue(appearance.exists)
+        let dark = appearance.buttons["深色"]
+        dark.click()
+        XCTAssertTrue(dark.isSelected)
+        XCTAssertTrue(app.scrollViews["settings.scroll"].exists)
+        capture(app, name: "Mac-设置-深色")
+        app.terminate()
+        let relaunched = launchAccounts(reset: false)
+        relaunched.typeKey(",", modifierFlags: .command)
+        let restored = relaunched.segmentedControls["settings.appearance"]
+        XCTAssertTrue(restored.waitForExistence(timeout: 5))
+        XCTAssertTrue(restored.buttons["深色"].isSelected)
+        restored.buttons["浅色"].click()
+        XCTAssertTrue(restored.buttons["浅色"].isSelected)
+        restored.buttons["跟随系统"].click()
+        returnToParent(content: "profile.scroll", in: relaunched)
     }
 
     @MainActor

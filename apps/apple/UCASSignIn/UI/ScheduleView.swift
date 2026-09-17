@@ -96,7 +96,7 @@ struct ScheduleView: View {
             if model.isCached { CachedCoursesBanner(date: model.selectedDate) }
             if !model.isConnected {
                 CompatibleContentUnavailableView("连接你的课堂", systemImage: "calendar", description: "登录后即可查询学校课表。") {
-                    Button("连接学校账号") { model.presentLogin() }.buttonStyle(.borderedProminent).disabled(!model.canChangeAccount)
+                    Button("连接账户") { model.presentLogin() }.buttonStyle(.borderedProminent).disabled(!model.canChangeAccount)
                 }
             } else if model.isRefreshing(on: model.selectedDate) && model.selectedCourses.isEmpty {
                 ProgressView("正在同步课程…").frame(maxWidth: .infinity).padding(40)

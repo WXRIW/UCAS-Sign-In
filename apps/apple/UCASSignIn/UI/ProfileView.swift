@@ -1,11 +1,7 @@
 import SwiftUI
-#if os(macOS)
-import AppKit
-#else
-import UIKit
-#endif
 
 enum ProfileDestination: Hashable {
+    case settings
     case records
     case openSource
     case disclaimer
@@ -18,24 +14,11 @@ struct ProfileView: View {
     @State private var showLogout = false
     @State private var accountToRemove: String?
     @State private var logoutWasDemo = false
-    @State private var showNotificationSettingsHelp = false
     var body: some View {
         NavigationStack(path: $path) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 25) {
                     accountCard
-                    VStack(alignment: .leading, spacing: 20) {
-                        SectionHeading(title: "课堂偏好")
-                        Toggle(isOn: Binding(get: { model.remindersEnabled }, set: { enabled in Task { await model.setReminders(enabled) } })) {
-                            settingsLabel("课程提醒", subtitle: "已同步课程将在开课前 10 分钟提醒", symbol: "bell")
-                        }.toggleStyle(.switch)
-                        Divider().overlay(Palette.line)
-                        Toggle(isOn: Binding(get: { model.autoSignEnabled }, set: { model.setAutoSign($0) })) {
-                            settingsLabel("前台自动签到", subtitle: autoSignSubtitle, symbol: "checkmark.circle")
-                        }.toggleStyle(.switch)
-                        Text(autoSignExplanation)
-                            .font(.system(size: 11)).lineSpacing(4).foregroundStyle(Palette.secondary)
-                    }.padding(21).cardSurface().disabled(!model.isConnected || !model.canChangeAccount)
                     VStack(spacing: 0) {
                         Button { model.showAccountManagement = true } label: {
                             menuRow("切换与管理账户", symbol: "person.2")
@@ -43,9 +26,15 @@ struct ProfileView: View {
                             .disabled(!model.canChangeAccount)
                             .accessibilityIdentifier("accounts.manage")
                         Divider().padding(.leading, 48)
+                        Button { path.append(.settings) } label: {
+                            menuRow("设置", symbol: "gearshape")
+                        }.buttonStyle(.plain)
+                            .accessibilityIdentifier("profile.settings")
+                        Divider().padding(.leading, 48)
                         Button { path.append(.records) } label: { menuRow("本机签到记录", symbol: "clock.arrow.circlepath") }.buttonStyle(.plain)
                             .accessibilityIdentifier("profile.records")
-                        Divider().padding(.leading, 48)
+                    }.padding(.horizontal, 18).cardSurface()
+                    VStack(spacing: 0) {
                         Button { path.append(.openSource) } label: {
                             menuRow("项目源码与致谢", symbol: "chevron.left.forwardslash.chevron.right")
                         }.buttonStyle(.plain)
@@ -55,8 +44,6 @@ struct ProfileView: View {
                             menuRow("免责声明", symbol: "doc.text")
                         }.buttonStyle(.plain)
                             .accessibilityIdentifier("profile.disclaimer")
-                        Divider().padding(.leading, 48)
-                        notificationSettingsButton
                     }.padding(.horizontal, 18).cardSurface()
                     VStack(alignment: .leading, spacing: 9) {
                         Label("安心留在本机", systemImage: "lock.shield").font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.green)
@@ -89,6 +76,8 @@ struct ProfileView: View {
             .appNavigationStyle()
             .navigationDestination(for: ProfileDestination.self) { destination in
                 switch destination {
+                case .settings:
+                    SettingsView()
                 case .records:
                     recordsView
                 case .openSource:
@@ -98,14 +87,6 @@ struct ProfileView: View {
                 }
             }
         }
-        #if os(macOS)
-        .alert("系统通知设置", isPresented: $showNotificationSettingsHelp) {
-            Button("打开系统设置") { openSystemSettings() }
-            Button("取消", role: .cancel) { }
-        } message: {
-            Text("在“系统设置 → 通知”中找到“果壳签到”，即可调整通知、声音与横幅。若列表中尚未出现，请先开启本页的“课程提醒”。")
-        }
-        #endif
         .confirmationDialog(logoutWasDemo ? "退出演示模式？" : "退出并移除此账户？", isPresented: $showLogout, titleVisibility: .visible) {
             Button(logoutWasDemo ? "退出" : "退出并移除此账户", role: logoutWasDemo ? nil : .destructive) {
                 if logoutWasDemo { model.logout() }
@@ -122,42 +103,6 @@ struct ProfileView: View {
         }
     }
     private var canConnectAccount: Bool { model.isDemo || !model.isConnected }
-
-    private var autoSignSubtitle: String {
-        #if os(macOS)
-        "窗口活跃时，进入签到时段后尝试一次"
-        #else
-        "App 打开时，进入签到时段后尝试一次"
-        #endif
-    }
-
-    private var autoSignExplanation: String {
-        #if os(macOS)
-        "请保持果壳签到窗口处于活跃状态。切换到其他 App、关闭窗口或 Mac 睡眠时不会定时签到，签到结果以学校返回状态为准。"
-        #else
-        "iOS 不保证后台定时运行。请保持 App 在前台，并以学校返回的签到状态为准。"
-        #endif
-    }
-
-    @ViewBuilder
-    private var notificationSettingsButton: some View {
-        #if os(macOS)
-        Button { showNotificationSettingsHelp = true } label: {
-            menuRow("系统通知设置", symbol: "gearshape")
-        }.buttonStyle(.plain)
-        #else
-        Link(destination: URL(string: UIApplication.openSettingsURLString)!) {
-            menuRow("系统通知设置", symbol: "gearshape")
-        }
-        #endif
-    }
-
-    #if os(macOS)
-    private func openSystemSettings() {
-        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.systempreferences") else { return }
-        NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
-    }
-    #endif
 
     private var accountDisplayName: String {
         guard accountDetailsHidden, model.isConnected else { return model.accountName }
@@ -191,7 +136,7 @@ struct ProfileView: View {
                 .buttonStyle(.plain)
                 .disabled(!model.canChangeAccount)
                 .accessibilityIdentifier("profile.connectAccount")
-                .accessibilityHint("打开学校账号登录")
+                .accessibilityHint("打开账户登录")
         } else {
             accountCardContent
         }
@@ -210,7 +155,7 @@ struct ProfileView: View {
                         .accessibilityLabel(accountDetailsHidden ? "学号已隐藏" : "学号 \(studentNo)")
                 }
                 if canConnectAccount {
-                    Text(model.isDemo ? "演示模式 · 点击连接学校账号" : "点击登录，连接学校账号")
+                    Text(model.isDemo ? "演示模式 · 点击连接账户" : "点击登录，连接账户")
                         .font(.system(size: 11)).foregroundStyle(Palette.green)
                         .fixedSize(horizontal: false, vertical: true)
                 } else if let session = model.session, session.name == nil {
@@ -236,15 +181,6 @@ struct ProfileView: View {
         .contentShape(RoundedRectangle(cornerRadius: 22))
     }
 
-    private func settingsLabel(_ title: String, subtitle: String, symbol: String) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: symbol).font(.system(size: 18)).foregroundStyle(Palette.green).frame(width: 22)
-            VStack(alignment: .leading, spacing: 6) {
-                Text(title).font(.system(size: 14, weight: .medium)).foregroundStyle(Palette.ink)
-                Text(subtitle).font(.system(size: 10)).foregroundStyle(Palette.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-        }.frame(maxWidth: .infinity, alignment: .leading)
-    }
     private func menuRow(_ title: String, symbol: String) -> some View {
         HStack(spacing: 13) {
             Image(systemName: symbol).frame(width: 22).foregroundStyle(Palette.green)

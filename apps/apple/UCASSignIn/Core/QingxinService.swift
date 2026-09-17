@@ -253,7 +253,7 @@ enum ResponseParser {
     }
 
     static func session(_ json: [String: Any]) throws -> SchoolSession {
-        guard scalar(json["STATUS"]) == "0" else { throw APIError(code: "LOGIN_REJECTED", message: "学校账号验证失败，请检查学号或 SEP 邮箱及密码") }
+        guard scalar(json["STATUS"]) == "0" else { throw APIError(code: "LOGIN_REJECTED", message: "账户验证失败，请检查学号或 SEP 邮箱及密码") }
         guard let result = json["result"] as? [String: Any] else { throw APIError(code: "LOGIN_BAD_RESPONSE", message: "学校登录返回不完整") }
         let id = scalar(result["id"]), sessionId = scalar(result["sessionId"]), studentNo = scalar(result["studentNo"])
         guard !id.isEmpty, !sessionId.isEmpty, !studentNo.isEmpty else { throw APIError(code: "LOGIN_BAD_RESPONSE", message: "学校登录未返回完整身份，请重试") }

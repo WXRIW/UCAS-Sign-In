@@ -20,6 +20,7 @@ final class AppModel: ObservableObject {
     @Published var signingID: String?
     @Published var loginRequest: LoginRequest?
     @Published var showAccountManagement = false
+    @Published var showSettings = false
     @Published private(set) var accounts: [StoredAccount] = []
     @Published private(set) var activeAccountID: String?
     @Published private(set) var accountGeneration = UUID()
@@ -391,7 +392,7 @@ final class AppModel: ObservableObject {
                 errorMessage = "无法保存登录状态：\(error.localizedDescription)"
             }
         }
-        notice = "登录已过期，请重新登录学校账号。"
+        notice = "登录已过期，请重新登录账户。"
         for day in courseFreshness.keys { courseNotices[day] = notice }
     }
 
