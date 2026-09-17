@@ -539,7 +539,22 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
         auto.CheckedChange += async (_, _) => await Host.Run(() => Model.SetPreferencesAsync(auto.Checked, remind.Checked));
         Add(Card(Column(Text("课堂偏好", 20, true), Across(SettingLabel(Resource.Drawable.ic_bell, "课程提醒", "已同步课程将在开课前 10 分钟提醒"), remind), Rule(), Across(SettingLabel(Resource.Drawable.ic_check_circle, "前台自动签到", "App 打开时，进入签到时段后尝试一次"), auto), Text("请保持 App 在前台，并以学校返回的签到状态为准。普通提醒可能受系统省电策略影响。", 11, color: Secondary))));
         Add(Card(Column(Text("通知", 20, true), Button("系统通知设置", OpenNotificationSettings))));
-        ArrangeColumns(i => i != 1);
+        var automaticUpdates = new MaterialSwitch(Ui)
+        {
+            Checked = Host.Vm.AutoCheckUpdates,
+            ContentDescription = "自动检查更新"
+        };
+        automaticUpdates.CheckedChange += (_, _) => Host.Vm.AutoCheckUpdates = automaticUpdates.Checked;
+        var manualUpdate = Tap(Across(
+            SettingLabel(Resource.Drawable.ic_arrow_up_right, "检查更新", "当前版本 " + Information.DisplayVersion),
+            Icon(Resource.Drawable.ic_chevron_right, 11, Secondary)),
+            () => CheckForUpdates(true), "检查更新");
+        manualUpdate.SetPadding(0, D(12), 0, D(12));
+        Add(Card(Column(Text("更新", 20, true),
+            Across(SettingLabel(Resource.Drawable.ic_notification, "自动检查更新", "每天最多检查一次，有新版本时提醒"), automaticUpdates),
+            Rule(), manualUpdate,
+            Text("从 GitHub 检查最新的正式版本。", 11, color: Secondary))));
+        ArrangeColumns(i => i != 1 && i != 3);
     }
     Task OpenNotificationSettings()
     {

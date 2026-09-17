@@ -26,7 +26,9 @@ enum AppAppearance: String, CaseIterable, Identifiable {
 
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var updates: UpdateCoordinator
     @AppStorage("appearanceMode") private var appearance = AppAppearance.system
+    @AppStorage(UpdateCoordinator.automaticChecksKey) private var automaticUpdateChecks = true
     @State private var showNotificationSettingsHelp = false
 
     var body: some View {
@@ -74,6 +76,19 @@ struct SettingsView: View {
                 }
                 settingsSection("通知", footer: "通知权限、声音与横幅可在系统设置中调整。") {
                     notificationSettingsButton
+                }
+                settingsSection("更新", footer: "从 GitHub 检查最新的正式版本。") {
+                    VStack(spacing: 0) {
+                        Toggle(isOn: $automaticUpdateChecks) {
+                            settingsLabel("自动检查更新", subtitle: "每天最多检查一次，有新版本时提醒", symbol: "arrow.triangle.2.circlepath")
+                        }
+                        .toggleStyle(.switch)
+                        .accessibilityIdentifier("settings.automaticUpdateChecks")
+                        .padding(.vertical, 18)
+                        PreferenceDivider()
+                        updateSettingsButton
+                    }
+                    .tint(Palette.green)
                 }
             }.appPagePadding()
                 .frame(maxWidth: 680).frame(maxWidth: .infinity)
@@ -138,6 +153,28 @@ struct SettingsView: View {
             PreferenceNavigationRow(title: "系统通知设置", symbol: "gearshape")
         }.buttonStyle(.plain)
         #endif
+    }
+
+    private var updateSettingsButton: some View {
+        Button { Task { await updates.checkManually() } } label: {
+            HStack(spacing: PreferenceRowLayout.spacing) {
+                Image(systemName: "arrow.down.circle")
+                    .font(.system(size: 17)).foregroundStyle(Palette.green)
+                    .frame(width: PreferenceRowLayout.iconWidth)
+                    .accessibilityHidden(true)
+                Text("检查更新").font(PreferenceTypography.body).foregroundStyle(Palette.ink)
+                Spacer(minLength: 12)
+                if updates.isChecking {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Text("当前 \(UpdateCoordinator.currentVersion)")
+                        .font(PreferenceTypography.detail).foregroundStyle(Palette.secondary)
+                }
+            }.padding(.vertical, 20).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(updates.isChecking)
+        .accessibilityIdentifier("settings.checkUpdates")
     }
 
     #if os(macOS)

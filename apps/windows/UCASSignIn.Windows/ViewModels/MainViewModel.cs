@@ -14,6 +14,7 @@ public sealed class MainViewModel
         get; set;
     }
     public string Theme { get; set; } = "system";
+    public bool AutoCheckUpdates { get; set; } = true;
     public MainViewModel()
     {
         Root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "UCASSignIn");
@@ -23,8 +24,9 @@ public sealed class MainViewModel
         var prefs = AtomicFile.ReadJson<Appearance>(Path.Combine(Root, "appearance.json"));
         HideIdentity = prefs?.HideIdentity ?? false;
         Theme = prefs?.Theme ?? "system";
+        AutoCheckUpdates = prefs?.AutoCheckUpdates ?? true;
     }
     public string Identity(StoredAccount a) => HideIdentity ? "同学 · 学号已隐藏" : $"{a.Session.Name ?? "同学"} · {a.Id}";
-    public void SaveAppearance() => AtomicFile.WriteJson(Path.Combine(Root, "appearance.json"), new Appearance(HideIdentity, Theme));
-    public sealed record Appearance(bool HideIdentity, string Theme);
+    public void SaveAppearance() => AtomicFile.WriteJson(Path.Combine(Root, "appearance.json"), new Appearance(HideIdentity, Theme, AutoCheckUpdates));
+    public sealed record Appearance(bool HideIdentity, string Theme, bool? AutoCheckUpdates = null);
 }

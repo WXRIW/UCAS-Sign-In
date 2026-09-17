@@ -75,6 +75,7 @@ public sealed partial class MainWindow : Window
                 await Run(Model.EnterDemoAsync);
             if (notification is not null)
                 OpenNotification(notification);
+            _ = CheckForUpdates(false);
         };
     }
     async Task Tick()

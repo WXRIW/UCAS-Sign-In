@@ -171,6 +171,8 @@ public sealed class MainActivity : AppCompatActivity
                 page?.Render();
             }
             await OpenNotification(Intent);
+            if (page is not null)
+                await page.CheckForUpdates(false);
         });
     }
     public int Dp(int value) => (int)(value * Resources!.DisplayMetrics!.Density + .5f);

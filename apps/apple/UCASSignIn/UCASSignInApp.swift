@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct UCASSignInApp: App {
     @StateObject private var model = AppLaunchEnvironment.makeModel()
+    @StateObject private var updates = UpdateCoordinator(defaults: AppLaunchEnvironment.defaults)
     @State private var selection = 0
     var body: some Scene {
         #if os(macOS)
@@ -26,9 +27,9 @@ struct UCASSignInApp: App {
         if AppLaunchEnvironment.isUnitTestHost {
             Color.clear
         } else {
-            RootView(selection: $selection).environmentObject(model).tint(Palette.green)
+            RootView(selection: $selection).environmentObject(model).environmentObject(updates).tint(Palette.green)
                 .defaultAppStorage(AppLaunchEnvironment.defaults)
-                .task { await model.restore() }
+                .task { await model.restore(); await updates.checkAutomatically() }
         }
     }
 }

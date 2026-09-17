@@ -443,6 +443,25 @@ public sealed partial class MainWindow
         var notifications = Button("系统通知设置", async () => { await Launcher.LaunchUriAsync(new("ms-settings:notifications")); });
         notifications.IsEnabled = true;
         Page.Children.Add(Column(Text("通知", 16, true), SettingRow("Windows 通知", "管理通知权限和显示方式", "\uE7F4", notifications)));
+        var automaticUpdates = new ToggleSwitch
+        {
+            IsOn = vm.AutoCheckUpdates,
+            OnContent = "",
+            OffContent = "",
+            Width = 50,
+            MinWidth = 0
+        };
+        automaticUpdates.Toggled += (_, _) =>
+        {
+            vm.AutoCheckUpdates = automaticUpdates.IsOn;
+            vm.SaveAppearance();
+        };
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(automaticUpdates, "自动检查更新");
+        var updates = Button("检查更新", () => CheckForUpdates(true));
+        updates.IsEnabled = true;
+        Page.Children.Add(Column(Text("更新", 16, true),
+            SettingRow("自动检查更新", "每天最多检查一次，有新版本时提醒", "\uE895", automaticUpdates),
+            SettingRow("检查更新", "当前版本 " + Information.DisplayVersion, "\uE896", updates)));
     }
     Border SettingRow(string title, string description, string glyph, UIElement control)
     {

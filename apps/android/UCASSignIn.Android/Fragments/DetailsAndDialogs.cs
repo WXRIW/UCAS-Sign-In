@@ -13,6 +13,8 @@ namespace UCASSignIn.Android.Fragments;
 
 public sealed partial class MainPageFragment
 {
+    const string UpdatePreferences = "updates";
+    bool updateCheckRunning;
     void Track(global::AndroidX.AppCompat.App.AlertDialog dialog, Func<bool>? canCancel = null)
     {
         qrCancellation?.Cancel();
@@ -41,6 +43,58 @@ public sealed partial class MainPageFragment
             .SetPositiveButton("知道了", (_, _) => source.AcknowledgeSignInError(error.Id))!
             .SetCancelable(false)!.Create()!;
         Track(dialog, () => false);
+    }
+    public async Task CheckForUpdates(bool manual)
+    {
+        if (updateCheckRunning || !IsAdded || Host.IsFinishing || Host.IsDestroyed || (!manual && Host.DialogOpen))
+            return;
+        if (!manual && !Host.Vm.AutoCheckUpdates)
+            return;
+        var preferences = Ui.GetSharedPreferences(UpdatePreferences, FileCreationMode.Private)!;
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var elapsed = now - preferences.GetLong("checkedAt", 0);
+        if (!manual && preferences.GetString("checkedVersion", "") == Information.DisplayVersion
+            && elapsed >= 0 && elapsed < TimeSpan.FromHours(24).TotalMilliseconds)
+            return;
+        updateCheckRunning = true;
+        preferences.Edit()!
+            .PutLong("checkedAt", now)!
+            .PutString("checkedVersion", Information.DisplayVersion)!
+            .Apply();
+        try
+        {
+            var release = await new GitHubReleaseChecker().CheckAsync(Information.DisplayVersion);
+            if (!IsAdded || Host.IsFinishing || Host.IsDestroyed)
+                return;
+            if (release is null)
+            {
+                if (manual)
+                    Track(new MaterialAlertDialogBuilder(Ui).SetTitle("已是最新版本")!
+                        .SetMessage($"当前版本 {Information.DisplayVersion} 已是最新的正式版本。")!
+                        .SetPositiveButton("知道了", (_, _) => { })!.Create()!);
+                return;
+            }
+            var releaseIdentity = $"{Information.DisplayVersion}|{release.Tag}";
+            if (!manual && preferences.GetString("promptedRelease", "") == releaseIdentity)
+                return;
+            if (!manual && Host.DialogOpen)
+                return;
+            preferences.Edit()!.PutString("promptedRelease", releaseIdentity)!.Apply();
+            var dialog = new MaterialAlertDialogBuilder(Ui).SetTitle("检测到新版本")!
+                .SetMessage($"果壳签到 {release.Version} 已发布，当前版本为 {Information.DisplayVersion}。")!
+                .SetNegativeButton("稍后", (_, _) => { })!
+                .SetPositiveButton("前往下载", (_, _) => Open(release.Url.ToString()))!
+                .Create()!;
+            Track(dialog);
+        }
+        catch (Exception)
+        {
+            if (manual && IsAdded && !Host.IsFinishing && !Host.IsDestroyed)
+                Track(new MaterialAlertDialogBuilder(Ui).SetTitle("暂时无法检查更新")!
+                    .SetMessage("请检查网络连接后重试，或直接前往 GitHub Releases 查看。")!
+                    .SetPositiveButton("知道了", (_, _) => { })!.Create()!);
+        }
+        finally { updateCheckRunning = false; }
     }
     void DismissThen(global::AndroidX.AppCompat.App.AlertDialog dialog, Func<Task> next)
     {

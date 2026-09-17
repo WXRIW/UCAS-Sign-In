@@ -126,10 +126,21 @@ macOS 的 PKG 将应用安装到 `/Applications`。其中 App 使用临时签名
 
 旁加载 ZIP 内含一个双架构 `.msixbundle` 和公开 `.cer` 证书。`.msixupload` 是唯一上传 Partner Center 的文件，其余 Windows 包用于直接分发。
 
-## 5. 发布前检查
+## 5. 创建 GitHub Release
+
+应用从 GitHub 的 latest release 接口检测更新。完成构建后，在 `WXRIW/UCAS-Sign-In` 创建公开的正式 Release：
+
+- 标签必须为 `v<version>`，例如版本 `1.1.0` 使用 `v1.1.0`。
+- 不要把正式更新保留为 Draft，也不要勾选 Pre-release；这两类版本不会触发应用内更新提示。
+- 发布时将该版本设为 Latest release。
+- 将需要公开分发的安装包和对应的 SHA-256 文件上传为 Release assets。
+- Release 的版本必须与 `eng/version.json` 及产物文件名一致。
+
+## 6. 发布前检查
 
 1. 确认 `dotnet run --project tools/Versioning -- check` 通过。
 2. 确认 `artifacts/publish/<版本>/` 中所需产物及 `sha256/` 下对应的校验文件都存在。
 3. Android 应继续使用历史发布密钥；不要重新生成密钥。
 4. Windows 商店只上传 `*-store.msixupload`。
 5. PFX、keystore、密码、`Signing.local.props` 和本地 Apple 签名配置不得提交或随包分发。
+6. GitHub Release 标签为 `v<version>`，并已作为非草稿、非预发布的正式版本发布。

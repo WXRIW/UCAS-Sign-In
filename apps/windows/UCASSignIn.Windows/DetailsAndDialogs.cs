@@ -13,6 +13,7 @@ public sealed partial class MainWindow
     CancellationTokenSource? qrCancellation;
     Image? qrImage;
     TextBlock? qrCaption;
+    bool updateCheckRunning;
     async Task<ContentDialogResult> Show(ContentDialog dialog)
     {
         if (dialogOpen)
@@ -46,6 +47,80 @@ public sealed partial class MainWindow
         dialog.Closed += (_, _) => { if (!closed) source.AcknowledgeSignInError(error.Id); };
         await Show(dialog);
     }
+    async Task CheckForUpdates(bool manual)
+    {
+        if (updateCheckRunning || closed || (!manual && dialogOpen))
+            return;
+        if (!manual && !vm.AutoCheckUpdates)
+            return;
+        var state = ReadUpdateState();
+        if (!manual && state.CheckedVersion == Information.DisplayVersion
+            && DateTimeOffset.TryParse(state.CheckedAt, out var lastCheck))
+        {
+            var elapsed = DateTimeOffset.UtcNow - lastCheck;
+            if (elapsed >= TimeSpan.Zero && elapsed < TimeSpan.FromHours(24))
+                return;
+        }
+        updateCheckRunning = true;
+        try
+        {
+            state = state with
+            {
+                CheckedAt = DateTimeOffset.UtcNow.ToString("O"),
+                CheckedVersion = Information.DisplayVersion
+            };
+            SaveUpdateState(state);
+            var release = await new GitHubReleaseChecker().CheckAsync(Information.DisplayVersion);
+            if (closed)
+                return;
+            if (release is null)
+            {
+                if (manual)
+                    await Show(new ContentDialog
+                    {
+                        Title = "已是最新版本",
+                        Content = $"当前版本 {Information.DisplayVersion} 已是最新的正式版本。",
+                        CloseButtonText = "知道了"
+                    });
+                return;
+            }
+            var releaseIdentity = $"{Information.DisplayVersion}|{release.Tag}";
+            if (!manual && state.PromptedRelease == releaseIdentity)
+                return;
+            if (!manual && dialogOpen)
+                return;
+            state = state with { PromptedRelease = releaseIdentity };
+            SaveUpdateState(state);
+            var result = await Show(new ContentDialog
+            {
+                Title = "检测到新版本",
+                Content = $"果壳签到 {release.Version} 已发布，当前版本为 {Information.DisplayVersion}。",
+                PrimaryButtonText = "前往下载",
+                CloseButtonText = "稍后",
+                DefaultButton = ContentDialogButton.Primary
+            });
+            if (result == ContentDialogResult.Primary)
+                await Launcher.LaunchUriAsync(release.Url);
+        }
+        catch (Exception)
+        {
+            if (manual)
+                await Show(new ContentDialog
+                {
+                    Title = "暂时无法检查更新",
+                    Content = "请检查网络连接后重试，或直接前往 GitHub Releases 查看。",
+                    CloseButtonText = "知道了"
+                });
+        }
+        finally { updateCheckRunning = false; }
+    }
+    UpdateState ReadUpdateState()
+    {
+        try { return AtomicFile.ReadJson<UpdateState>(Path.Combine(vm.Root, "updates.json")) ?? new(); }
+        catch { return new(); }
+    }
+    void SaveUpdateState(UpdateState state) => AtomicFile.WriteJson(Path.Combine(vm.Root, "updates.json"), state);
+    sealed record UpdateState(string? CheckedAt = null, string? CheckedVersion = null, string? PromptedRelease = null);
     async Task Login(StoredAccount? account = null)
     {
         var user = new TextBox { Header = "账户", PlaceholderText = "学号或 SEP 邮箱", Text = account?.LoginUsername ?? "" };

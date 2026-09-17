@@ -26,6 +26,10 @@ public sealed class MainViewModel
     {
         get => prefs.GetString("theme", "system")!; set => prefs.Edit()!.PutString("theme", value)!.Apply();
     }
+    public bool AutoCheckUpdates
+    {
+        get => prefs.GetBoolean("autoCheckUpdates", true); set => prefs.Edit()!.PutBoolean("autoCheckUpdates", value)!.Apply();
+    }
     MainViewModel(Context context)
     {
         prefs = context.GetSharedPreferences("appearance", FileCreationMode.Private)!;

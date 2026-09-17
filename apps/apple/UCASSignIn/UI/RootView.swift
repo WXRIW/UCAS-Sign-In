@@ -2,7 +2,9 @@ import SwiftUI
 
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var updates: UpdateCoordinator
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openURL) private var openURL
     @AppStorage("appearanceMode") private var appearance = AppAppearance.system
     @Binding var selection: Int
     @State private var refreshTodayOnSelection = false
@@ -44,6 +46,7 @@ struct RootView: View {
         .alert("温馨提示", isPresented: Binding(get: { model.errorMessage != nil && model.loginRequest == nil }, set: { if !$0 { model.errorMessage = nil } })) {
             Button("知道了", role: .cancel) { model.errorMessage = nil }
         } message: { Text(model.errorMessage ?? "") }
+        .background { updateAlertHost }
         .preferredColorScheme(appearance.colorScheme)
         .onOpenURL { url in
             guard url.scheme == "ucas-signin" else { return }
@@ -57,6 +60,27 @@ struct RootView: View {
                 do { try await Task.sleep(for: .seconds(30)) } catch { break }
             }
         }
+    }
+
+    private var updateAlertHost: some View {
+        Color.clear.frame(width: 0, height: 0)
+            .alert(item: $updates.presentation) { presentation in
+                switch presentation {
+                case .release(let release):
+                    Alert(title: Text("检测到新版本"),
+                          message: Text("果壳签到 \(release.version) 已发布，当前版本为 \(UpdateCoordinator.currentVersion)。"),
+                          primaryButton: .default(Text("前往下载")) { openURL(release.url) },
+                          secondaryButton: .cancel(Text("稍后")))
+                case .current:
+                    Alert(title: Text("已是最新版本"),
+                          message: Text("当前版本 \(UpdateCoordinator.currentVersion) 已是最新的正式版本。"),
+                          dismissButton: .default(Text("知道了")))
+                case .failed:
+                    Alert(title: Text("暂时无法检查更新"),
+                          message: Text("请检查网络连接后重试，或直接前往 GitHub Releases 查看。"),
+                          dismissButton: .default(Text("知道了")))
+                }
+            }
     }
 
     @ViewBuilder private var navigation: some View {
