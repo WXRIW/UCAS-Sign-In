@@ -8,7 +8,12 @@
     <NuGetLockFilePath>packages.$(Configuration).lock.json</NuGetLockFilePath>
     <AndroidManifestPlaceholders>debuggable=false</AndroidManifestPlaceholders>
   </PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)' == 'Debug'"><Optimize>true</Optimize><RuntimeIdentifiers>android-arm64;android-x64</RuntimeIdentifiers><AndroidManifestPlaceholders>debuggable=true</AndroidManifestPlaceholders></PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+    <!-- With embedded assemblies, optimization disables the Android debug runtime and packaged symbols. -->
+    <Optimize>false</Optimize>
+    <RuntimeIdentifiers>android-arm64;android-x64</RuntimeIdentifiers>
+    <AndroidManifestPlaceholders>debuggable=true</AndroidManifestPlaceholders>
+  </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)' == 'Release'"><RuntimeIdentifiers>android-arm;android-arm64</RuntimeIdentifiers><AndroidPackageFormats>apk;aab</AndroidPackageFormats></PropertyGroup>
   <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''"><RuntimeIdentifiers>$(RuntimeIdentifier)</RuntimeIdentifiers></PropertyGroup>
   <ItemGroup>

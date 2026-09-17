@@ -10,6 +10,14 @@ C# / .NET 10 for Android，原生 Material 3，无 MAUI、无 WebView。最低 A
 
 ## 构建
 
+### Visual Studio 安装与调试
+
+打开 `UCASSignIn.Android.slnx`，将 `UCASSignIn.Android` 设为启动项目，选择 `Debug | Any CPU` 和已连接的 Android 真机或模拟器，然后按 F5。解决方案已启用应用项目的“部署”，VS 会构建、安装应用并附加托管调试器；共享核心与测试项目不参与部署。真机需开启 USB 调试并授权当前电脑。
+
+Debug 配置关闭代码优化，使 Android SDK 启用调试运行时并将调试符号打包到 APK；仅设置清单中的 `android:debuggable=true` 不能替代这两项。APK 仍嵌入全部程序集，可单独安装。若 VS 已打开旧配置，重新加载解决方案后再启动调试，并在“配置管理器”确认 Android 应用的“生成”和“部署”均已勾选。
+
+### 命令行
+
 从仓库根目录运行：
 
 ```powershell
