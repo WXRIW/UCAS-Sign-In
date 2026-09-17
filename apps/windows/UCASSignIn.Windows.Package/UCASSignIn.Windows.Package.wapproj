@@ -61,5 +61,15 @@
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.4654" PrivateAssets="all" />
   </ItemGroup>
   <Import Project="Signing.local.props" Condition="Exists('Signing.local.props')" />
+  <!-- MSBuild command-line properties are global and flow into project references.
+       Expand the release-script aliases only in this packaging project so the
+       unpackaged WinUI application is not asked to create an MSIX itself. -->
+  <PropertyGroup>
+    <AppxBundle Condition="'$(UCASAppxBundle)' != ''">$(UCASAppxBundle)</AppxBundle>
+    <AppxBundlePlatforms Condition="'$(UCASAppxBundlePlatforms)' != ''">$(UCASAppxBundlePlatforms)</AppxBundlePlatforms>
+    <UapAppxPackageBuildMode Condition="'$(UCASUapAppxPackageBuildMode)' != ''">$(UCASUapAppxPackageBuildMode)</UapAppxPackageBuildMode>
+    <AppxPackageSigningEnabled Condition="'$(UCASAppxPackageSigningEnabled)' != ''">$(UCASAppxPackageSigningEnabled)</AppxPackageSigningEnabled>
+    <AppxPackageDir Condition="'$(UCASAppxPackageDir)' != ''">$(UCASAppxPackageDir)</AppxPackageDir>
+  </PropertyGroup>
   <Import Project="$(WapProjPath)Microsoft.DesktopBridge.targets" />
 </Project>

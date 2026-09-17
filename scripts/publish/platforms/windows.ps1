@@ -71,15 +71,16 @@ function Invoke-VSPackageBuild {
     $arguments = @(
         $packageProject,
         '/restore',
+        '/target:Publish',
+        '/verbosity:minimal',
         '/p:RestoreLockedMode=true',
         '/p:Configuration=Release',
         '/p:Platform=x64',
-        '/p:AppxBundle=Always',
-        '/p:AppxBundlePlatforms=x64|arm64',
-        "/p:UapAppxPackageBuildMode=$BuildMode",
-        '/p:GenerateAppxPackageOnBuild=true',
-        "/p:AppxPackageSigningEnabled=$($SigningEnabled.ToString().ToLowerInvariant())",
-        "/p:AppxPackageDir=$PackageDirectory\"
+        '/p:UCASAppxBundle=Always',
+        '/p:UCASAppxBundlePlatforms=x64|arm64',
+        "/p:UCASUapAppxPackageBuildMode=$BuildMode",
+        "/p:UCASAppxPackageSigningEnabled=$($SigningEnabled.ToString().ToLowerInvariant())",
+        "/p:UCASAppxPackageDir=$PackageDirectory\"
     )
     & $script:msbuild @arguments
     if ($LASTEXITCODE -ne 0) { throw "Visual Studio $BuildMode package build failed." }
