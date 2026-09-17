@@ -139,8 +139,8 @@ static class VersioningTool
         if (release.SchemaVersion != 1)
             throw new InvalidOperationException($"Unsupported version schema: {release.SchemaVersion}.");
         var fields = release.Version.Split('.');
-        if (fields.Length != 3 || fields.Any(field => !ushort.TryParse(field, out _)) || !ushort.TryParse(fields[0], out var major) || major == 0)
-            throw new InvalidOperationException("version must contain three numeric components, with a non-zero major version and values no greater than 65535.");
+        if (fields.Length != 3 || fields.Any(field => !ushort.TryParse(field, out _)))
+            throw new InvalidOperationException("version must contain three numeric components with values no greater than 65535.");
         if (release.Build is < 1 or > ushort.MaxValue)
             throw new InvalidOperationException("build must be between 1 and 65535.");
     }

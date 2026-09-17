@@ -11,7 +11,7 @@ if [[ ! -f "$version_file" || ! -f "$version_xcconfig" ]]; then
 fi
 release_version="$(/usr/bin/sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)"[,]\{0,1\}[[:space:]]*$/\1/p' "$version_file")"
 release_build="$(/usr/bin/sed -n 's/^[[:space:]]*"build":[[:space:]]*\([0-9][0-9]*\)[,]\{0,1\}[[:space:]]*$/\1/p' "$version_file")"
-if [[ ! "$release_version" =~ ^[1-9][0-9]*\.[0-9]+\.[0-9]+$ || ! "$release_build" =~ ^[1-9][0-9]*$ ]]; then
+if [[ ! "$release_version" =~ ^(0|[1-9][0-9]*)\.[0-9]+\.[0-9]+$ || ! "$release_build" =~ ^[1-9][0-9]*$ ]]; then
     printf 'Invalid version data in %s\n' "$version_file" >&2
     return 1 2>/dev/null || exit 1
 fi
