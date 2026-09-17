@@ -25,7 +25,6 @@ xcuserdata/
 
 # Local helper scripts
 /scripts/
-/apps/apple/scripts/
 
 # Local platform development tests and tools
 /apps/android/tests/

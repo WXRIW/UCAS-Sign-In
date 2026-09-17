@@ -66,35 +66,6 @@ swift test
 
 在 Xcode 中选择 `UCASSignIn` scheme 和 iPhone / iPad 模拟器，或选择 `UCASSignInMac` scheme 和 **My Mac**，按 `⌘U` 运行测试。UI 测试使用演示模式或独立的本地多账户样例，不登录真实学校账户。Mac scheme 还包含 AppModel 单元测试，验证账户切换、会话恢复以及通知和小组件隔离。
 
-## 本地构建与发布脚本
-
-`scripts/` 为本地辅助脚本目录，由 Git 忽略，不随仓库分发。已有这些脚本的本地工作区可使用下列命令；新克隆的工作区请使用上文的 Xcode 构建与测试方法。
-
-脚本根据自身位置定位工程，可从任意工作目录调用。以下命令在 `apps/apple/` 下执行：
-
-```sh
-# 编译 macOS 应用并进行本机临时签名
-./scripts/build-macos.sh --local
-
-# 仅验证 macOS 编译，不签名
-./scripts/build-macos.sh --unsigned
-
-# 导出未签名 iOS IPA 和临时签名 macOS 通用 ZIP
-./scripts/export-release.sh
-
-# 单独导出 macOS 通用 ZIP
-./scripts/export-macos.sh
-
-# 使用本地开发者签名配置导出 iOS IPA
-./scripts/export-ipa.sh
-```
-
-默认 macOS 构建缓存位于本目录的 `build/macos/`，Swift Package 缓存位于 `.build/`。发布包统一写入仓库根目录的 `artifacts/apple/`。这些目录不提交 Git。
-
-`Config/Signing.local.xcconfig` 为本地配置，继续由根目录 `.gitignore` 忽略；示例配置纳入版本控制，`scripts/` 目录中的本地脚本不纳入版本控制。
-
-图标更新脚本为 `scripts/update-macos-icons.sh`，中间设计图写入仓库根目录的 `docs/design/`，平台图标写入本目录的资源目录。
-
 ## 目录结构
 
 ```text
@@ -112,5 +83,4 @@ UCASSignInMacUITests/        macOS 演示与多账户 UI 测试
 UCASSignIn.xcodeproj/        Xcode 工程与共享 scheme
 Package.swift               核心库的 Swift Package 定义
 Config/                     共享签名配置与本机配置示例
-scripts/                    本地 Apple 构建、导出与图标脚本（不提交 Git）
 ```
