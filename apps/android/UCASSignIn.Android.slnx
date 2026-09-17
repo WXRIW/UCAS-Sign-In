@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="UCASSignIn.Android/UCASSignIn.Android.csproj" />
+  <Folder Name="/Shared/">
+    <Project Path="../../packages/dotnet/UCASSignIn.Core/UCASSignIn.Core.csproj" />
+    <Project Path="../../packages/dotnet/UCASSignIn.Core.Tests/UCASSignIn.Core.Tests.csproj" />
+  </Folder>
+</Solution>

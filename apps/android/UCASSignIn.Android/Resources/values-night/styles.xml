@@ -1,0 +1,18 @@
+<resources>
+  <style name="AppTheme" parent="Theme.Material3.DayNight.NoActionBar">
+    <item name="homeAsUpIndicator">@drawable/ic_back</item>
+    <item name="actionBarItemBackground">@drawable/abc_item_background_holo_dark</item>
+    <item name="actionMenuTextColor">?attr/colorOnSurface</item>
+    <item name="listPreferredItemHeightSmall">48dp</item>
+    <item name="listPreferredItemPaddingLeft">24dp</item><item name="listPreferredItemPaddingRight">24dp</item>
+    <item name="colorPrimary">#91C6A6</item><item name="colorOnPrimary">#003921</item>
+    <item name="colorPrimaryContainer">#0C5137</item><item name="colorOnPrimaryContainer">#ADEFC6</item>
+    <item name="colorSecondary">#B7CCB8</item><item name="colorOnSecondary">#233426</item><item name="colorSecondaryContainer">#394B3C</item><item name="colorOnSecondaryContainer">#D3E8D3</item>
+    <item name="colorTertiary">#A0CFD4</item><item name="colorOnTertiary">#00363B</item><item name="colorTertiaryContainer">#1F4D52</item><item name="colorOnTertiaryContainer">#BCEBF0</item>
+    <item name="colorSurface">#111A16</item><item name="colorOnSurface">#EDF3ED</item><item name="colorSurfaceVariant">#404941</item><item name="colorOnSurfaceVariant">#BFC9BF</item>
+    <item name="colorSurfaceContainerLowest">#0A100C</item><item name="colorSurfaceContainerLow">#171D19</item><item name="colorSurfaceContainer">#1B211D</item><item name="colorSurfaceContainerHigh">#252B27</item><item name="colorSurfaceContainerHighest">#303632</item>
+    <item name="colorOutline">#89938A</item><item name="colorOutlineVariant">#404941</item>
+    <item name="colorError">#FFB4AB</item><item name="colorOnError">#690005</item><item name="colorErrorContainer">#93000A</item><item name="colorOnErrorContainer">#FFDAD6</item>
+    <item name="android:statusBarColor">@android:color/transparent</item><item name="android:navigationBarColor">@android:color/transparent</item><item name="android:windowLightStatusBar">false</item><item name="android:fontFamily">sans</item>
+  </style>
+</resources>

@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <EnableRuntimePackDownload>false</EnableRuntimePackDownload>
+    <!-- DesktopBridge requests RID-specific publish outputs for libraries.
+         Android references the portable net10.0 output; all code remains managed-only. -->
+    <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+  </PropertyGroup>
+</Project>

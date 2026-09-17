@@ -1,0 +1,12 @@
+<Solution>
+  <Configurations><Platform Name="x64" /><Platform Name="ARM64" /></Configurations>
+  <Project Path="UCASSignIn.Windows/UCASSignIn.Windows.csproj">
+    <Platform Solution="*|ARM64" Project="ARM64" />
+    <Platform Solution="*|x64" Project="x64" />
+  </Project>
+  <Project Path="UCASSignIn.Windows.Package/UCASSignIn.Windows.Package.wapproj" Type="c7167f0d-bc9f-4e6e-afe1-012c56b48db5"><Build Project="false" /><Platform Solution="*|ARM64" Project="ARM64" /><Platform Solution="*|x64" Project="x64" /></Project>
+  <Folder Name="/Shared/">
+    <Project Path="../../packages/dotnet/UCASSignIn.Core/UCASSignIn.Core.csproj" />
+    <Project Path="../../packages/dotnet/UCASSignIn.Core.Tests/UCASSignIn.Core.Tests.csproj" />
+  </Folder>
+</Solution>

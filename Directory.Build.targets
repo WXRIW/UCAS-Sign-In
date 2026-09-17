@@ -1,0 +1,10 @@
+<Project>
+  <!-- VSTest loads these xUnit test assemblies through testhost. Override the
+       Test SDK's Exe default after package imports so VS does not offer them
+       as startup projects; Test Explorer and dotnet test remain available. -->
+  <PropertyGroup Condition="'$(IsTestProject)' == 'true'">
+    <OutputType>Library</OutputType>
+    <GenerateProgramFile>false</GenerateProgramFile>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+</Project>

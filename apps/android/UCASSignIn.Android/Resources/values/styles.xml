@@ -1,0 +1,24 @@
+<resources>
+  <style name="AppTheme" parent="Theme.Material3.DayNight.NoActionBar">
+    <item name="homeAsUpIndicator">@drawable/ic_back</item>
+    <item name="actionBarItemBackground">@drawable/abc_item_background_holo_light</item>
+    <item name="actionMenuTextColor">?attr/colorOnSurface</item>
+    <!-- Explicit AppCompat list dimensions also support vendor theme overlays. -->
+    <item name="listPreferredItemHeightSmall">48dp</item>
+    <item name="listPreferredItemPaddingLeft">24dp</item><item name="listPreferredItemPaddingRight">24dp</item>
+    <item name="colorPrimary">#285C45</item><item name="colorOnPrimary">#FFFFFF</item>
+    <item name="colorPrimaryContainer">#E8EFE4</item><item name="colorOnPrimaryContainer">#002112</item>
+    <item name="colorSecondary">#506353</item><item name="colorOnSecondary">#FFFFFF</item>
+    <item name="colorSecondaryContainer">#D3E8D3</item><item name="colorOnSecondaryContainer">#0E1F13</item>
+    <item name="colorTertiary">#38656A</item><item name="colorOnTertiary">#FFFFFF</item>
+    <item name="colorTertiaryContainer">#BCEBF0</item><item name="colorOnTertiaryContainer">#001F22</item>
+    <item name="colorSurface">#F6F7F2</item><item name="colorOnSurface">#1C342B</item>
+    <item name="colorSurfaceVariant">#DBE5DC</item><item name="colorOnSurfaceVariant">#404941</item>
+    <item name="colorSurfaceContainerLowest">#FFFFFF</item><item name="colorSurfaceContainerLow">#EFF5EE</item>
+    <item name="colorSurfaceContainer">#E9EFE8</item><item name="colorSurfaceContainerHigh">#E3EAE2</item><item name="colorSurfaceContainerHighest">#DDE4DC</item>
+    <item name="colorOutline">#707970</item><item name="colorOutlineVariant">#BFC9BF</item>
+    <item name="colorError">#BA1A1A</item><item name="colorOnError">#FFFFFF</item><item name="colorErrorContainer">#FFDAD6</item><item name="colorOnErrorContainer">#410002</item>
+    <item name="android:statusBarColor">@android:color/transparent</item><item name="android:navigationBarColor">@android:color/transparent</item>
+    <item name="android:windowLightStatusBar">true</item><item name="android:fontFamily">sans</item>
+  </style>
+</resources>

@@ -1,0 +1,20 @@
+<resources>
+  <style name="AppNavigationRail" parent="Widget.Material3.NavigationRailView">
+    <!-- The activity already applies display cutout and system bar insets. -->
+    <item name="paddingStartSystemWindowInsets">false</item>
+    <item name="paddingTopSystemWindowInsets">false</item>
+    <item name="paddingBottomSystemWindowInsets">false</item>
+    <item name="android:minWidth">80dp</item>
+    <item name="itemMinHeight">64dp</item>
+    <item name="itemPaddingTop">8dp</item>
+    <item name="itemPaddingBottom">8dp</item>
+  </style>
+  <style name="AppBottomNavigation" parent="Widget.Material3.BottomNavigationView">
+    <item name="android:minHeight">64dp</item>
+    <item name="itemPaddingTop">6dp</item>
+    <item name="itemPaddingBottom">6dp</item>
+  </style>
+  <style name="NavigationLabel" parent="TextAppearance.Material3.LabelMedium">
+    <item name="android:textSize">12sp</item>
+  </style>
+</resources>

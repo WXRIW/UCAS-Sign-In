@@ -1,0 +1,77 @@
+<Application x:Class="UCASSignIn.Windows.App" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Application.Resources><ResourceDictionary><ResourceDictionary.MergedDictionaries><XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" /></ResourceDictionary.MergedDictionaries>
+    <ResourceDictionary.ThemeDictionaries>
+      <ResourceDictionary x:Key="Light">
+        <SolidColorBrush x:Key="SystemAccentColorBrush" Color="#285C45" />
+        <SolidColorBrush x:Key="AccentFillColorDefaultBrush" Color="#285C45" />
+        <SolidColorBrush x:Key="AccentFillColorSecondaryBrush" Color="#346D53" />
+        <SolidColorBrush x:Key="AccentFillColorTertiaryBrush" Color="#417C61" />
+      </ResourceDictionary>
+      <ResourceDictionary x:Key="Default">
+        <SolidColorBrush x:Key="SystemAccentColorBrush" Color="#91C6A6" />
+        <SolidColorBrush x:Key="AccentFillColorDefaultBrush" Color="#91C6A6" />
+        <SolidColorBrush x:Key="AccentFillColorSecondaryBrush" Color="#82B597" />
+        <SolidColorBrush x:Key="AccentFillColorTertiaryBrush" Color="#73A488" />
+      </ResourceDictionary>
+    </ResourceDictionary.ThemeDictionaries>
+    <Style x:Key="SurfaceCardStyle" TargetType="Border">
+      <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorDefaultBrush}" />
+      <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="8" />
+    </Style>
+    <Style x:Key="CardActionButtonStyle" TargetType="Button" BasedOn="{StaticResource DefaultButtonStyle}">
+      <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorDefaultBrush}" />
+      <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="8" />
+      <Setter Property="HorizontalAlignment" Value="Stretch" />
+      <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+    </Style>
+    <!-- A countdown shrinks from a fixed origin. The default ProgressBar's
+         Updating -> Determinate reposition animation moves that origin. -->
+    <Style x:Key="QrCountdownProgressStyle" TargetType="ProgressBar">
+      <Setter Property="Background" Value="{ThemeResource ControlStrongStrokeColorDefaultBrush}" />
+      <Setter Property="MinHeight" Value="4" />
+      <Setter Property="IsTabStop" Value="False" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ProgressBar">
+            <Grid x:Name="LayoutRoot">
+              <VisualStateManager.VisualStateGroups>
+                <VisualStateGroup x:Name="CommonStates">
+                  <VisualState x:Name="Determinate" />
+                  <VisualState x:Name="Updating" />
+                </VisualStateGroup>
+              </VisualStateManager.VisualStateGroups>
+              <Border x:Name="ProgressBarRoot">
+                <Grid>
+                  <Rectangle Fill="{TemplateBinding Background}" Height="1" VerticalAlignment="Center" />
+                  <Rectangle x:Name="DeterminateProgressBarIndicator" Fill="{TemplateBinding Foreground}"
+                             HorizontalAlignment="Left" RadiusX="2" RadiusY="2" />
+                </Grid>
+              </Border>
+            </Grid>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <!-- Match Lyricify Connect's explicit menu font fallback, including CJK text. -->
+    <FontFamily x:Key="MenuTextFontFamily">Segoe UI Variable, Segoe UI, Microsoft YaHei UI, Microsoft YaHei</FontFamily>
+    <Style TargetType="MenuFlyoutPresenter" BasedOn="{StaticResource DefaultMenuFlyoutPresenterStyle}">
+      <Setter Property="FontFamily" Value="{StaticResource MenuTextFontFamily}" />
+    </Style>
+    <Style TargetType="MenuFlyoutItem" BasedOn="{StaticResource DefaultMenuFlyoutItemStyle}">
+      <Setter Property="FontFamily" Value="{StaticResource MenuTextFontFamily}" />
+    </Style>
+    <Style TargetType="ToggleMenuFlyoutItem" BasedOn="{StaticResource DefaultToggleMenuFlyoutItemStyle}">
+      <Setter Property="FontFamily" Value="{StaticResource MenuTextFontFamily}" />
+    </Style>
+    <Style TargetType="MenuFlyoutSubItem" BasedOn="{StaticResource DefaultMenuFlyoutSubItemStyle}">
+      <Setter Property="FontFamily" Value="{StaticResource MenuTextFontFamily}" />
+    </Style>
+    <Style TargetType="ComboBoxItem" BasedOn="{StaticResource DefaultComboBoxItemStyle}">
+      <Setter Property="FontFamily" Value="{StaticResource MenuTextFontFamily}" />
+    </Style>
+  </ResourceDictionary></Application.Resources>
+</Application>

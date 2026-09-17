@@ -1,0 +1,9 @@
+<Page x:Class="UCASSignIn.Windows.NavigationPage"
+      xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <ScrollViewer x:Name="Scroller" HorizontalContentAlignment="Stretch" HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled">
+    <Grid HorizontalAlignment="Stretch">
+      <StackPanel x:Name="Body" Spacing="20" MaxWidth="960" Padding="32,8,32,24" HorizontalAlignment="Stretch" />
+    </Grid>
+  </ScrollViewer>
+</Page>

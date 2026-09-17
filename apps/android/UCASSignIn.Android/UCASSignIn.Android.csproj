@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-android</TargetFramework><OutputType>Exe</OutputType><SupportedOSPlatformVersion>23</SupportedOSPlatformVersion>
+    <ApplicationId>cn.ucas.signin</ApplicationId><ApplicationTitle>果壳签到</ApplicationTitle><ApplicationVersion>1</ApplicationVersion><ApplicationDisplayVersion>0.1.0</ApplicationDisplayVersion>
+    <AndroidManifest>AndroidManifest.xml</AndroidManifest><AndroidPackageFormats>apk</AndroidPackageFormats>
+    <AndroidEnableMarshalMethods>false</AndroidEnableMarshalMethods><EmbedAssembliesIntoApk>true</EmbedAssembliesIntoApk>
+    <JsonSerializerIsReflectionEnabledByDefault>true</JsonSerializerIsReflectionEnabledByDefault>
+    <NuGetLockFilePath>packages.$(Configuration).lock.json</NuGetLockFilePath>
+    <AndroidManifestPlaceholders>debuggable=false</AndroidManifestPlaceholders>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'"><Optimize>true</Optimize><RuntimeIdentifiers>android-arm64;android-x64</RuntimeIdentifiers><AndroidManifestPlaceholders>debuggable=true</AndroidManifestPlaceholders></PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'"><RuntimeIdentifiers>android-arm;android-arm64</RuntimeIdentifiers><AndroidPackageFormats>apk;aab</AndroidPackageFormats></PropertyGroup>
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''"><RuntimeIdentifiers>$(RuntimeIdentifier)</RuntimeIdentifiers></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../../packages/dotnet/UCASSignIn.Core/UCASSignIn.Core.csproj" GlobalPropertiesToRemove="RuntimeIdentifier;RuntimeIdentifiers;SelfContained" />
+    <PackageReference Include="Xamarin.Google.Android.Material" Version="1.13.0" />
+    <PackageReference Include="Xamarin.AndroidX.Fragment" Version="1.8.9.2" />
+    <PackageReference Include="Xamarin.AndroidX.SwipeRefreshLayout" Version="1.1.0.29" />
+    <PackageReference Include="Xamarin.AndroidX.Lifecycle.Process" Version="2.10.0.2" />
+    <PackageReference Include="QRCoder" Version="1.6.0" />
+    <TrimmerRootAssembly Include="UCASSignIn.Core" RootMode="All" /><TrimmerRootAssembly Include="UCASSignIn.Android" RootMode="All" />
+  </ItemGroup>
+  <Import Project="Signing.local.props" Condition="Exists('Signing.local.props')" />
+  <ItemGroup><AndroidAsset Include="../../../LICENSE" Link="LICENSE" /></ItemGroup>
+  <ItemGroup><Compile Include="../../../shared/dotnet/Information.cs" Link="Information.cs" /></ItemGroup>
+</Project>
