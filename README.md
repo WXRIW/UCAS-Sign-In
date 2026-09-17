@@ -20,20 +20,16 @@
 
 ## 运行截图
 
-截图使用演示账号与示例课程。
+截图使用演示账号与本地示例数据。
 
 ### iOS
 
 <table>
+  <tr><th>今日课程</th><th>日期课表</th><th>账户信息</th></tr>
   <tr>
-    <th>今日课程</th>
-    <th>日期课表</th>
-    <th>账户信息</th>
-  </tr>
-  <tr>
-    <td><img src="docs/screenshots/ios/today.png" width="250" alt="iPhone 今日课程"></td>
-    <td><img src="docs/screenshots/ios/schedule.png" width="250" alt="iPhone 日期课表"></td>
-    <td><img src="docs/screenshots/ios/profile.png" width="250" alt="iPhone 账户与隐私开关"></td>
+    <td><img src="docs/screenshots/ios/today.png" width="250" alt="iOS 今日课程"></td>
+    <td><img src="docs/screenshots/ios/schedule.png" width="250" alt="iOS 日期课表"></td>
+    <td><img src="docs/screenshots/ios/profile.png" width="250" alt="iOS 账户信息"></td>
   </tr>
 </table>
 
@@ -41,25 +37,25 @@
 <summary>更多 iOS 界面</summary>
 
 <table>
+  <tr><th>深色外观</th><th>登录</th><th>课程二维码</th></tr>
   <tr>
-    <th>深色外观</th>
-    <th>登录</th>
-    <th>课程二维码</th>
+    <td><img src="docs/screenshots/ios/today-dark.png" width="250" alt="iOS 深色外观"></td>
+    <td><img src="docs/screenshots/ios/login.png" width="250" alt="iOS 登录"></td>
+    <td><img src="docs/screenshots/ios/qrcode.png" width="250" alt="iOS 课程二维码"></td>
   </tr>
+  <tr><th>签到记录</th><th>项目源码与致谢</th><th>免责声明</th></tr>
   <tr>
-    <td><img src="docs/screenshots/ios/today-dark.png" width="250" alt="iOS 深色今日课程"></td>
-    <td><img src="docs/screenshots/ios/login.png" width="250" alt="iOS 登录页面"></td>
-    <td><img src="docs/screenshots/ios/qrcode.png" width="250" alt="iOS 演示课程二维码"></td>
-  </tr>
-  <tr>
-    <th>本机签到记录</th>
-    <th>开源声明</th>
-    <th>免责声明</th>
-  </tr>
-  <tr>
-    <td><img src="docs/screenshots/ios/records.png" width="250" alt="iOS 演示签到记录"></td>
-    <td><img src="docs/screenshots/ios/open-source.png" width="250" alt="iOS 开源项目与协议"></td>
+    <td><img src="docs/screenshots/ios/records.png" width="250" alt="iOS 签到记录"></td>
+    <td><img src="docs/screenshots/ios/open-source.png" width="250" alt="iOS 项目源码与致谢"></td>
     <td><img src="docs/screenshots/ios/disclaimer.png" width="250" alt="iOS 免责声明"></td>
+  </tr>
+</table>
+
+<table>
+  <tr><th>设置</th><th>账户管理（示例数据）</th></tr>
+  <tr>
+    <td><img src="docs/screenshots/ios/settings.png" width="250" alt="iOS 设置"></td>
+    <td><img src="docs/screenshots/ios/accounts.png" width="250" alt="iOS 账户管理（示例数据）"></td>
   </tr>
 </table>
 
@@ -67,34 +63,36 @@
 
 ### iPadOS
 
-<table>
-  <tr>
-    <th>今日课程</th>
-    <th>日期课表</th>
-  </tr>
-  <tr>
-    <td><img src="docs/screenshots/ipados/today.png" width="400" alt="iPad 横屏今日课程"></td>
-    <td><img src="docs/screenshots/ipados/schedule.png" width="400" alt="iPad 横屏日期课表"></td>
-  </tr>
-</table>
+<img src="docs/screenshots/ipados/today.png" width="820" alt="iPadOS 今日课程">
 
 <details>
 <summary>更多 iPadOS 界面</summary>
 
 <table>
+  <tr><th>日期课表</th><th>账户信息</th></tr>
   <tr>
-    <th>账户信息</th>
-    <th>课程二维码</th>
+    <td><img src="docs/screenshots/ipados/schedule.png" width="400" alt="iPadOS 日期课表"></td>
+    <td><img src="docs/screenshots/ipados/profile.png" width="400" alt="iPadOS 账户信息"></td>
   </tr>
+  <tr><th>设置</th><th>账户管理（示例数据）</th></tr>
   <tr>
-    <td><img src="docs/screenshots/ipados/profile.png" width="400" alt="iPadOS 账户与隐私开关"></td>
-    <td><img src="docs/screenshots/ipados/qrcode.png" width="400" alt="iPadOS 演示课程二维码"></td>
+    <td><img src="docs/screenshots/ipados/settings.png" width="400" alt="iPadOS 设置"></td>
+    <td><img src="docs/screenshots/ipados/accounts.png" width="400" alt="iPadOS 账户管理（示例数据）"></td>
   </tr>
+  <tr><th>课程二维码</th><th>签到记录</th></tr>
   <tr>
-    <th colspan="2">深色外观</th>
+    <td><img src="docs/screenshots/ipados/qrcode.png" width="400" alt="iPadOS 课程二维码"></td>
+    <td><img src="docs/screenshots/ipados/records.png" width="400" alt="iPadOS 签到记录"></td>
   </tr>
+  <tr><th>登录</th><th>深色外观</th></tr>
   <tr>
-    <td colspan="2"><img src="docs/screenshots/ipados/today-dark.png" width="820" alt="iPadOS 深色今日课程"></td>
+    <td><img src="docs/screenshots/ipados/login.png" width="400" alt="iPadOS 登录"></td>
+    <td><img src="docs/screenshots/ipados/today-dark.png" width="400" alt="iPadOS 深色外观"></td>
+  </tr>
+  <tr><th>项目源码与致谢</th><th>免责声明</th></tr>
+  <tr>
+    <td><img src="docs/screenshots/ipados/open-source.png" width="400" alt="iPadOS 项目源码与致谢"></td>
+    <td><img src="docs/screenshots/ipados/disclaimer.png" width="400" alt="iPadOS 免责声明"></td>
   </tr>
 </table>
 
@@ -102,19 +100,39 @@
 
 ### macOS
 
-<img src="docs/screenshots/macos/today.png" width="820" alt="Mac 原生侧边栏与今日课程">
+<img src="docs/screenshots/macos/today.png" width="820" alt="macOS 原生侧栏与今日课程">
 
 <details>
 <summary>更多 macOS 界面</summary>
 
 <table>
+  <tr><th>日期课表</th><th>账户信息</th></tr>
   <tr>
-    <th>日期课表</th>
-    <th>账户信息</th>
+    <td><img src="docs/screenshots/macos/schedule.png" width="400" alt="macOS 日期课表"></td>
+    <td><img src="docs/screenshots/macos/profile.png" width="400" alt="macOS 账户信息"></td>
   </tr>
+</table>
+
+<table>
+  <tr><th>设置</th><th>账户管理（示例数据）</th></tr>
   <tr>
-    <td><img src="docs/screenshots/macos/schedule.png" width="400" alt="Mac 日期课表"></td>
-    <td><img src="docs/screenshots/macos/profile.png" width="400" alt="Mac 账户与课堂偏好"></td>
+    <td><img src="docs/screenshots/macos/settings.png" width="400" alt="macOS 设置"></td>
+    <td><img src="docs/screenshots/macos/accounts.png" width="400" alt="macOS 账户管理（示例数据）"></td>
+  </tr>
+  <tr><th>登录</th><th>课程二维码</th></tr>
+  <tr>
+    <td><img src="docs/screenshots/macos/login.png" width="400" alt="macOS 登录"></td>
+    <td><img src="docs/screenshots/macos/qrcode.png" width="400" alt="macOS 课程二维码"></td>
+  </tr>
+  <tr><th>签到记录</th><th>项目源码与致谢</th></tr>
+  <tr>
+    <td><img src="docs/screenshots/macos/records.png" width="400" alt="macOS 签到记录"></td>
+    <td><img src="docs/screenshots/macos/open-source.png" width="400" alt="macOS 项目源码与致谢"></td>
+  </tr>
+  <tr><th>免责声明</th><th>深色外观</th></tr>
+  <tr>
+    <td><img src="docs/screenshots/macos/disclaimer.png" width="400" alt="macOS 免责声明"></td>
+    <td><img src="docs/screenshots/macos/today-dark.png" width="400" alt="macOS 深色外观"></td>
   </tr>
 </table>
 
