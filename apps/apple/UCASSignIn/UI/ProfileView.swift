@@ -21,34 +21,35 @@ struct ProfileView: View {
                     accountCard
                     VStack(spacing: 0) {
                         Button { model.showAccountManagement = true } label: {
-                            menuRow("切换与管理账户", symbol: "person.2")
+                            PreferenceNavigationRow(title: "切换与管理账户", symbol: "person.2")
                         }.buttonStyle(.plain)
                             .disabled(!model.canChangeAccount)
                             .accessibilityIdentifier("accounts.manage")
-                        Divider().padding(.leading, 48)
+                        PreferenceDivider()
                         Button { path.append(.settings) } label: {
-                            menuRow("设置", symbol: "gearshape")
+                            PreferenceNavigationRow(title: "设置", symbol: "gearshape")
                         }.buttonStyle(.plain)
                             .accessibilityIdentifier("profile.settings")
-                        Divider().padding(.leading, 48)
-                        Button { path.append(.records) } label: { menuRow("本机签到记录", symbol: "clock.arrow.circlepath") }.buttonStyle(.plain)
+                        PreferenceDivider()
+                        Button { path.append(.records) } label: { PreferenceNavigationRow(title: "本机签到记录", symbol: "clock.arrow.circlepath") }.buttonStyle(.plain)
                             .accessibilityIdentifier("profile.records")
-                    }.padding(.horizontal, 18).cardSurface()
+                    }.padding(.horizontal, PreferenceRowLayout.horizontalPadding).cardSurface()
                     VStack(spacing: 0) {
                         Button { path.append(.openSource) } label: {
-                            menuRow("项目源码与致谢", symbol: "chevron.left.forwardslash.chevron.right")
+                            PreferenceNavigationRow(title: "项目源码与致谢", symbol: "chevron.left.forwardslash.chevron.right")
                         }.buttonStyle(.plain)
                             .accessibilityIdentifier("profile.openSource")
-                        Divider().padding(.leading, 48)
+                        PreferenceDivider()
                         Button { path.append(.disclaimer) } label: {
-                            menuRow("免责声明", symbol: "doc.text")
+                            PreferenceNavigationRow(title: "免责声明", symbol: "doc.text")
                         }.buttonStyle(.plain)
                             .accessibilityIdentifier("profile.disclaimer")
-                    }.padding(.horizontal, 18).cardSurface()
+                    }.padding(.horizontal, PreferenceRowLayout.horizontalPadding).cardSurface()
                     VStack(alignment: .leading, spacing: 9) {
-                        Label("安心留在本机", systemImage: "lock.shield").font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.green)
+                        Label("安心留在本机", systemImage: "lock.shield").font(PreferenceTypography.section).foregroundStyle(Palette.green)
                         Text("各账户的会话和可选密码由系统钥匙串保存；课程缓存、签到记录与课堂偏好分别保留在此设备，移除账户时仅清除该账户的数据。App 不请求定位权限。")
-                            .font(.system(size: 12)).lineSpacing(5).foregroundStyle(Palette.secondary)
+                            .font(PreferenceTypography.detail).lineSpacing(5).foregroundStyle(Palette.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }.padding(.horizontal, 4)
                     if model.isConnected {
                         Button(role: model.isDemo ? nil : .destructive) {
@@ -57,7 +58,7 @@ struct ProfileView: View {
                             showLogout = true
                         } label: {
                             Text(model.isDemo ? "退出演示模式" : "退出并移除此账户")
-                                .font(.system(size: 14, weight: .medium))
+                                .font(PreferenceTypography.body.weight(.medium))
                                 .foregroundStyle(model.isDemo ? Palette.secondary : .red)
                                 .frame(maxWidth: .infinity).padding(18).cardSurface()
                                 .contentShape(RoundedRectangle(cornerRadius: 22))
@@ -65,7 +66,7 @@ struct ProfileView: View {
                             .accessibilityIdentifier("profile.logout")
                     }
                     Text("果壳签到 · 1.0\n开源许可 · AGPL-3.0")
-                        .font(.system(size: 10)).lineSpacing(5).foregroundStyle(Palette.secondary)
+                        .font(PreferenceTypography.footer).lineSpacing(5).foregroundStyle(Palette.secondary)
                         .multilineTextAlignment(.center).frame(maxWidth: .infinity).padding(.vertical, 8)
                 }.appPagePadding()
                     .frame(maxWidth: 680).frame(maxWidth: .infinity)
@@ -148,25 +149,25 @@ struct ProfileView: View {
                 .font(.system(size: 53, weight: .light)).foregroundStyle(Palette.green)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 8) {
-                Text(accountDisplayName).font(.system(size: 22, weight: .semibold)).foregroundStyle(Palette.ink)
+                Text(accountDisplayName).font(PreferenceTypography.accountName).foregroundStyle(Palette.ink)
                 if let studentNo = model.accountStudentNo {
                     Text("学号 \(accountDetailsHidden ? "••••••••" : studentNo)")
-                        .font(.system(size: 12)).monospacedDigit().foregroundStyle(Palette.secondary)
+                        .font(PreferenceTypography.detail).monospacedDigit().foregroundStyle(Palette.secondary)
                         .accessibilityLabel(accountDetailsHidden ? "学号已隐藏" : "学号 \(studentNo)")
                 }
                 if canConnectAccount {
                     Text(model.isDemo ? "演示模式 · 点击连接账户" : "点击登录，连接账户")
-                        .font(.system(size: 11)).foregroundStyle(Palette.green)
+                        .font(PreferenceTypography.caption).foregroundStyle(Palette.green)
                         .fixedSize(horizontal: false, vertical: true)
                 } else if let session = model.session, session.name == nil {
                     Button("重新登录以同步姓名") { model.presentLogin(accountID: model.activeAccountID) }
-                        .font(.system(size: 11)).foregroundStyle(Palette.green)
+                        .font(PreferenceTypography.caption).foregroundStyle(Palette.green)
                         .disabled(!model.canChangeAccount)
                 } else {
                     Text("中国科学院大学 · 轻新课堂")
-                        .font(.system(size: 11)).foregroundStyle(Palette.secondary)
+                        .font(PreferenceTypography.caption).foregroundStyle(Palette.secondary)
                 }
-            }
+            }.fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
             if !model.isConnected {
                 Image(systemName: "chevron.right")
@@ -181,14 +182,6 @@ struct ProfileView: View {
         .contentShape(RoundedRectangle(cornerRadius: 22))
     }
 
-    private func menuRow(_ title: String, symbol: String) -> some View {
-        HStack(spacing: 13) {
-            Image(systemName: symbol).frame(width: 22).foregroundStyle(Palette.green)
-            Text(title).font(.system(size: 14)).foregroundStyle(Palette.ink)
-            Spacer()
-            Image(systemName: "chevron.right").font(.system(size: 11)).foregroundStyle(Palette.secondary)
-        }.padding(.vertical, 20).contentShape(Rectangle())
-    }
     private var recordsView: some View {
         Group {
             if model.records.isEmpty {

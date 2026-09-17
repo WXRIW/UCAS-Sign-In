@@ -370,22 +370,24 @@ final class UCASSignInMacUITests: XCTestCase {
         let app = launchAccounts()
         app.typeKey(",", modifierFlags: .command)
         XCTAssertTrue(app.scrollViews["settings.scroll"].waitForExistence(timeout: 5))
-        let appearance = app.segmentedControls["settings.appearance"]
+        let appearance = app.popUpButtons["settings.appearance"]
         XCTAssertTrue(appearance.exists)
-        let dark = appearance.buttons["深色"]
-        dark.click()
-        XCTAssertTrue(dark.isSelected)
+        appearance.click()
+        app.menuItems["深色"].click()
+        XCTAssertEqual(appearance.value as? String, "深色")
         XCTAssertTrue(app.scrollViews["settings.scroll"].exists)
         capture(app, name: "Mac-设置-深色")
         app.terminate()
         let relaunched = launchAccounts(reset: false)
         relaunched.typeKey(",", modifierFlags: .command)
-        let restored = relaunched.segmentedControls["settings.appearance"]
+        let restored = relaunched.popUpButtons["settings.appearance"]
         XCTAssertTrue(restored.waitForExistence(timeout: 5))
-        XCTAssertTrue(restored.buttons["深色"].isSelected)
-        restored.buttons["浅色"].click()
-        XCTAssertTrue(restored.buttons["浅色"].isSelected)
-        restored.buttons["跟随系统"].click()
+        XCTAssertEqual(restored.value as? String, "深色")
+        restored.click()
+        relaunched.menuItems["浅色"].click()
+        XCTAssertEqual(restored.value as? String, "浅色")
+        restored.click()
+        relaunched.menuItems["跟随系统"].click()
         returnToParent(content: "profile.scroll", in: relaunched)
     }
 

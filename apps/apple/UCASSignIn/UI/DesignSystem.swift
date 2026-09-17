@@ -81,6 +81,60 @@ struct SectionHeading: View {
     }
 }
 
+enum PreferenceTypography {
+    #if os(iOS)
+    static let accountName: Font = .title2.weight(.semibold)
+    static let body: Font = .body
+    static let detail: Font = .subheadline
+    static let section: Font = .subheadline.weight(.semibold)
+    static let caption: Font = .footnote
+    static let footer: Font = .footnote
+    #else
+    static let accountName: Font = .system(size: 22, weight: .semibold)
+    static let body: Font = .system(size: 14)
+    static let detail: Font = .system(size: 12)
+    static let section: Font = .system(size: 13, weight: .semibold)
+    static let caption: Font = .system(size: 11)
+    static let footer: Font = .system(size: 10)
+    #endif
+}
+
+enum PreferenceRowLayout {
+    static let iconWidth: CGFloat = 22
+    static let spacing: CGFloat = 13
+    static let textInset = iconWidth + spacing
+    static let horizontalPadding: CGFloat = 18
+}
+
+struct PreferenceDivider: View {
+    var body: some View {
+        Rectangle().fill(Palette.line).frame(height: 0.5)
+            .padding(.leading, PreferenceRowLayout.textInset)
+            .accessibilityHidden(true)
+    }
+}
+
+struct PreferenceNavigationRow: View {
+    let title: String
+    let symbol: String
+
+    var body: some View {
+        HStack(spacing: PreferenceRowLayout.spacing) {
+            Image(systemName: symbol)
+                .font(.system(size: 17))
+                .frame(width: PreferenceRowLayout.iconWidth)
+                .foregroundStyle(Palette.green)
+                .accessibilityHidden(true)
+            Text(title).font(PreferenceTypography.body).foregroundStyle(Palette.ink)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 12)
+            Image(systemName: "chevron.right")
+                .font(.system(size: 11, weight: .medium)).foregroundStyle(Palette.secondary)
+                .accessibilityHidden(true)
+        }.padding(.vertical, 20).contentShape(Rectangle())
+    }
+}
+
 enum SchoolDate {
     static var calendar: Calendar {
         var value = Calendar(identifier: .gregorian)

@@ -501,10 +501,11 @@ final class UCASSignInUITests: XCTestCase {
         selectTab("账户", in: app)
         XCTAssertFalse(app.switches["settings.reminders"].exists)
         tapAfterScrolling(app.buttons["profile.settings"], in: app)
-        let appearance = app.segmentedControls["settings.appearance"]
+        let appearance = app.buttons["settings.appearance"]
         XCTAssertTrue(appearance.waitForExistence(timeout: 5))
-        appearance.buttons["深色"].tap()
-        XCTAssertTrue(appearance.buttons["深色"].isSelected)
+        appearance.tap()
+        app.buttons["深色"].tap()
+        XCTAssertEqual(appearance.value as? String, "深色")
         XCTAssertTrue(app.navigationBars["设置"].exists)
         XCTAssertTrue(app.switches["settings.reminders"].exists)
         XCTAssertTrue(app.switches["settings.autoSign"].exists)
@@ -513,12 +514,14 @@ final class UCASSignInUITests: XCTestCase {
         let relaunched = launchAccounts(reset: false)
         selectTab("账户", in: relaunched)
         tapAfterScrolling(relaunched.buttons["profile.settings"], in: relaunched)
-        let restored = relaunched.segmentedControls["settings.appearance"]
+        let restored = relaunched.buttons["settings.appearance"]
         XCTAssertTrue(restored.waitForExistence(timeout: 5))
-        XCTAssertTrue(restored.buttons["深色"].isSelected)
-        restored.buttons["浅色"].tap()
-        XCTAssertTrue(restored.buttons["浅色"].isSelected)
-        restored.buttons["跟随系统"].tap()
+        XCTAssertEqual(restored.value as? String, "深色")
+        restored.tap()
+        relaunched.buttons["浅色"].tap()
+        XCTAssertEqual(restored.value as? String, "浅色")
+        restored.tap()
+        relaunched.buttons["跟随系统"].tap()
         returnToParent(from: "设置", to: "账户", in: relaunched)
     }
 

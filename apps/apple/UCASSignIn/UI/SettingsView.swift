@@ -32,32 +32,49 @@ struct SettingsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                VStack(alignment: .leading, spacing: 18) {
-                    SectionHeading(title: "外观")
-                    Picker("主题", selection: $appearance) {
-                        ForEach(AppAppearance.allCases) { mode in
-                            Text(mode.title).tag(mode)
+                settingsSection("外观") {
+                    HStack(spacing: PreferenceRowLayout.spacing) {
+                        Image(systemName: "circle.lefthalf.filled")
+                            .font(.system(size: 17)).foregroundStyle(Palette.green)
+                            .frame(width: PreferenceRowLayout.iconWidth)
+                            .accessibilityHidden(true)
+                        Text("主题").font(PreferenceTypography.body).foregroundStyle(Palette.ink)
+                        Spacer(minLength: 12)
+                        Picker("主题", selection: $appearance) {
+                            ForEach(AppAppearance.allCases) { mode in
+                                Text(mode.title).tag(mode)
+                            }
                         }
-                    }
-                    .pickerStyle(.segmented)
-                    .accessibilityIdentifier("settings.appearance")
-                }.padding(21).cardSurface()
-                VStack(alignment: .leading, spacing: 20) {
-                    SectionHeading(title: "课堂偏好")
-                    Toggle(isOn: Binding(get: { model.remindersEnabled }, set: { enabled in Task { await model.setReminders(enabled) } })) {
-                        settingsLabel("课程提醒", subtitle: "已同步课程将在开课前 10 分钟提醒", symbol: "bell")
-                    }.toggleStyle(.switch).accessibilityIdentifier("settings.reminders")
-                    Divider().overlay(Palette.line)
-                    Toggle(isOn: Binding(get: { model.autoSignEnabled }, set: { model.setAutoSign($0) })) {
-                        settingsLabel("前台自动签到", subtitle: autoSignSubtitle, symbol: "checkmark.circle")
-                    }.toggleStyle(.switch).accessibilityIdentifier("settings.autoSign")
-                    Text(autoSignExplanation)
-                        .font(.system(size: 11)).lineSpacing(4).foregroundStyle(Palette.secondary)
-                }.padding(21).cardSurface().disabled(!model.isConnected || !model.canChangeAccount)
-                VStack(alignment: .leading, spacing: 0) {
-                    SectionHeading(title: "通知")
+                        .pickerStyle(.menu)
+                        .font(PreferenceTypography.body)
+                        .labelsHidden()
+                        .fixedSize()
+                        .tint(Palette.green)
+                        .accessibilityIdentifier("settings.appearance")
+                        .accessibilityValue(appearance.title)
+                    }.padding(.vertical, 18)
+                }
+                settingsSection("课堂偏好", footer: model.isConnected ? autoSignExplanation : "连接学校账户后，可开启课程提醒与前台自动签到。") {
+                    VStack(spacing: 0) {
+                        Toggle(isOn: Binding(get: { model.remindersEnabled }, set: { enabled in Task { await model.setReminders(enabled) } })) {
+                            settingsLabel("课程提醒", subtitle: "已同步课程将在开课前 10 分钟提醒", symbol: "bell")
+                        }.toggleStyle(.switch).accessibilityIdentifier("settings.reminders")
+                            .accessibilityLabel("课程提醒")
+                            .accessibilityHint("已同步课程将在开课前 10 分钟提醒")
+                            .padding(.vertical, 18)
+                        PreferenceDivider()
+                        Toggle(isOn: Binding(get: { model.autoSignEnabled }, set: { model.setAutoSign($0) })) {
+                            settingsLabel("前台自动签到", subtitle: autoSignSubtitle, symbol: "checkmark.circle")
+                        }.toggleStyle(.switch).accessibilityIdentifier("settings.autoSign")
+                            .accessibilityLabel("前台自动签到")
+                            .accessibilityHint(autoSignSubtitle)
+                            .padding(.vertical, 18)
+                    }.tint(Palette.green)
+                        .disabled(!model.isConnected || !model.canChangeAccount)
+                }
+                settingsSection("通知", footer: "通知权限、声音与横幅可在系统设置中调整。") {
                     notificationSettingsButton
-                }.padding(21).cardSurface()
+                }
             }.appPagePadding()
                 .frame(maxWidth: 680).frame(maxWidth: .infinity)
         }
@@ -73,6 +90,26 @@ struct SettingsView: View {
             Text("在“系统设置 → 通知”中找到“果壳签到”，即可调整通知、声音与横幅。若列表中尚未出现，请先开启本页的“课程提醒”。")
         }
         #endif
+    }
+
+    private func settingsSection<Content: View>(_ title: String, footer: String? = nil,
+                                                @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(PreferenceTypography.section).foregroundStyle(Palette.secondary)
+                .padding(.horizontal, PreferenceRowLayout.horizontalPadding)
+                .accessibilityAddTraits(.isHeader)
+            content()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, PreferenceRowLayout.horizontalPadding)
+                .cardSurface()
+            if let footer {
+                Text(footer)
+                    .font(PreferenceTypography.detail).lineSpacing(4).foregroundStyle(Palette.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, PreferenceRowLayout.horizontalPadding)
+            }
+        }
     }
     private var autoSignSubtitle: String {
         #if os(macOS)
@@ -94,12 +131,12 @@ struct SettingsView: View {
     private var notificationSettingsButton: some View {
         #if os(macOS)
         Button { showNotificationSettingsHelp = true } label: {
-            menuRow("系统通知设置", symbol: "gearshape")
+            PreferenceNavigationRow(title: "系统通知设置", symbol: "gearshape")
         }.buttonStyle(.plain)
         #else
         Link(destination: URL(string: UIApplication.openSettingsURLString)!) {
-            menuRow("系统通知设置", symbol: "gearshape")
-        }
+            PreferenceNavigationRow(title: "系统通知设置", symbol: "gearshape")
+        }.buttonStyle(.plain)
         #endif
     }
 
@@ -110,20 +147,16 @@ struct SettingsView: View {
     }
     #endif
     private func settingsLabel(_ title: String, subtitle: String, symbol: String) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: symbol).font(.system(size: 18)).foregroundStyle(Palette.green).frame(width: 22)
+        HStack(alignment: .center, spacing: PreferenceRowLayout.spacing) {
+            Image(systemName: symbol).font(.system(size: 17)).foregroundStyle(Palette.green)
+                .frame(width: PreferenceRowLayout.iconWidth, height: 20)
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 6) {
-                Text(title).font(.system(size: 14, weight: .medium)).foregroundStyle(Palette.ink)
-                Text(subtitle).font(.system(size: 10)).foregroundStyle(Palette.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(title).font(PreferenceTypography.body.weight(.medium)).foregroundStyle(Palette.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(subtitle).font(PreferenceTypography.detail).lineSpacing(3)
+                    .foregroundStyle(Palette.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
-    }
-    private func menuRow(_ title: String, symbol: String) -> some View {
-        HStack(spacing: 13) {
-            Image(systemName: symbol).frame(width: 22).foregroundStyle(Palette.green)
-            Text(title).font(.system(size: 14)).foregroundStyle(Palette.ink)
-            Spacer()
-            Image(systemName: "chevron.right").font(.system(size: 11)).foregroundStyle(Palette.secondary)
-        }.padding(.vertical, 20).contentShape(Rectangle())
     }
 }
