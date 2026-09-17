@@ -23,8 +23,14 @@ xcuserdata/
 *.dSYM.zip
 *.log
 
-# Local helper scripts (at any directory depth)
-scripts/
+# Local Apple helper scripts
+/apps/apple/scripts/
+
+# Local platform development tests and tools
+/apps/android/tests/
+/apps/android/tools/
+/apps/windows/tests/
+/apps/windows/tools/
 
 # Local signing configuration and credentials
 /apps/apple/Config/Signing.local.xcconfig
@@ -41,5 +47,22 @@ scripts/
 
 # Keep shared schemes, project files, entitlements and Package.resolved in Git.
 
-# Local multi-platform project plan
-/PROJECT_STRUCTURE_PLAN.md
+# .NET / Android / Windows
+bin/
+obj/
+.vs/
+AppPackages/
+BundleArtifacts/
+*.assets.cache
+*.user
+*.suo
+*.apk
+*.aab
+*.msix
+*.msixbundle
+*.appx
+*.appxbundle
+*.keystore
+*.jks
+*.pfx
+Signing.local.props

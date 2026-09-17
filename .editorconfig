@@ -8,6 +8,9 @@ trim_trailing_whitespace = true
 indent_style = space
 indent_size = 4
 
+[*.{bat,cmd}]
+end_of_line = crlf
+
 [*.md]
 trim_trailing_whitespace = false
 
@@ -16,3 +19,8 @@ indent_size = 2
 
 [*.pbxproj]
 indent_style = tab
+
+[*.cs]
+csharp_new_line_before_open_brace = all
+csharp_preserve_single_line_blocks = false
+csharp_preserve_single_line_statements = false
