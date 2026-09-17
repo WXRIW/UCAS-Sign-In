@@ -1,0 +1,3 @@
+// Generated from eng/version.json. Do not edit manually.
+MARKETING_VERSION = 1.0.0
+CURRENT_PROJECT_VERSION = 1

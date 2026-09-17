@@ -1,3 +1,6 @@
+// Version.xcconfig is generated from eng/version.json.
+#include "../../../eng/generated/Version.xcconfig"
+
 // Shared defaults for simulator builds. Configure device signing in the local file.
 DEVELOPMENT_TEAM =
 APP_BUNDLE_IDENTIFIER = cn.ucas.signin

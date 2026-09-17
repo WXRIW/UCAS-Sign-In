@@ -500,7 +500,7 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
             exitAccount.Gravity = GravityFlags.Center;
             Add(exitAccount, 16);
         }
-        var footer = Text("果壳签到 · 0.1.0\n开源许可 · AGPL-3.0", 10, color: Secondary);
+        var footer = Text($"果壳签到 · {Information.DisplayVersion}\n开源许可 · AGPL-3.0", 10, color: Secondary);
         footer.Gravity = GravityFlags.Center;
         Add(footer, 0);
         ArrangeColumns(i => i < menuStart || i >= menuEnd);

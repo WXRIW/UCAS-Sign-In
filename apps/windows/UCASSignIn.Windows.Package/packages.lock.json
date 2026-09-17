@@ -208,7 +208,7 @@
           "QRCoder": "[1.6.0, )",
           "System.Drawing.Common": "[10.0.0, )",
           "System.Security.Cryptography.ProtectedData": "[10.0.0, )",
-          "UCASSignIn.Core": "[0.1.0, )"
+          "UCASSignIn.Core": "[1.0.0, )"
         }
       }
     },

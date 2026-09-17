@@ -403,7 +403,7 @@ public sealed partial class MainWindow
                 Model.IsDemo ? Hover : Brush(dark ? "39272B" : "FCEDEC"), Model.IsDemo ? Pressed : Brush(dark ? "492D33" : "F8DDDB"));
             Page.Children.Add(exitAccount);
         }
-        var foot = Text("果壳签到 0.1.0 · AGPL-3.0", 12, color: Secondary);
+        var foot = Text($"果壳签到 {Information.DisplayVersion} · AGPL-3.0", 12, color: Secondary);
         foot.TextAlignment = TextAlignment.Center;
         Page.Children.Add(foot);
         void Menu(string title, string glyph, Func<Task> action)

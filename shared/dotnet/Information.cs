@@ -3,6 +3,11 @@ namespace UCASSignIn;
 internal static class Information
 {
     internal const float SectionTitleSize = 22;
+    internal static string DisplayVersion =>
+        typeof(Information).Assembly
+            .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+            .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
+            .FirstOrDefault()?.InformationalVersion.Split('+')[0] ?? "0.0.0";
 
     internal sealed record Component(string Name, string Author, string Repository, string License, string LicenseUrl);
 
