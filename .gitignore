@@ -67,3 +67,4 @@ BundleArtifacts/
 *.jks
 *.pfx
 Signing.local.props
+Package.StoreAssociation.xml
