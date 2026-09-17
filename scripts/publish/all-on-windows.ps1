@@ -24,5 +24,5 @@ $windowsArguments = @{}
 if ($MSBuildPath) { $windowsArguments.MSBuildPath = $MSBuildPath }
 & (Join-Path $PSScriptRoot 'platforms/windows.ps1') @windowsArguments
 
-$releaseDirectory = Join-Path $repositoryRoot "artifacts/$($release.version)"
+$releaseDirectory = Join-Path $repositoryRoot "artifacts/publish/$($release.version)"
 Write-Host "Release directory: $releaseDirectory"

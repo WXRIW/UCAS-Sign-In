@@ -14,7 +14,8 @@ $certificatePath = Join-Path $repositoryRoot '.local/windows-signing/ucas-signin
 $release = Read-ReleaseVersion $repositoryRoot
 $version = [string]$release.version
 $stagingDirectory = Join-Path $repositoryRoot "artifacts/.staging/windows/$([Guid]::NewGuid().ToString('N'))"
-$outputDirectory = Join-Path $repositoryRoot "artifacts/$version"
+$outputDirectory = Join-Path $repositoryRoot "artifacts/publish/$version"
+$checksumDirectory = Join-Path $outputDirectory 'sha256'
 
 $outputs = [ordered]@{
     PortableX64 = Join-Path $outputDirectory "UCAS-SignIn-$version-windows-x64.zip"
@@ -95,7 +96,7 @@ try {
     }
 
     $script:msbuild = Find-MSBuild $MSBuildPath
-    New-Item -ItemType Directory -Path $stagingDirectory, $outputDirectory -Force | Out-Null
+    New-Item -ItemType Directory -Path $stagingDirectory, $outputDirectory, $checksumDirectory -Force | Out-Null
 
     $portableX64Archive = Join-Path $stagingDirectory ([IO.Path]::GetFileName($outputs.PortableX64))
     $portableArm64Archive = Join-Path $stagingDirectory ([IO.Path]::GetFileName($outputs.PortableArm64))
@@ -133,14 +134,15 @@ try {
 
     foreach ($path in $outputs.Values) {
         $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+        $checksumPath = Join-Path $checksumDirectory "$([IO.Path]::GetFileName($path)).sha256"
         "$hash  $([IO.Path]::GetFileName($path))" |
-            Set-Content -LiteralPath "$path.sha256" -Encoding utf8
+            Set-Content -LiteralPath $checksumPath -Encoding utf8
     }
 
     Write-Host "Windows release files: $outputDirectory"
     foreach ($path in $outputs.Values) {
         Write-Host "  $([IO.Path]::GetFileName($path))"
-        Write-Host "  $([IO.Path]::GetFileName($path)).sha256"
+        Write-Host "  sha256/$([IO.Path]::GetFileName($path)).sha256"
     }
     Write-Host 'Upload only the single .msixupload file to Partner Center; it contains both x64 and ARM64.'
 } finally {

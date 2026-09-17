@@ -1,6 +1,6 @@
 # 完整发布流程
 
-三端共用 `eng/version.json` 作为唯一版本源。正式产物直接写入 `artifacts/<版本>/`，不再增加平台子目录；临时构建文件放在 `artifacts/.staging/` 或系统临时目录。
+三端共用 `eng/version.json` 作为唯一版本源。正式产物直接写入 `artifacts/publish/<版本>/`，不再增加平台子目录；临时构建文件放在 `artifacts/.staging/` 或系统临时目录。
 
 ## 1. 设置版本
 
@@ -14,8 +14,25 @@ dotnet run --project tools/Versioning -- check
 - `version` 是用户可见版本，例如 `1.0.0`。
 - `build` 是递增的内部构建号。
 - `set` 会同步生成 .NET、Android、Apple 和 Windows MSIX 所需的版本配置。
-- Windows MSIX 使用四段版本，例如公开版本 `1.0.0`、build `1` 对应 `1.0.0.1`。
-- 也可使用 `bump patch`、`bump minor`、`bump major` 或 `bump build`。
+- Windows MSIX 在公开版本后补一位 `0`，例如公开版本 `1.1.0` 对应 `1.1.0.0`。第四段必须为 `0`，由 Microsoft Store 保留使用；内部 build 不写入 MSIX 版本。
+
+常规升级优先使用 `bump`，它会同时递增内部构建号并同步三端配置：
+
+```powershell
+# 1.0.0 → 1.0.1，同时 build + 1
+dotnet run --project tools/Versioning -- bump patch
+
+# 1.0.0 → 1.1.0，同时 build + 1
+dotnet run --project tools/Versioning -- bump minor
+
+# 1.0.0 → 2.0.0，同时 build + 1
+dotnet run --project tools/Versioning -- bump major
+
+# 公开版本号不变，仅 build + 1；用于 Android、Apple 等同版本重新构建
+dotnet run --project tools/Versioning -- bump build
+```
+
+`set VERSION` 默认保留当前 build；需要指定确切构建号时使用 `set VERSION --build NUMBER`。每次对外发布或向 Android、Apple 商店上传新包，都应确保 build 比上一次更大。由于 MSIX 不包含内部 build，只执行 `bump build` 不会改变 Windows 包版本；同一公开版本的 Windows 包不能作为更高版本重新上传，需要至少执行 `bump patch`。
 
 不要直接编辑 `eng/generated/` 或生成后的 `Package.appxmanifest`；Windows 清单的非版本内容在 `Package.appxmanifest.in` 中维护。
 
@@ -54,7 +71,7 @@ scripts/publish/all-on-macos.sh
 该入口生成：
 
 - iOS arm64 未签名 IPA。
-- macOS arm64 + x86_64 通用临时签名 ZIP。
+- macOS arm64 + x86_64 通用 ZIP，以及安装到 `/Applications` 的 PKG；包内 App 使用临时签名。
 
 也可只执行 `scripts/publish/platforms/apple.sh`，结果相同。
 
@@ -78,50 +95,41 @@ Windows 旁加载包和商店上传包均由 Visual Studio/MSBuild 的 Windows �
 统一文件名格式：
 
 ```text
-UCAS-SignIn-<版本>-<平台>-<架构>-<类型>.<扩展名>
+UCAS-SignIn-<版本>-<平台>[-<架构>][-<用途或状态>].<扩展名>
 ```
 
 以 `1.0.0` 为例：
 
 ```text
-artifacts/1.0.0/
-  UCAS-SignIn-1.0.0-android-arm-arm64-release.apk
-  UCAS-SignIn-1.0.0-android-arm-arm64-release.apk.sha256
-  UCAS-SignIn-1.0.0-ios-arm64-unsigned.ipa
-  UCAS-SignIn-1.0.0-ios-arm64-unsigned.ipa.sha256
-  UCAS-SignIn-1.0.0-macos-universal-adhoc.zip
-  UCAS-SignIn-1.0.0-macos-universal-adhoc.zip.sha256
+artifacts/publish/1.0.0/
+  UCAS-SignIn-1.0.0-android.apk
+  UCAS-SignIn-1.0.0-ios-unsigned.ipa
+  UCAS-SignIn-1.0.0-macos-universal.zip
+  UCAS-SignIn-1.0.0-macos-universal.pkg
   UCAS-SignIn-1.0.0-windows-x64.zip
-  UCAS-SignIn-1.0.0-windows-x64.zip.sha256
   UCAS-SignIn-1.0.0-windows-arm64.zip
-  UCAS-SignIn-1.0.0-windows-arm64.zip.sha256
   UCAS-SignIn-1.0.0-windows-x64-arm64-sideload.zip
-  UCAS-SignIn-1.0.0-windows-x64-arm64-sideload.zip.sha256
   UCAS-SignIn-1.0.0-windows-x64-arm64-store.msixupload
-  UCAS-SignIn-1.0.0-windows-x64-arm64-store.msixupload.sha256
   logs/
+  sha256/
+    UCAS-SignIn-1.0.0-android.apk.sha256
+    UCAS-SignIn-1.0.0-ios-unsigned.ipa.sha256
+    UCAS-SignIn-1.0.0-macos-universal.zip.sha256
+    UCAS-SignIn-1.0.0-macos-universal.pkg.sha256
+    UCAS-SignIn-1.0.0-windows-x64.zip.sha256
+    UCAS-SignIn-1.0.0-windows-arm64.zip.sha256
+    UCAS-SignIn-1.0.0-windows-x64-arm64-sideload.zip.sha256
+    UCAS-SignIn-1.0.0-windows-x64-arm64-store.msixupload.sha256
 ```
+
+macOS 的 PKG 将应用安装到 `/Applications`。其中 App 使用临时签名，PKG 本身未使用 Apple Developer Installer 证书签名。
 
 旁加载 ZIP 内含一个双架构 `.msixbundle` 和公开 `.cer` 证书。`.msixupload` 是唯一上传 Partner Center 的文件，其余 Windows 包用于直接分发。
 
 ## 5. 发布前检查
 
 1. 确认 `dotnet run --project tools/Versioning -- check` 通过。
-2. 确认 `artifacts/<版本>/` 中所需产物及对应 `.sha256` 都存在。
+2. 确认 `artifacts/publish/<版本>/` 中所需产物及 `sha256/` 下对应的校验文件都存在。
 3. Android 应继续使用历史发布密钥；不要重新生成密钥。
 4. Windows 商店只上传 `*-store.msixupload`。
 5. PFX、keystore、密码、`Signing.local.props` 和本地 Apple 签名配置不得提交或随包分发。
-
-## Apple 本地旧辅助脚本
-
-原有 macOS/iOS 辅助脚本已集中放入被 Git 忽略的 `scripts/local/apple/`，不作为统一发布入口：
-
-```text
-scripts/local/apple/build-macos.sh
-scripts/local/apple/export-release.sh
-scripts/local/apple/export-macos.sh
-scripts/local/apple/export-ipa.sh
-scripts/local/apple/update-macos-icons.sh
-```
-
-需要单独调试构建、开发签名 IPA 或更新 macOS 图标时仍可直接使用这些脚本。正式版本优先使用 `scripts/publish/all-on-macos.sh`。

@@ -32,8 +32,10 @@ $apkSigner = Join-Path $buildTools 'lib/apksigner.jar'
 $zipAlign = Join-Path $buildTools 'zipalign.exe'
 $aapt = Join-Path $buildTools 'aapt.exe'
 $stagingDirectory = Join-Path $repositoryRoot "artifacts/.staging/android/$([Guid]::NewGuid().ToString('N'))"
-$outputDirectory = Join-Path $repositoryRoot "artifacts/$version"
-$outputApk = Join-Path $outputDirectory "UCAS-SignIn-$version-android-arm-arm64-release.apk"
+$outputDirectory = Join-Path $repositoryRoot "artifacts/publish/$version"
+$checksumDirectory = Join-Path $outputDirectory 'sha256'
+$outputApk = Join-Path $outputDirectory "UCAS-SignIn-$version-android.apk"
+$outputChecksum = Join-Path $checksumDirectory "$([IO.Path]::GetFileName($outputApk)).sha256"
 $oldPassword = $env:UCAS_ANDROID_SIGNING_PASSWORD
 if ($null -eq $Password) { $Password = Read-Host 'UCAS signing password' -AsSecureString }
 if ($Password.Length -eq 0) { throw 'The signing password cannot be empty.' }
@@ -45,7 +47,7 @@ try {
     $env:UCAS_ANDROID_SIGNING_PASSWORD = $credential.GetNetworkCredential().Password
     & $keyTool -list -keystore $keyStore -alias ucas-signin -storepass:env UCAS_ANDROID_SIGNING_PASSWORD 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Cannot open the UCAS signing key. Check the password and keystore.' }
-    New-Item -ItemType Directory -Path $stagingDirectory, $outputDirectory -Force | Out-Null
+    New-Item -ItemType Directory -Path $stagingDirectory, $outputDirectory, $checksumDirectory -Force | Out-Null
     $arguments = @(
         'publish', $project, '-c', 'Release', '-o', $stagingDirectory,
         '-p:RestoreLockedMode=true', '-p:AndroidPackageFormats=apk', '-p:AndroidKeyStore=true',
@@ -89,8 +91,9 @@ try {
 
     Copy-Item -LiteralPath $signedApk -Destination $outputApk -Force
     $hash = (Get-FileHash -LiteralPath $outputApk -Algorithm SHA256).Hash.ToLowerInvariant()
-    "$hash  $([IO.Path]::GetFileName($outputApk))" | Set-Content -LiteralPath "$outputApk.sha256" -Encoding utf8
+    "$hash  $([IO.Path]::GetFileName($outputApk))" | Set-Content -LiteralPath $outputChecksum -Encoding utf8
     Write-Host "Signed APK: $outputApk"
+    Write-Host "Checksum: $outputChecksum"
     Write-Host "Certificate SHA-256: $expectedFingerprint"
     Write-Host "APK SHA-256: $hash"
 } finally {

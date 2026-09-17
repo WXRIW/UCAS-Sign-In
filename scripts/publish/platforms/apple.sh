@@ -6,19 +6,21 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/../../.." && pwd)"
 apple_root="$repo_root/apps/apple"
 . "$repo_root/scripts/lib/release-version.sh"
-release_root="$repo_root/artifacts/$release_version"
+release_root="$repo_root/artifacts/publish/$release_version"
 ios_artifacts_dir="$release_root"
 macos_artifacts_dir="$release_root"
 ios_logs_dir="$release_root/logs"
 macos_logs_dir="$release_root/logs"
-ios_name="UCAS-SignIn-$release_version-ios-arm64-unsigned.ipa"
-macos_name="UCAS-SignIn-$release_version-macos-universal-adhoc.zip"
+checksums_dir="$release_root/sha256"
+ios_name="UCAS-SignIn-$release_version-ios-unsigned.ipa"
+macos_name="UCAS-SignIn-$release_version-macos-universal.zip"
+macos_pkg_name="UCAS-SignIn-$release_version-macos-universal.pkg"
 
 if [[ "$#" -eq 1 && ( "$1" == --help || "$1" == -h ) ]]; then
-    printf '用法：%s\n独立生成未签名的 iOS IPA 和临时签名的 macOS 通用 ZIP。\n' "$0"
+    printf '用法：%s\n独立生成未签名的 iOS IPA，以及包含临时签名 App 的 macOS 通用 ZIP 和 PKG。\n' "$0"
     printf '无需开发者证书；IPA 需要由签名或侧载工具签名后安装。\n'
     printf '所有产物保存在 %s。\n' "$release_root"
-    printf '构建日志保存在其 logs 子目录。\n'
+    printf '构建日志保存在 logs，校验文件保存在 sha256。\n'
     exit 0
 fi
 if [[ "$#" -ne 0 ]]; then
@@ -26,7 +28,7 @@ if [[ "$#" -ne 0 ]]; then
     exit 2
 fi
 
-mkdir -p "$ios_logs_dir" "$macos_logs_dir"
+mkdir -p "$ios_logs_dir" "$macos_logs_dir" "$checksums_dir"
 package_dir=
 ios_publish_dir=
 macos_publish_dir=
@@ -175,7 +177,7 @@ publish_artifact() {
         /usr/bin/shasum -a 256 "$name" > "$name.sha256"
     )
     mv -f "$publish_dir/$name" "$artifacts_dir/$name"
-    mv -f "$publish_dir/$name.sha256" "$artifacts_dir/$name.sha256"
+    mv -f "$publish_dir/$name.sha256" "$checksums_dir/$name.sha256"
 }
 
 export_ios() {
@@ -238,6 +240,7 @@ export_macos() {
     local derived_data="$package_dir/macOS-DerivedData"
     local app_path="$package_dir/果壳签到.app"
     local archive_path="$package_dir/$macos_name"
+    local installer_path="$package_dir/$macos_pkg_name"
     local library binary signature_info
 
     # Build both architectures in a fresh directory without certificate signing.
@@ -279,7 +282,10 @@ export_macos() {
 
     check_release_privacy "$app_path" "$repo_root" "$package_dir"
     /usr/bin/ditto --norsrc --noextattr --noqtn -c -k --keepParent "$app_path" "$archive_path"
+    /usr/bin/productbuild --component "$app_path" /Applications "$installer_path"
     publish_artifact "$archive_path" "$macos_name" \
+        "$macos_artifacts_dir" "$macos_publish_dir"
+    publish_artifact "$installer_path" "$macos_pkg_name" \
         "$macos_artifacts_dir" "$macos_publish_dir"
 }
 
@@ -289,6 +295,7 @@ run_export() {
     local log="$3"
     local exporter="$4"
     local artifacts_dir="$5"
+    local additional_name="${6-}"
     local status
     printf '\n%s\n构建日志：%s\n' "$label" "$log"
     # Keep the subshell outside an if/! condition, so errexit also applies
@@ -298,7 +305,12 @@ run_export() {
     status=$?
     set -e
     if [[ "$status" -eq 0 ]]; then
-        printf '已生成：%s\n校验文件：%s.sha256\n' "$artifacts_dir/$name" "$artifacts_dir/$name"
+        printf '已生成：%s\n校验文件：%s/%s.sha256\n' \
+            "$artifacts_dir/$name" "$checksums_dir" "$name"
+        if [[ -n "$additional_name" ]]; then
+            printf '已生成：%s\n校验文件：%s/%s.sha256\n' \
+                "$artifacts_dir/$additional_name" "$checksums_dir" "$additional_name"
+        fi
     else
         failed=1
         printf '生成失败，请查看日志：%s\n' "$log" >&2
@@ -308,8 +320,8 @@ run_export() {
 
 run_export '[1/2] 生成 iOS IPA（未签名）' "$ios_name" \
     "$ios_logs_dir/release-ios.log" export_ios "$ios_artifacts_dir"
-run_export '[2/2] 生成 macOS ZIP（Intel + Apple Silicon，临时签名）' "$macos_name" \
-    "$macos_logs_dir/release-macos.log" export_macos "$macos_artifacts_dir"
+run_export '[2/2] 生成 macOS ZIP 和 PKG（Intel + Apple Silicon，App 临时签名）' "$macos_name" \
+    "$macos_logs_dir/release-macos.log" export_macos "$macos_artifacts_dir" "$macos_pkg_name"
 
 if [[ "$failed" -ne 0 ]]; then
     printf '\n部分产物生成失败，已成功的产物仍保存在版本目录。\n' >&2

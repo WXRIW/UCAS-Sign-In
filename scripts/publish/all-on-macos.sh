@@ -7,4 +7,4 @@ repo_root="$(cd "$publish_dir/../.." && pwd)"
 
 printf 'UCAS Sign-In %s (build %s) Apple release\n' "$release_version" "$release_build"
 "$publish_dir/platforms/apple.sh"
-printf '\nRelease directory: %s\n' "$repo_root/artifacts/$release_version"
+printf '\nRelease directory: %s\n' "$repo_root/artifacts/publish/$release_version"
