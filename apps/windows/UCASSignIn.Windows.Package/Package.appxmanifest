@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Generated as Package.appxmanifest from eng/version.json. Edit this template, not the generated manifest. -->
 <Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10" xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10" xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10" xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10" xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities" IgnorableNamespaces="uap desktop com rescap">
-  <Identity Name="63265WXRIW.1602899530632" Publisher="CN=FD2EEB64-9B3F-4B12-B833-80497D4F956C" Version="1.0.0.0" />
+  <Identity Name="63265WXRIW.1602899530632" Publisher="CN=FD2EEB64-9B3F-4B12-B833-80497D4F956C" Version="1.1.0.0" />
   <Properties><DisplayName>果壳签到</DisplayName><PublisherDisplayName>WXRIW</PublisherDisplayName><Description>课表查询与课程签到</Description><Logo>Assets\StoreLogo.png</Logo></Properties>
   <Dependencies><TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0" /></Dependencies>
   <Resources><Resource Language="zh-CN" /></Resources>
