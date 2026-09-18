@@ -8,14 +8,25 @@ struct ScheduleView: View {
     @State private var datePickerGeneration: UUID?
     var body: some View {
         NavigationStack(path: $path) {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
-                    Section {
-                        scheduleContent
-                    } header: {
+            Group {
+                #if os(iOS) && compiler(>=6.2)
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
                         dateControls
+                        scheduleContent
                     }
                 }
+                #else
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                        Section {
+                            scheduleContent
+                        } header: {
+                            dateControls
+                        }
+                    }
+                }
+                #endif
             }
             .accessibilityIdentifier("schedule.scroll")
             .background(Palette.background)
