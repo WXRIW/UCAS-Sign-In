@@ -322,8 +322,11 @@ public sealed partial class MainPageFragment
             appName.Gravity = GravityFlags.Center;
             var positioning = Text("为国科大轻新课堂打造的多平台原生客户端", 14, color: Secondary);
             positioning.Gravity = GravityFlags.Center;
-            var hero = Column(mark, appName, positioning, LicenseBadge("版本 " + Information.DisplayVersion));
-            hero.Gravity = GravityFlags.CenterHorizontal;
+            var version = LicenseBadge("版本 " + Information.DisplayVersion);
+            var versionRow = new FrameLayout(Ui);
+            versionRow.AddView(version, new FrameLayout.LayoutParams(-2, -2, GravityFlags.Center));
+            var hero = Column(mark, appName, positioning, versionRow);
+            hero.SetGravity(GravityFlags.CenterHorizontal);
             Add(hero, 28);
             Add(Card(Column(
                 IconLabel(Resource.Drawable.ic_check_circle, "功能概览", 17),
@@ -331,7 +334,7 @@ public sealed partial class MainPageFragment
             Add(Card(Column(
                 IconLabel(Resource.Drawable.ic_document, "数据与隐私", 17),
                 Text("• 登录请求直接发送至学校 HTTPS 服务，不经过自建服务器", 14, color: Secondary),
-                Text("• 各账户的会话和可选密码由 Android Keystore 保护", 14, color: Secondary),
+                Text("• 各账户的会话和密码由 Android Keystore 保护", 14, color: Secondary),
                 Text("• 课程缓存、签到记录与课堂偏好按账户保存在本机", 14, color: Secondary),
                 Text("• 移除账户时仅清除该账户的数据", 14, color: Secondary),
                 Text("• App 不申请定位权限", 14, color: Secondary))), 20);

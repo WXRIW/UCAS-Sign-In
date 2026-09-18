@@ -490,7 +490,7 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
         AddMenuCard();
         menu = new LinearLayout(Ui) { Orientation = Orientation.Vertical };
         Menu(Resource.Drawable.ic_settings, "设置", () => Navigate("settings"));
-        Menu(Resource.Drawable.ic_leaf, "关于", () => Navigate("about"));
+        Menu(Resource.Drawable.ic_info, "关于", () => Navigate("about"));
         Menu(Resource.Drawable.ic_document, "免责声明", () => Navigate("disclaimer"));
         AddMenuCard();
 

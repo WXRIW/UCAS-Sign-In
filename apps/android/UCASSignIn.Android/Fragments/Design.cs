@@ -27,6 +27,8 @@ public sealed partial class MainPageFragment
     View LicenseBadge(string license)
     {
         var badge = Text(license, 12, true, Green);
+        badge.LayoutParameters = new LinearLayout.LayoutParams(-2, -2);
+        badge.SetSingleLine(true);
         badge.SetPadding(D(10), D(6), D(10), D(6));
         var shape = new global::Android.Graphics.Drawables.GradientDrawable();
         shape.SetColor(Pale);
