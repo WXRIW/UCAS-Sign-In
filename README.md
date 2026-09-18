@@ -7,6 +7,12 @@
 <p align="center">为国科大轻新课堂打造的多平台原生客户端，支持课表查询、课程签到、动态二维码生成和课程提醒。</p>
 <p align="center">iOS · iPadOS · macOS · Windows · Android </p>
 
+<p align="center">
+  <a href="https://apps.microsoft.com/store/detail/9NT27JXSBQJV?launch=true&amp;mode=full">
+    <img src="https://get.microsoft.com/images/zh-cn%20dark.svg" width="180" alt="从 Microsoft 获取">
+  </a>
+</p>
+
 ## 功能概览
 
 - **账号登录**：支持 SEP 邮箱或轻新课堂学号，可选择记住密码。
@@ -198,6 +204,17 @@
 ## 使用说明
 
 支持 **iOS 16+、iPadOS 16+、macOS 14+、Windows 10 1809+ 和 Android 6.0+**。Windows 使用原生 WinUI 3，Android 使用原生 Material 3；桌面小组件目前仅在 Apple 平台提供。
+
+### 下载与安装
+
+各平台的最新安装包均可在 [GitHub Releases](https://github.com/WXRIW/UCAS-Sign-In/releases/latest) 获取；Windows 用户建议优先通过 Microsoft Store 安装。
+
+| 平台 | 下载方式 | 说明 |
+| --- | --- | --- |
+| Windows | [Microsoft Store](https://apps.microsoft.com/store/detail/9NT27JXSBQJV?launch=true&mode=full)（推荐）或 [GitHub Releases](https://github.com/WXRIW/UCAS-Sign-In/releases/latest) | 商店版支持自动更新；Releases 提供 x64、ARM64 便携包和双架构旁加载包。 |
+| Android | [GitHub Releases](https://github.com/WXRIW/UCAS-Sign-In/releases/latest) | 下载正式签名的 APK；首次安装时，系统可能要求允许从浏览器或文件管理器安装应用。 |
+| macOS | [GitHub Releases](https://github.com/WXRIW/UCAS-Sign-In/releases/latest) | 提供同时支持 Apple 芯片与 Intel Mac 的通用 PKG 和 ZIP。PKG 未使用 Apple Developer Installer 证书签名。 |
+| iOS / iPadOS | [GitHub Releases](https://github.com/WXRIW/UCAS-Sign-In/releases/latest) | 提供未签名 IPA，安装前需使用自己的开发者账号或侧载工具完成签名。 |
 
 ### 登录与课程签到
 
