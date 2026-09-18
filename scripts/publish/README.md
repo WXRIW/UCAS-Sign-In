@@ -110,7 +110,7 @@ Windows 旁加载包和商店上传包均由 Visual Studio/MSBuild 的 Windows �
 
 ### GitHub Actions 自动打包
 
-`.github/workflows/package.yml` 在每次推送到 `main` 以及 Pull Request 时，并行使用 Windows 和 macOS runner 打包。它不创建 GitHub Release，产物从对应工作流页面的 **Artifacts** 下载，保留 7 天。与 Ink-Canvas 的工作流相同，每类成品单独调用一次 `upload-artifact`：
+`.github/workflows/package.yml` 在每次推送到 `main` 以及 Pull Request 时，使用相互独立的 Apple、Windows、Android 三个 job 并行打包；Windows 与 Android 分别使用各自的 Windows runner。它不创建 GitHub Release，产物从对应工作流页面的 **Artifacts** 下载，保留 7 天。与 Ink-Canvas 的工作流相同，每类成品单独调用一次 `upload-artifact`：
 
 - `UCAS-SignIn-Android`：Actions 专用签名 Android APK。
 - `UCAS-SignIn-Windows`：Windows x64、ARM64 便携 ZIP。
