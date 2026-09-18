@@ -53,7 +53,7 @@ struct AboutView: View {
                         .foregroundStyle(Palette.ink)
                     VStack(alignment: .leading, spacing: 11) {
                         privacyPoint("登录请求直接发送至学校 HTTPS 服务，不经过自建服务器")
-                        privacyPoint("各账户的会话和可选密码由 Apple Keychain 保存")
+                        privacyPoint("各账户的会话和密码由 Apple Keychain 保存")
                         privacyPoint("课程缓存、签到记录与课堂偏好按账户保存在本机")
                         privacyPoint("移除账户时仅清除该账户的数据")
                         privacyPoint("App 不申请定位权限")
