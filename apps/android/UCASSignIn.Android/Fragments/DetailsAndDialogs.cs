@@ -235,6 +235,9 @@ public sealed partial class MainPageFragment
         var removed = !Model.Courses.Any(c => c.Id == course.Id && c.Day == course.Day) && Model.IsFresh(course);
         var sign = Button(removed ? "课程已不在最新课表中" : course.Signed ? "✓ 已完成签到" : "✓ 为本节课程签到", () => Model.SignAsync(course, Model.Generation), true);
         sign.Enabled = Model.CanSign(course);
+        var disabledInk = Color.Argb(97, Ink.R, Ink.G, Ink.B);
+        sign.BackgroundTintList = EnabledColors(C("285C45"), Color.Argb(31, Ink.R, Ink.G, Ink.B));
+        sign.SetTextColor(EnabledColors(Color.White, disabledInk));
         Add(sign, 12);
         CourseNotice(CourseTime.Date(course.Day));
         var retry = Button("重新同步二维码", () => { Render(); return Task.CompletedTask; });

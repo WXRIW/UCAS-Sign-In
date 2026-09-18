@@ -38,6 +38,9 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
     bool TwoColumns => Landscape && Resources!.Configuration!.ScreenWidthDp >= 760 * Math.Max(1, Resources.Configuration.FontScale);
     int ContentWidthLimit => TwoColumns ? 1040 : 680;
     Color C(string hex) => Color.ParseColor("#" + hex);
+    static ColorStateList EnabledColors(Color enabled, Color disabled) => new(
+        [[global::Android.Resource.Attribute.StateEnabled], []],
+        [enabled.ToArgb(), disabled.ToArgb()]);
     int D(int value) => Host.Dp(value);
     LinearLayout Layout(Orientation orientation, GravityFlags gravity)
     {
@@ -262,8 +265,9 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
         {
             var sign = Button(featured.Signed ? "✓  已完成签到" : "✓  一键签到", () => Model.SignAsync(featured, Model.Generation), true);
             sign.Enabled = Model.CanSign(featured);
-            sign.BackgroundTintList = ColorStateList.ValueOf(C("C9E69C"));
-            sign.SetTextColor(C("1F4736"));
+            var signForeground = EnabledColors(C("1F4736"), Color.Argb(97, 255, 255, 255));
+            sign.BackgroundTintList = EnabledColors(C("C9E69C"), Color.Argb(31, 255, 255, 255));
+            sign.SetTextColor(signForeground);
             var qr = Button("", () => { Detail(featured); return Task.CompletedTask; });
             qr.Icon = AndroidX.AppCompat.Content.Res.AppCompatResources.GetDrawable(Ui, Resource.Drawable.ic_qr);
             qr.IconTint = ColorStateList.ValueOf(Color.White);
@@ -277,7 +281,7 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
             sign.Icon = AndroidX.AppCompat.Content.Res.AppCompatResources.GetDrawable(Ui, Resource.Drawable.ic_check_circle);
             sign.Text = featured.Signed ? "已完成签到" : "一键签到";
             sign.IconSize = D(17);
-            sign.IconTint = ColorStateList.ValueOf(C("1F4736"));
+            sign.IconTint = signForeground;
             sign.CornerRadius = D(13);
             var p = new LinearLayout(Ui) { Orientation = Orientation.Vertical };
             p.AddView(Text("●  " + (featured.Signed ? "到课已记录" : current?.Id == featured.Id ? "正在上课，专注当下" : "下一堂，准备就绪"), 11, color: C("C9E69C")));
