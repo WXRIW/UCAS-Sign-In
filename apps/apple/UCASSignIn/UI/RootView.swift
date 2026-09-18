@@ -21,10 +21,9 @@ struct RootView: View {
     var body: some View {
         navigation
         .onChange(of: selection) { index in
-            guard index == 0 else { return }
-            let shouldRefresh = refreshTodayOnSelection || model.todayCourses.isEmpty || model.isCached(on: .now)
+            guard index == 0, refreshTodayOnSelection else { return }
             refreshTodayOnSelection = false
-            if shouldRefresh { Task { await model.refresh(on: .now) } }
+            Task { await model.refresh(on: .now) }
         }
         .onChange(of: model.accountGeneration) { _ in
             resetNavigation()
