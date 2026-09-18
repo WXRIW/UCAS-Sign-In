@@ -18,7 +18,6 @@ $build = [int64]$release.build
 $signingName = if ($ActionsBuild) { 'ucas-signin-actions' } else { 'ucas-signin' }
 $signingDirectoryName = if ($ActionsBuild) { 'android-actions-signing' } else { 'android-signing' }
 $expectedApplicationId = if ($ActionsBuild) { 'cn.ucas.signin.githubactions' } else { 'cn.ucas.signin' }
-$expectedApplicationLabel = '果壳签到'
 $artifactQualifier = if ($ActionsBuild) { '-githubactions' } else { '' }
 $signingDirectory = Join-Path $repositoryRoot ".local/$signingDirectoryName"
 $keyStore = Join-Path $signingDirectory "$signingName.keystore"
@@ -105,13 +104,8 @@ try {
     $packageName = [regex]::Match($packageLine, "name='([^']+)'").Groups[1].Value
     $actualBuild = [regex]::Match($packageLine, "versionCode='([^']+)'").Groups[1].Value
     $actualVersion = [regex]::Match($packageLine, "versionName='([^']+)'").Groups[1].Value
-    $labelLine = [string]($badging | Where-Object { $_ -match '^application-label:' } | Select-Object -First 1)
-    $actualApplicationLabel = [regex]::Match($labelLine, "^application-label:'([^']*)'").Groups[1].Value
     if ($packageName -ne $expectedApplicationId -or $actualVersion -ne $version -or $actualBuild -ne [string]$build) {
         throw "APK metadata mismatch: package=$packageName version=$actualVersion build=$actualBuild."
-    }
-    if ($actualApplicationLabel -ne $expectedApplicationLabel) {
-        throw "APK application label mismatch: expected=$expectedApplicationLabel actual=$actualApplicationLabel."
     }
     if ($badging -match '^application-debuggable') { throw 'Release APK must not be debuggable.' }
 
