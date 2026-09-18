@@ -80,7 +80,7 @@ public sealed class FakeSchool : ISchoolClient
     public Func<string, Task<SchoolSession>> Login = id => Task.FromResult(TestData.Session(id));
     public Func<SchoolSession, DateOnly, Task<CourseQueryResult>> Query = (_, date) => Task.FromResult(new CourseQueryResult([TestData.Course() with { Day = CourseTime.DayKey(date) }], "同步成功"));
     public Func<Task<SignResult>> Sign = () => Task.FromResult(new SignResult(SignOutcome.Signed, "成功"));
-    public int Logins, Reads, Signs;
+    public int Logins, Reads, Signs, ClockReads;
     public Task<SchoolSession> LoginAsync(string username, string password, CancellationToken ct = default)
     {
         Logins++;
@@ -97,7 +97,11 @@ public sealed class FakeSchool : ISchoolClient
         return Sign();
     }
     public Task<QrSnapshot> QrAsync(Course course, CancellationToken ct = default) => throw new NotImplementedException();
-    public Task<DateTimeOffset> SchoolNowAsync(CancellationToken ct = default) => Task.FromResult(TestData.Now);
+    public Task<DateTimeOffset> SchoolNowAsync(CancellationToken ct = default)
+    {
+        ClockReads++;
+        return Task.FromResult(TestData.Now);
+    }
     public void ClearClock()
     {
     }

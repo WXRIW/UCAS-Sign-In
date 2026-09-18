@@ -54,11 +54,13 @@ struct RootView: View {
             selectTab(0, refreshToday: true)
         }
         .task(id: scenePhase) {
+            #if os(iOS)
             guard scenePhase == .active else { return }
             while !Task.isCancelled {
                 await model.foregroundTick()
                 do { try await Task.sleep(for: .seconds(30)) } catch { break }
             }
+            #endif
         }
     }
 

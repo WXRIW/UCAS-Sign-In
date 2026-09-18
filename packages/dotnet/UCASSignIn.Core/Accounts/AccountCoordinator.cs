@@ -482,8 +482,9 @@ public sealed class AccountCoordinator(ISchoolClient school, IAccountStore accou
         }
         finally { if (epoch == Generation) { IsBusy = false; Notify(); } }
     }
-    public async Task TickAsync()
+    public async Task TickAsync(bool allowBackground = false)
     {
+        bool Active() => IsForeground || allowBackground;
         if (IsDemo && IsForeground)
         {
             var demoToday = CourseTime.Today(clock);
@@ -494,21 +495,30 @@ public sealed class AccountCoordinator(ISchoolClient school, IAccountStore accou
             }
             return;
         }
-        if (!IsForeground || IsDemo || IsBusy || IsRecovering || IsRefreshing || paused || ActiveAccount is not { } a)
+        if (!Active() || IsDemo || IsBusy || IsRecovering || IsRefreshing || paused || ActiveAccount is not { } a)
             return;
         var epoch = Generation;
         var today = CourseTime.Today(clock);
         if (!freshDays.Contains(CourseTime.DayKey(today)))
             await RefreshAsync(today);
-        if (epoch != Generation || !IsForeground || paused) return;
+        if (epoch != Generation || !Active() || paused) return;
         if (SelectedDate != today && IsCached(SelectedDate))
             await RefreshAsync(SelectedDate);
-        if (epoch != Generation || !IsForeground || ActiveAccount?.Preferences.AutoSignEnabled != true || paused || IsBusy)
+        if (epoch != Generation || !Active() || ActiveAccount?.Preferences.AutoSignEnabled != true || paused || IsBusy)
+            return;
+        // Avoid waking the school clock endpoint all day. Device time is only a
+        // coarse gate; the signed request still uses the authoritative school time.
+        var localNow = clock.GetUtcNow();
+        var candidates = Courses.Where(c => c.Day == CourseTime.DayKey(today) && CanSign(c)
+            && c.Start is { } start && c.End is { } end
+            && localNow >= start.AddMinutes(-30) && localNow < end.AddMinutes(5)
+            && !autoAttempts.Contains(a.Id + "|" + c.Day + "|" + c.Id)).ToList();
+        if (candidates.Count == 0)
             return;
         var now = await school.SchoolNowAsync(lifetime.Token);
-        if (epoch != Generation || !IsForeground)
+        if (epoch != Generation || !Active())
             return;
-        var course = Courses.FirstOrDefault(c => c.Day == CourseTime.DayKey(today) && CanSign(c) && CourseTime.InSignWindow(c, now)
+        var course = candidates.FirstOrDefault(c => CanSign(c) && CourseTime.InSignWindow(c, now)
             && !autoAttempts.Contains(a.Id + "|" + c.Day + "|" + c.Id));
         if (course is not null)
             await SignAsync(course, epoch);

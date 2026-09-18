@@ -80,12 +80,14 @@ public sealed partial class MainWindow : Window
     }
     async Task Tick()
     {
-        if (!ready || tickRunning || dialogOpen)
+        if (!ready || tickRunning)
             return;
         tickRunning = true;
         try
         {
-            await Model.TickAsync();
+            // Desktop automatic attendance keeps running while this window is
+            // minimized or another app is active. Closing the app still stops it.
+            await Model.TickAsync(allowBackground: true);
         }
         finally { tickRunning = false; }
     }

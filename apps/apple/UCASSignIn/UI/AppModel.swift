@@ -528,9 +528,11 @@ final class AppModel: ObservableObject {
         if SchoolDate.key(selectedDate) != SchoolDate.key(today), isCached { await refresh() }
         guard !Task.isCancelled, generation == token, autoSignEnabled, !showLogin,
               todayIsFresh, !isLoading, signingID == nil else { return }
+        let candidates = todayCourses.filter { !$0.signed && !autoAttempts.contains(attemptKey(for: $0)) }
+        guard !candidates.isEmpty else { return }
         guard let schoolNow = try? await service.schoolNow(), !Task.isCancelled, generation == token, autoSignEnabled,
               todayIsFresh, !isLoading, signingID == nil else { return }
-        guard let course = todayCourses.first(where: { !$0.signed && CourseTime.isWithinSignWindow($0, now: schoolNow) }) else { return }
+        guard let course = candidates.first(where: { CourseTime.isWithinSignWindow($0, now: schoolNow) }) else { return }
         let key = attemptKey(for: course)
         guard autoAttempts.insert(key).inserted else { return }
         await sign(course, accountGeneration: token)

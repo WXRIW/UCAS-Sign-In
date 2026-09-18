@@ -4,6 +4,9 @@ import SwiftUI
 struct UCASSignInApp: App {
     @StateObject private var model = AppLaunchEnvironment.makeModel()
     @StateObject private var updates = UpdateCoordinator(defaults: AppLaunchEnvironment.defaults)
+    #if os(macOS)
+    @StateObject private var automaticAttendance = MacAutomaticAttendanceRunner()
+    #endif
     @State private var selection = 0
     var body: some Scene {
         #if os(macOS)
@@ -29,7 +32,13 @@ struct UCASSignInApp: App {
         } else {
             RootView(selection: $selection).environmentObject(model).environmentObject(updates).tint(Palette.green)
                 .defaultAppStorage(AppLaunchEnvironment.defaults)
-                .task { await model.restore(); await updates.checkAutomatically() }
+                .task {
+                    await model.restore()
+                    #if os(macOS)
+                    automaticAttendance.start(model)
+                    #endif
+                    await updates.checkAutomatically()
+                }
         }
     }
 }

@@ -56,7 +56,7 @@ struct SettingsView: View {
                         .accessibilityValue(appearance.title)
                     }.padding(.vertical, 18)
                 }
-                settingsSection("课堂偏好", footer: model.isConnected ? autoSignExplanation : "连接学校账户后，可开启课程提醒与前台自动签到。") {
+                settingsSection("课堂偏好", footer: model.isConnected ? autoSignExplanation : disconnectedClassroomPreferences) {
                     VStack(spacing: 0) {
                         Toggle(isOn: Binding(get: { model.remindersEnabled }, set: { enabled in Task { await model.setReminders(enabled) } })) {
                             settingsLabel("课程提醒", subtitle: "已同步课程将在开课前 10 分钟提醒", symbol: "bell")
@@ -66,9 +66,9 @@ struct SettingsView: View {
                             .padding(.vertical, 18)
                         PreferenceDivider()
                         Toggle(isOn: Binding(get: { model.autoSignEnabled }, set: { model.setAutoSign($0) })) {
-                            settingsLabel("前台自动签到", subtitle: autoSignSubtitle, symbol: "checkmark.circle")
+                            settingsLabel(autoSignTitle, subtitle: autoSignSubtitle, symbol: "checkmark.circle")
                         }.toggleStyle(.switch).accessibilityIdentifier("settings.autoSign")
-                            .accessibilityLabel("前台自动签到")
+                            .accessibilityLabel(autoSignTitle)
                             .accessibilityHint(autoSignSubtitle)
                             .padding(.vertical, 18)
                     }.tint(Palette.green)
@@ -126,19 +126,35 @@ struct SettingsView: View {
             }
         }
     }
+    private var autoSignTitle: String {
+        #if os(macOS)
+        "自动签到"
+        #else
+        "前台自动签到"
+        #endif
+    }
+
+    private var disconnectedClassroomPreferences: String {
+        #if os(macOS)
+        "连接学校账户后，可开启课程提醒与自动签到。"
+        #else
+        "连接学校账户后，可开启课程提醒与前台自动签到。"
+        #endif
+    }
+
     private var autoSignSubtitle: String {
         #if os(macOS)
-        "窗口活跃时，进入签到时段后尝试一次"
+        "果壳签到运行时，进入签到时段后尝试一次"
         #else
-        "App 打开时，进入签到时段后尝试一次"
+        "App 处于前台时，进入签到时段后尝试一次"
         #endif
     }
 
     private var autoSignExplanation: String {
         #if os(macOS)
-        "请保持果壳签到窗口处于活跃状态。切换到其他 App、关闭窗口或 Mac 睡眠时不会定时签到，签到结果以学校返回状态为准。"
+        "窗口可关闭、最小化，也可切换到其他 App；退出果壳签到或 Mac 睡眠时会暂停。签到结果以学校返回状态为准。"
         #else
-        "iOS 不保证后台定时运行。请保持 App 在前台，并以学校返回的签到状态为准。"
+        "iOS / iPadOS 不保证后台定时运行。请保持 App 在前台，并以学校返回的签到状态为准。"
         #endif
     }
 

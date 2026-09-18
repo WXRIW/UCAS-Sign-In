@@ -148,6 +148,7 @@ public sealed class MainActivity : AppCompatActivity
         _ = Run(async () =>
         {
             await Model.InitializeAsync();
+            AndroidAutoSignService.Sync(UiContext, Model);
             if (savedInstanceState?.GetBoolean("demoState", false) == true && !Model.IsDemo)
                 await Model.EnterDemoAsync();
             if (Intent?.GetBooleanExtra("demo", false) == true)
@@ -195,6 +196,7 @@ public sealed class MainActivity : AppCompatActivity
     }
     void Changed()
     {
+        AndroidAutoSignService.Sync(UiContext, Model);
         RunOnUiThread(() =>
         {
             if (renderedGeneration != Model.Generation)
@@ -307,6 +309,16 @@ public sealed class MainActivity : AppCompatActivity
         catch (OperationCanceledException) { }
         catch (Exception e) { Model.SetMessage(e.Message); }
     }
+    public async Task SetClassroomPreferences(bool autoSign, bool reminders)
+    {
+        if (autoSign && !Model.Preferences.AutoSignEnabled && !await RequestNotificationPermission())
+        {
+            Model.SetMessage("通知权限未开启，无法显示后台自动签到状态与结果");
+            return;
+        }
+        await Model.SetPreferencesAsync(autoSign, reminders);
+        AndroidAutoSignService.Sync(UiContext, Model);
+    }
     protected override void OnResume()
     {
         base.OnResume();
@@ -323,7 +335,7 @@ public sealed class MainActivity : AppCompatActivity
             while (!ct.IsCancellationRequested)
             {
                 if (ready && !DialogOpen)
-                    await Run(Model.TickAsync);
+                    await Run(() => Model.TickAsync());
                 await Task.Delay(15000, ct);
             }
         }

@@ -80,6 +80,7 @@ public sealed class RestoreRemindersReceiver : BroadcastReceiver
             try
             {
                 await new AndroidReminderScheduler(context).RestoreAsync();
+                await AndroidAutoSignService.RestoreIfEnabledAsync(context);
             }
             finally { pending?.Finish(); }
         }

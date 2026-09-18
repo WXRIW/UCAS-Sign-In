@@ -414,6 +414,27 @@ public sealed class AccountCoordinatorTests
         Assert.Equal(0, h.School.Signs);
     }
     [Fact]
+    public async Task PlatformBackgroundTickCanSignWhenExplicitlyAllowed()
+    {
+        var h = new Harness();
+        await h.Model.InitializeAsync();
+        await h.Model.SetPreferencesAsync(true, false);
+        await h.Model.TickAsync(allowBackground: true);
+        Assert.Equal(1, h.School.Signs);
+    }
+    [Fact]
+    public async Task AutomaticTickDoesNotSyncSchoolClockFarFromAnySignWindow()
+    {
+        var h = new Harness();
+        h.School.Query = (_, _) => Task.FromResult(new CourseQueryResult(
+            [TestData.Course() with { BeginTime = "12:00", EndTime = "13:40" }], "ok"));
+        await h.Model.InitializeAsync();
+        await h.Model.SetPreferencesAsync(true, false);
+        await h.Model.TickAsync(allowBackground: true);
+        Assert.Equal(0, h.School.ClockReads);
+        Assert.Equal(0, h.School.Signs);
+    }
+    [Fact]
     public async Task StaleDetailCannotSignAfterSwitch()
     {
         var h = new Harness();

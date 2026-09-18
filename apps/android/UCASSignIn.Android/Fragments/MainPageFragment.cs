@@ -537,10 +537,10 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
         Add(Card(Column(Text("外观", 20, true), appearance)));
         var prefs = Model.Preferences;
         var remind = new MaterialSwitch(Ui) { Checked = prefs.RemindersEnabled, Enabled = Model.IsConnected && Model.CanChangeAccount, ContentDescription = "课程提醒" };
-        var auto = new MaterialSwitch(Ui) { Checked = prefs.AutoSignEnabled, Enabled = Model.IsConnected && Model.CanChangeAccount, ContentDescription = "前台自动签到" };
-        remind.CheckedChange += async (_, _) => await Host.Run(() => Model.SetPreferencesAsync(auto.Checked, remind.Checked));
-        auto.CheckedChange += async (_, _) => await Host.Run(() => Model.SetPreferencesAsync(auto.Checked, remind.Checked));
-        Add(Card(Column(Text("课堂偏好", 20, true), Across(SettingLabel(Resource.Drawable.ic_bell, "课程提醒", "已同步课程将在开课前 10 分钟提醒"), remind), Rule(), Across(SettingLabel(Resource.Drawable.ic_check_circle, "前台自动签到", "App 打开时，进入签到时段后尝试一次"), auto), Text("请保持 App 在前台，并以学校返回的签到状态为准。普通提醒可能受系统省电策略影响。", 11, color: Secondary))));
+        var auto = new MaterialSwitch(Ui) { Checked = prefs.AutoSignEnabled, Enabled = Model.IsConnected && Model.CanChangeAccount, ContentDescription = "后台自动签到" };
+        remind.CheckedChange += async (_, _) => await Host.Run(() => Host.SetClassroomPreferences(auto.Checked, remind.Checked));
+        auto.CheckedChange += async (_, _) => await Host.Run(() => Host.SetClassroomPreferences(auto.Checked, remind.Checked));
+        Add(Card(Column(Text("课堂偏好", 20, true), Across(SettingLabel(Resource.Drawable.ic_bell, "课程提醒", "已同步课程将在开课前 10 分钟提醒"), remind), Rule(), Across(SettingLabel(Resource.Drawable.ic_check_circle, "后台自动签到", "无需保持 App 前台，进入签到时段后尝试一次"), auto), Text("开启后会显示常驻状态通知；系统省电、自启动限制或强行停止 App 仍可能使任务延迟或中断。签到结果以学校返回状态为准。", 11, color: Secondary))));
         Add(Card(Column(Text("通知", 20, true), Button("系统通知设置", OpenNotificationSettings))));
         var automaticUpdates = new MaterialSwitch(Ui)
         {

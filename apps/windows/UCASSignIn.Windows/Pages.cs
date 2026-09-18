@@ -471,11 +471,11 @@ public sealed partial class MainWindow
         auto.Toggled += async (_, _) => await Run(() => Model.SetPreferencesAsync(auto.IsOn, reminders.IsOn));
         var preferences = SettingsGroup("课堂偏好",
             SettingRow("课程提醒", "已同步课程将在开课前 10 分钟提醒", "\uE787", reminders),
-            SettingRow("前台自动签到", "窗口活跃时，进入签到时段后尝试一次", "\uE73E", auto));
-        preferences.Children.Add(SettingsNote("切换到其他应用、关闭窗口或设备睡眠时，自动签到会暂停。签到结果以学校返回状态为准。"));
+            SettingRow("自动签到", "果壳签到运行时，进入签到时段后尝试一次", "\uE73E", auto));
+        preferences.Children.Add(SettingsNote("窗口可最小化，也可切换到其他应用；退出果壳签到或设备睡眠时会暂停。签到结果以学校返回状态为准。"));
         Page.Children.Add(preferences);
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(reminders, "课程提醒");
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(auto, "前台自动签到");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(auto, "自动签到");
         var notifications = Button("系统通知设置", async () => { await Launcher.LaunchUriAsync(new("ms-settings:notifications")); });
         notifications.IsEnabled = true;
         Page.Children.Add(SettingsGroup("通知", SettingRow("Windows 通知", "管理通知权限和显示方式", "\uE7F4", notifications)));
