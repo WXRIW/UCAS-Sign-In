@@ -15,6 +15,7 @@ public sealed class MainViewModel
     }
     public string Theme { get; set; } = "system";
     public bool AutoCheckUpdates { get; set; } = true;
+    public StoreUpdateOption StoreUpdates { get; set; } = StoreUpdateOption.Download;
     public MainViewModel()
     {
         Root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "UCASSignIn");
@@ -25,8 +26,10 @@ public sealed class MainViewModel
         HideIdentity = prefs?.HideIdentity ?? false;
         Theme = prefs?.Theme ?? "system";
         AutoCheckUpdates = prefs?.AutoCheckUpdates ?? true;
+        StoreUpdates = prefs?.StoreUpdates is { } storeUpdates && Enum.IsDefined(storeUpdates)
+            ? storeUpdates : StoreUpdateOption.Download;
     }
     public string Identity(StoredAccount a) => HideIdentity ? "同学 · 学号已隐藏" : $"{a.Session.Name ?? "同学"} · {a.Id}";
-    public void SaveAppearance() => AtomicFile.WriteJson(Path.Combine(Root, "appearance.json"), new Appearance(HideIdentity, Theme, AutoCheckUpdates));
-    public sealed record Appearance(bool HideIdentity, string Theme, bool? AutoCheckUpdates = null);
+    public void SaveAppearance() => AtomicFile.WriteJson(Path.Combine(Root, "appearance.json"), new Appearance(HideIdentity, Theme, AutoCheckUpdates, StoreUpdates));
+    public sealed record Appearance(bool HideIdentity, string Theme, bool? AutoCheckUpdates = null, StoreUpdateOption? StoreUpdates = null);
 }

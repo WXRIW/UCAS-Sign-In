@@ -1,8 +1,10 @@
+using CommunityToolkit.WinUI.Controls;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
 using UCASSignIn.Core;
+using UCASSignIn.Windows.Services;
 using Windows.System;
 namespace UCASSignIn.Windows;
 
@@ -91,6 +93,52 @@ public sealed partial class MainWindow
         b.MinHeight = 64;
         return b;
     }
+    FontIcon SettingsIcon(string glyph)
+    {
+        return new FontIcon
+        {
+            Glyph = glyph,
+            FontSize = 18,
+            Width = 20,
+            Height = 20,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+    }
+    SettingsCard SettingsLink(string title, string glyph, Func<Task> action, string? description = null)
+    {
+        var card = new SettingsCard
+        {
+            Header = title,
+            Description = description ?? "",
+            HeaderIcon = SettingsIcon(glyph),
+            IsClickEnabled = true,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            MinHeight = description is null ? 56 : 68,
+            IsEnabled = Model.CanChangeAccount
+        };
+        card.Click += async (_, _) => await Run(action);
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(card, title);
+        return card;
+    }
+    StackPanel SettingsGroup(string title, params UIElement[] rows)
+    {
+        var header = Text(title, 14, true);
+        header.Margin = new(2, 0, 0, 0);
+        var cards = new StackPanel { Spacing = 2 };
+        foreach (var row in rows)
+            cards.Children.Add(row);
+        var group = new StackPanel { Spacing = 8 };
+        group.Children.Add(header);
+        group.Children.Add(cards);
+        return group;
+    }
+    TextBlock SettingsNote(string value)
+    {
+        var note = Text(value, 12, color: Secondary);
+        note.Margin = new(2, 0, 2, 0);
+        return note;
+    }
     Button Plain(UIElement content, Func<Task> action)
     {
         var b = Button("", action);
@@ -127,7 +175,7 @@ public sealed partial class MainWindow
         qrCancellation?.Cancel();
         ApplyTheme();
         Page.Children.Clear();
-        Page.Spacing = section == "account" && route is null ? 16 : 20;
+        Page.Spacing = section == "account" || route == "settings" ? 24 : 20;
         AccountMenuLabel.Text = AccountName;
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(AccountMenu, AccountName);
         AccountMenu.IsEnabled = Model.CanChangeAccount;
@@ -379,17 +427,14 @@ public sealed partial class MainWindow
         ToolTipService.SetToolTip(eye, "隐藏或显示姓名与学号");
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(eye, vm.HideIdentity ? "显示账户信息" : "隐藏账户信息");
         var accountHeader = Across(identityContent, eye);
-        accountHeader.Margin = new(0, 4, 0, 8);
-        Page.Children.Add(accountHeader);
-        var menu = new StackPanel { Spacing = 4 };
-        Menu("切换与管理账户", "\uE716", ManageAccounts);
-        Menu("本机签到记录", "\uE81C", () => Navigate("records"));
-        Page.Children.Add(Column(Text("账户与数据", 14, true), menu));
-        menu = new StackPanel { Spacing = 4 };
-        Menu("设置", "\uE713", () => Navigate("settings"));
-        Menu("关于", "\uE946", () => Navigate("about"));
-        Menu("免责声明", "\uE8A5", () => Navigate("disclaimer"));
-        Page.Children.Add(Column(Text("关于", 14, true), menu));
+        Page.Children.Add(Card(accountHeader, 20));
+        Page.Children.Add(SettingsGroup("账户与数据",
+            SettingsLink("切换与管理账户", "\uE716", ManageAccounts),
+            SettingsLink("本机签到记录", "\uE81C", () => Navigate("records"))));
+        Page.Children.Add(SettingsGroup("应用",
+            SettingsLink("设置", "\uE713", () => Navigate("settings")),
+            SettingsLink("关于", "\uE946", () => Navigate("about")),
+            SettingsLink("免责声明", "\uE8A5", () => Navigate("disclaimer"))));
         if (Model.IsConnected)
         {
             var exitAccount = Button(Model.IsDemo ? "退出演示模式" : "退出并移除此账户", () => Model.IsDemo ? ConfirmExitDemo() : Remove(a!));
@@ -397,23 +442,15 @@ public sealed partial class MainWindow
             exitAccount.HorizontalAlignment = HorizontalAlignment.Stretch;
             exitAccount.HorizontalContentAlignment = HorizontalAlignment.Center;
             exitAccount.VerticalContentAlignment = VerticalAlignment.Center;
-            exitAccount.MinHeight = 40;
+            exitAccount.MinHeight = 44;
             ButtonColors(exitAccount, Surface, Model.IsDemo ? Secondary : Brush(dark ? "FF99A4" : "C42B1C"),
                 Model.IsDemo ? Hover : Brush(dark ? "39272B" : "FCEDEC"), Model.IsDemo ? Pressed : Brush(dark ? "492D33" : "F8DDDB"));
             Page.Children.Add(exitAccount);
         }
         var foot = Text($"果壳签到 {Information.DisplayVersion}", 12, color: Secondary);
         foot.TextAlignment = TextAlignment.Center;
+        foot.Margin = new(0, -4, 0, 0);
         Page.Children.Add(foot);
-        void Menu(string title, string glyph, Func<Task> action)
-        {
-            var icon = new FontIcon { Glyph = glyph, FontSize = 18, Foreground = Secondary };
-            var b = ActionCard(Across(Leading(icon, Text(title, 14)), new FontIcon { Glyph = "\uE76C", FontSize = 10, Foreground = Secondary }), action);
-            b.Padding = new(16, 12, 16, 12);
-            b.MinHeight = 52;
-            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(b, title);
-            menu.Children.Add(b);
-        }
     }
     void RenderSettings()
     {
@@ -426,22 +463,43 @@ public sealed partial class MainWindow
             vm.SaveAppearance();
             Render();
         };
-        Page.Children.Add(Column(Text("外观", 16, true), SettingRow("主题", "选择应用的显示模式", "\uE790", theme)));
+        Page.Children.Add(SettingsGroup("外观", SettingRow("主题", "选择应用的显示模式", "\uE790", theme)));
         var prefs = Model.Preferences;
         var reminders = new ToggleSwitch { IsOn = prefs.RemindersEnabled, OnContent = "", OffContent = "", Width = 50, MinWidth = 0, IsEnabled = Model.IsConnected && Model.CanChangeAccount };
         var auto = new ToggleSwitch { IsOn = prefs.AutoSignEnabled, OnContent = "", OffContent = "", Width = 50, MinWidth = 0, IsEnabled = Model.IsConnected && Model.CanChangeAccount };
         reminders.Toggled += async (_, _) => await Run(() => Model.SetPreferencesAsync(auto.IsOn, reminders.IsOn));
         auto.Toggled += async (_, _) => await Run(() => Model.SetPreferencesAsync(auto.IsOn, reminders.IsOn));
-        var preferences = Column(Text("课堂偏好", 16, true),
+        var preferences = SettingsGroup("课堂偏好",
             SettingRow("课程提醒", "已同步课程将在开课前 10 分钟提醒", "\uE787", reminders),
-            SettingRow("前台自动签到", "窗口活跃时，进入签到时段后尝试一次", "\uE73E", auto),
-            Text("切换到其他应用、关闭窗口或设备睡眠时，自动签到会暂停。签到结果以学校返回状态为准。", 12, color: Secondary));
+            SettingRow("前台自动签到", "窗口活跃时，进入签到时段后尝试一次", "\uE73E", auto));
+        preferences.Children.Add(SettingsNote("切换到其他应用、关闭窗口或设备睡眠时，自动签到会暂停。签到结果以学校返回状态为准。"));
         Page.Children.Add(preferences);
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(reminders, "课程提醒");
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(auto, "前台自动签到");
         var notifications = Button("系统通知设置", async () => { await Launcher.LaunchUriAsync(new("ms-settings:notifications")); });
         notifications.IsEnabled = true;
-        Page.Children.Add(Column(Text("通知", 16, true), SettingRow("Windows 通知", "管理通知权限和显示方式", "\uE7F4", notifications)));
+        Page.Children.Add(SettingsGroup("通知", SettingRow("Windows 通知", "管理通知权限和显示方式", "\uE7F4", notifications)));
+        if (WindowsDistribution.IsStorePackage)
+        {
+            var storeUpdates = new ComboBox
+            {
+                ItemsSource = new[] { "通知", "下载并稍后安装", "下载并立即安装" },
+                SelectedIndex = (int)vm.StoreUpdates,
+                MinWidth = 180
+            };
+            storeUpdates.SelectionChanged += (_, _) =>
+            {
+                if (storeUpdates.SelectedIndex < 0) return;
+                vm.StoreUpdates = (StoreUpdateOption)storeUpdates.SelectedIndex;
+                vm.SaveAppearance();
+            };
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(storeUpdates, "Microsoft Store 更新方式");
+            var storeUpdateGroup = SettingsGroup("更新",
+                SettingRow("Microsoft Store 更新", "启动时检查更新，由 Microsoft Store 管理下载与安装", "\uE895", storeUpdates));
+            storeUpdateGroup.Children.Add(SettingsNote("静默更新受 Microsoft Store 的“自动更新应用”和按流量计费网络设置影响。"));
+            Page.Children.Add(storeUpdateGroup);
+            return;
+        }
         var automaticUpdates = new ToggleSwitch
         {
             IsOn = vm.AutoCheckUpdates,
@@ -458,17 +516,21 @@ public sealed partial class MainWindow
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(automaticUpdates, "自动检查更新");
         var updates = Button("检查更新", () => CheckForUpdates(true));
         updates.IsEnabled = true;
-        Page.Children.Add(Column(Text("更新", 16, true),
+        Page.Children.Add(SettingsGroup("更新",
             SettingRow("自动检查更新", "每天最多检查一次，有新版本时提醒", "\uE895", automaticUpdates),
             SettingRow("检查更新", "当前版本 " + Information.DisplayVersion, "\uE896", updates)));
     }
-    Border SettingRow(string title, string description, string glyph, UIElement control)
+    SettingsCard SettingRow(string title, string description, string glyph, UIElement control)
     {
-        var labels = Column(Text(title, 14), Text(description, 12, color: Secondary));
-        labels.Spacing = 4;
-        var card = Card(Across(Leading(new FontIcon { Glyph = glyph, FontSize = 20, Foreground = Secondary }, labels), control));
-        card.MinHeight = 72;
-        return card;
+        return new SettingsCard
+        {
+            Header = title,
+            Description = description,
+            HeaderIcon = SettingsIcon(glyph),
+            Content = control,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            MinHeight = 68
+        };
     }
     Task Navigate(string page)
     {

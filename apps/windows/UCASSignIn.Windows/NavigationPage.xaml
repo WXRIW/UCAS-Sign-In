@@ -3,7 +3,7 @@
       xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
   <ScrollViewer x:Name="Scroller" HorizontalContentAlignment="Stretch" HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled">
     <Grid HorizontalAlignment="Stretch">
-      <StackPanel x:Name="Body" Spacing="20" MaxWidth="960" Padding="32,8,32,24" HorizontalAlignment="Stretch" />
+      <StackPanel x:Name="Body" Spacing="20" MaxWidth="960" Padding="32,12,32,32" HorizontalAlignment="Stretch" />
     </Grid>
   </ScrollViewer>
 </Page>

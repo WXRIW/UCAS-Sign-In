@@ -4,6 +4,7 @@ using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.UI.Xaml.Media.Animation;
 using QRCoder;
 using UCASSignIn.Core;
+using UCASSignIn.Windows.Services;
 using Windows.Storage.Streams;
 using Windows.System;
 namespace UCASSignIn.Windows;
@@ -14,6 +15,7 @@ public sealed partial class MainWindow
     Image? qrImage;
     TextBlock? qrCaption;
     bool updateCheckRunning;
+    readonly WindowsStoreUpdater storeUpdater = new();
     async Task<ContentDialogResult> Show(ContentDialog dialog)
     {
         if (dialogOpen)
@@ -51,10 +53,11 @@ public sealed partial class MainWindow
     {
         if (updateCheckRunning || closed || (!manual && dialogOpen))
             return;
-        if (!manual && !vm.AutoCheckUpdates)
+        var storePackage = WindowsDistribution.IsStorePackage;
+        if (!storePackage && !manual && !vm.AutoCheckUpdates)
             return;
         var state = ReadUpdateState();
-        if (!manual && state.CheckedVersion == Information.DisplayVersion
+        if (!storePackage && !manual && state.CheckedVersion == Information.DisplayVersion
             && DateTimeOffset.TryParse(state.CheckedAt, out var lastCheck))
         {
             var elapsed = DateTimeOffset.UtcNow - lastCheck;
@@ -64,6 +67,11 @@ public sealed partial class MainWindow
         updateCheckRunning = true;
         try
         {
+            if (storePackage)
+            {
+                await CheckMicrosoftStoreUpdates();
+                return;
+            }
             state = state with
             {
                 CheckedAt = DateTimeOffset.UtcNow.ToString("O"),
@@ -113,6 +121,28 @@ public sealed partial class MainWindow
                 });
         }
         finally { updateCheckRunning = false; }
+    }
+    async Task CheckMicrosoftStoreUpdates()
+    {
+        var update = await storeUpdater.CheckAsync();
+        if (closed || !update.HasUpdate)
+            return;
+
+        switch (vm.StoreUpdates)
+        {
+            case StoreUpdateOption.Ask:
+                WindowsStoreUpdater.ShowUpdateNotification(() => DispatcherQueue.TryEnqueue(() =>
+                {
+                    _ = update.TryDownloadAndInstallAsync();
+                }));
+                break;
+            case StoreUpdateOption.Download:
+                _ = update.TryDownloadAsync();
+                break;
+            case StoreUpdateOption.DownloadAndInstall:
+                _ = update.TryDownloadAndInstallAsync();
+                break;
+        }
     }
     UpdateState ReadUpdateState()
     {
@@ -423,24 +453,20 @@ public sealed partial class MainWindow
             var hero = Column(mark, name, slogan, version);
             hero.Spacing = 12;
             Page.Children.Add(hero);
-            Page.Children.Add(Card(Column(
+            var informationCards = new StackPanel { Spacing = 12 };
+            informationCards.Children.Add(Card(Column(
                 Leading(new FontIcon { Glyph = "\uE9D5", FontSize = 20, Foreground = Green }, Text("功能概览", 17, true)),
                 Text("支持课表查询、课程签到、动态二维码、课程提醒与多账户切换。", 14, color: Secondary))));
-            Page.Children.Add(Card(Column(
+            informationCards.Children.Add(Card(Column(
                 Leading(new FontIcon { Glyph = "\uE72E", FontSize = 20, Foreground = Green }, Text("数据与隐私", 17, true)),
                 Text("• 登录请求直接发送至学校 HTTPS 服务，不经过自建服务器", 14, color: Secondary),
-                Text("• 各账户的会话和可选密码由 Windows DPAPI 加密保存在本机", 14, color: Secondary),
+                Text("• 各账户的会话和密码由 Windows DPAPI 加密保存在本机", 14, color: Secondary),
                 Text("• 课程缓存、签到记录与课堂偏好按账户隔离", 14, color: Secondary),
                 Text("• 移除账户时仅清除该账户的数据", 14, color: Secondary),
                 Text("• App 不申请定位权限", 14, color: Secondary))));
-            var source = ActionCard(Across(
-                Leading(new FontIcon { Glyph = "\uE943", FontSize = 20, Foreground = Green },
-                    Column(Text("项目源码与致谢", 15, true), Text("源代码、开源许可与贡献者", 12, color: Secondary))),
-                new FontIcon { Glyph = "\uE76C", FontSize = 10, Foreground = Secondary }),
-                () => Navigate("source"));
-            source.MinHeight = 68;
-            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(source, "项目源码与致谢");
-            Page.Children.Add(source);
+            informationCards.Children.Add(SettingsLink("项目源码与致谢", "\uE943", () => Navigate("source"),
+                "源代码、开源许可与贡献者"));
+            Page.Children.Add(informationCards);
             var license = Text("开源许可 · AGPL-3.0", 12, color: Secondary);
             license.HorizontalAlignment = HorizontalAlignment.Center;
             Page.Children.Add(license);
