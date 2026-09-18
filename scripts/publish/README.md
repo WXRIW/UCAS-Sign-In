@@ -75,6 +75,24 @@ scripts/publish/all-on-macos.sh
 
 也可只执行 `scripts/publish/platforms/apple.sh`，结果相同。
 
+### 使用最新 Apple SDK 构建兼容性包
+
+独立的 latest SDK 构建会选择机器上版本最高的 Xcode，使用其中实际安装的 iOS、macOS SDK 和 Swift 编译器，并仅在本次构建中把 Swift language mode 提升为当前编译器的主版本。iOS 和 macOS deployment target 继续使用 Xcode 工程中的配置，不会随 SDK 版本提高。
+
+latest 通道使用专用的 `platforms/apple-latest-sdk.sh`，不调用也不向普通 `platforms/apple.sh` 注入参数；普通发布脚本仍保持固定 Xcode 流程原有的构建行为。它不会改写 `Package.swift` 或 Xcode 工程，因此不会改变正式发布包对旧系统的兼容范围。生成的文件名包含 `latest-sdk`，并附带一份记录实际工具链和构建要求的 `apple-latest-sdk-build-info.txt`：
+
+```sh
+bash scripts/publish/latest-apple-sdk.sh
+```
+
+也可显式指定本机 Xcode：
+
+```sh
+bash scripts/publish/latest-apple-sdk.sh --xcode /Applications/Xcode.app
+```
+
+`.github/workflows/package-apple-latest.yml` 会从 GitHub 官方 `actions/runner-images` 清单解析最高的 `xcode-N` runner 标签（当前为 `xcode-27`），再在相关主分支推送、Pull Request、每周计划任务或手动触发时构建。新的 Xcode 大版本 runner 发布后无需手动修改工作流。它分别上传 `UCAS-SignIn-Latest-SDK-iOS`、`UCAS-SignIn-Latest-SDK-macOS` 和 `UCAS-SignIn-Latest-SDK-Info` 三个 Artifact。该 runner 和最新 SDK 通道可能处于预览状态，适合尽早发现兼容问题；固定 Xcode 的正式 Apple 发布流程保持不变。
+
 ### 在 Windows 生成 Android 与 Windows 产物
 
 ```powershell
@@ -92,10 +110,14 @@ Windows 旁加载包和商店上传包均由 Visual Studio/MSBuild 的 Windows �
 
 ### GitHub Actions 自动打包
 
-`.github/workflows/package.yml` 在每次推送到 `main` 以及 Pull Request 时，并行使用 Windows 和 macOS runner 打包。它不创建 GitHub Release，产物从对应工作流页面的 **Artifacts** 下载，保留 7 天：
+`.github/workflows/package.yml` 在每次推送到 `main` 以及 Pull Request 时，并行使用 Windows 和 macOS runner 打包。它不创建 GitHub Release，产物从对应工作流页面的 **Artifacts** 下载，保留 7 天。与 Ink-Canvas 的工作流相同，每类成品单独调用一次 `upload-artifact`：
 
-- `windows-android-packages-<run>-<attempt>`：Actions 专用签名 Android APK，以及 Windows x64、ARM64 便携 ZIP。
-- `apple-packages-<run>-<attempt>`：未签名 iOS IPA，macOS Universal ZIP 和 PKG。
+- `UCAS-SignIn-Android`：Actions 专用签名 Android APK。
+- `UCAS-SignIn-Windows`：Windows x64、ARM64 便携 ZIP。
+- `UCAS-SignIn-iOS`：未签名 iOS IPA。
+- `UCAS-SignIn-macOS`：macOS Universal ZIP 和 PKG。
+
+每个 Artifact 同时包含相应的 SHA-256 文件。GitHub 下载 Artifact 时仍会强制套一层 ZIP，这与 Ink-Canvas 示例一致，但不再把所有平台合并成两个大型压缩包。
 
 Windows Actions 任务只生成 unpackaged 便携 ZIP，不生成 MSIX、旁加载包或商店上传包。iOS IPA 仍为未签名真机包，需要使用独立签名或侧载工具后才能安装。
 

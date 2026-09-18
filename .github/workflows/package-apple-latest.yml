@@ -1,0 +1,115 @@
+name: Package Apple with latest SDK
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1"
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/package-apple-latest.yml
+      - apps/apple/**
+      - eng/**
+      - scripts/lib/release-version.sh
+      - scripts/publish/latest-apple-sdk.sh
+      - scripts/publish/platforms/apple-latest-sdk.sh
+  pull_request:
+    paths:
+      - .github/workflows/package-apple-latest.yml
+      - apps/apple/**
+      - eng/**
+      - scripts/lib/release-version.sh
+      - scripts/publish/latest-apple-sdk.sh
+      - scripts/publish/platforms/apple-latest-sdk.sh
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-apple-latest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  resolve-xcode-runner:
+    name: Resolve newest Xcode runner
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      label: ${{ steps.runner.outputs.label }}
+    steps:
+      - name: Read newest published Xcode runner label
+        id: runner
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          response="$(curl --fail --silent --show-error --retry 3 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/actions/runner-images/contents/images/macos)"
+          major="$(printf '%s' "$response" | jq -r \
+            '.[] | .name | try capture("^xcode-(?<major>[0-9]+)(-arm64)?-Readme[.]md$").major catch empty' |
+            sort -n | tail -n 1)"
+          if [[ ! "$major" =~ ^[0-9]+$ ]]; then
+            printf 'Could not resolve the latest xcode-N runner label.\n' >&2
+            exit 1
+          fi
+          printf 'label=xcode-%s\n' "$major" | tee -a "$GITHUB_OUTPUT"
+
+  apple-latest-sdk:
+    name: Apple packages with latest SDK
+    needs: resolve-xcode-runner
+    runs-on: ${{ needs.resolve-xcode-runner.outputs.label }}
+    timeout-minutes: 90
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Package with latest Apple SDK
+        env:
+          UCAS_RUNNER_LABEL: ${{ needs.resolve-xcode-runner.outputs.label }}
+        run: bash scripts/publish/latest-apple-sdk.sh
+
+      - name: Read release version
+        id: release
+        shell: bash
+        run: |
+          version="$(python3 -c 'import json; print(json.load(open("eng/version.json", encoding="utf-8"))["version"])')"
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+      - name: Upload latest SDK iOS package
+        uses: actions/upload-artifact@v7
+        with:
+          name: UCAS-SignIn-Latest-SDK-iOS
+          path: |
+            artifacts/publish/${{ steps.release.outputs.version }}/UCAS-SignIn-${{ steps.release.outputs.version }}-ios-latest-sdk-unsigned.ipa
+            artifacts/publish/${{ steps.release.outputs.version }}/sha256/UCAS-SignIn-${{ steps.release.outputs.version }}-ios-latest-sdk-unsigned.ipa.sha256
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Upload latest SDK macOS packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: UCAS-SignIn-Latest-SDK-macOS
+          path: |
+            artifacts/publish/${{ steps.release.outputs.version }}/UCAS-SignIn-${{ steps.release.outputs.version }}-macos-latest-sdk-universal.zip
+            artifacts/publish/${{ steps.release.outputs.version }}/UCAS-SignIn-${{ steps.release.outputs.version }}-macos-latest-sdk-universal.pkg
+            artifacts/publish/${{ steps.release.outputs.version }}/sha256/UCAS-SignIn-${{ steps.release.outputs.version }}-macos-latest-sdk-universal.zip.sha256
+            artifacts/publish/${{ steps.release.outputs.version }}/sha256/UCAS-SignIn-${{ steps.release.outputs.version }}-macos-latest-sdk-universal.pkg.sha256
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Upload latest SDK build information
+        uses: actions/upload-artifact@v7
+        with:
+          name: UCAS-SignIn-Latest-SDK-Info
+          path: |
+            artifacts/publish/${{ steps.release.outputs.version }}/UCAS-SignIn-${{ steps.release.outputs.version }}-apple-latest-sdk-build-info.txt
+            artifacts/publish/${{ steps.release.outputs.version }}/sha256/UCAS-SignIn-${{ steps.release.outputs.version }}-apple-latest-sdk-build-info.txt.sha256
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0

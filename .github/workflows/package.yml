@@ -104,11 +104,26 @@ jobs:
           $release = Get-Content eng/version.json -Raw | ConvertFrom-Json
           "version=$($release.version)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
-      - name: Upload Windows and Android packages
+      - name: Upload Android package
         uses: actions/upload-artifact@v7
         with:
-          name: windows-android-packages-${{ github.run_number }}-${{ github.run_attempt }}
-          path: artifacts/publish/${{ steps.release.outputs.version }}/
+          name: UCAS-SignIn-Android
+          path: |
+            artifacts/publish/${{ steps.release.outputs.version }}/UCAS-SignIn-${{ steps.release.outputs.version }}-android-githubactions.apk
+            artifacts/publish/${{ steps.release.outputs.version }}/sha256/UCAS-SignIn-${{ steps.release.outputs.version }}-android-githubactions.apk.sha256
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Upload Windows packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: UCAS-SignIn-Windows
+          path: |
+            artifacts/publish/${{ steps.release.outputs.version }}/UCAS-SignIn-${{ steps.release.outputs.version }}-windows-x64.zip
+            artifacts/publish/${{ steps.release.outputs.version }}/UCAS-SignIn-${{ steps.release.outputs.version }}-windows-arm64.zip
+            artifacts/publish/${{ steps.release.outputs.version }}/sha256/UCAS-SignIn-${{ steps.release.outputs.version }}-windows-x64.zip.sha256
+            artifacts/publish/${{ steps.release.outputs.version }}/sha256/UCAS-SignIn-${{ steps.release.outputs.version }}-windows-arm64.zip.sha256
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
@@ -134,11 +149,26 @@ jobs:
           version="$(python3 -c 'import json; print(json.load(open("eng/version.json", encoding="utf-8"))["version"])')"
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
 
-      - name: Upload Apple packages
+      - name: Upload iOS package
         uses: actions/upload-artifact@v7
         with:
-          name: apple-packages-${{ github.run_number }}-${{ github.run_attempt }}
-          path: artifacts/publish/${{ steps.release.outputs.version }}/
+          name: UCAS-SignIn-iOS
+          path: |
+            artifacts/publish/${{ steps.release.outputs.version }}/UCAS-SignIn-${{ steps.release.outputs.version }}-ios-unsigned.ipa
+            artifacts/publish/${{ steps.release.outputs.version }}/sha256/UCAS-SignIn-${{ steps.release.outputs.version }}-ios-unsigned.ipa.sha256
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Upload macOS packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: UCAS-SignIn-macOS
+          path: |
+            artifacts/publish/${{ steps.release.outputs.version }}/UCAS-SignIn-${{ steps.release.outputs.version }}-macos-universal.zip
+            artifacts/publish/${{ steps.release.outputs.version }}/UCAS-SignIn-${{ steps.release.outputs.version }}-macos-universal.pkg
+            artifacts/publish/${{ steps.release.outputs.version }}/sha256/UCAS-SignIn-${{ steps.release.outputs.version }}-macos-universal.zip.sha256
+            artifacts/publish/${{ steps.release.outputs.version }}/sha256/UCAS-SignIn-${{ steps.release.outputs.version }}-macos-universal.pkg.sha256
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
