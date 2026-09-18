@@ -301,14 +301,24 @@ swift test
 
 ```text
 UCAS-Sign-In/
+├── .github/workflows/        多平台持续集成与自动打包
 ├── apps/
 │   ├── apple/                Apple 工程、Swift Package、测试与签名配置
 │   ├── windows/              WinUI 3 应用与独立打包项目
 │   └── android/              原生 Material 3 Android 应用
 ├── packages/dotnet/          C# 核心库及测试
-├── shared/                   共用文案与虚构测试样例
-├── docs/                     项目文档与各平台截图
+├── shared/                   共用 C# 信息与虚构测试样例
+├── docs/                     各平台截图
+├── eng/                      统一版本源与生成的平台版本配置
+├── scripts/
+│   ├── publish/              跨平台构建与发布脚本
+│   ├── signing/              Android 与 Windows 签名配置脚本
+│   └── lib/                  发布脚本的共用函数
+├── tools/Versioning/         跨平台版本号管理工具
+├── Directory.Build.*         .NET 项目的共用构建配置
+├── global.json               .NET SDK 版本配置
 ├── README.md                 项目总览
+├── PRIVACY.md                隐私政策
 └── LICENSE                   AGPL-3.0 协议全文
 ```
 
