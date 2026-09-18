@@ -294,8 +294,13 @@ struct TodayView: View {
                 .frame(width: 24, height: 24)
                 .foregroundStyle(Palette.green).accessibilityHidden(true)
             Text("UCAS").font(.system(size: 10, weight: .medium, design: .monospaced)).tracking(2)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
                 .foregroundStyle(Palette.secondary)
         }
+        // iOS 26 sizes the Liquid Glass toolbar platter from this intrinsic width.
+        // Refuse the compact proposal so the wordmark expands the platter instead of wrapping.
+        .fixedSize(horizontal: true, vertical: false)
     }
     private var introduction: some View {
         VStack(alignment: .leading, spacing: 9) {

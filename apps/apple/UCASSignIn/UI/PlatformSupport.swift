@@ -19,9 +19,23 @@ extension View {
     @ViewBuilder
     func appNavigationStyle(inline: Bool = false) -> some View {
         #if os(iOS)
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            // Let the system's scroll-edge treatment see the scrolling content.
+            // An opaque toolbar background replaces its soft blur with a hard edge.
+            self.navigationBarTitleDisplayMode(inline ? .inline : .large)
+                .scrollEdgeEffectStyle(.soft, for: .top)
+                .background(PhoneNavigationMargins())
+        } else {
+            self.navigationBarTitleDisplayMode(inline ? .inline : .large)
+                .toolbarBackground(Palette.background, for: .navigationBar)
+                .background(PhoneNavigationMargins())
+        }
+        #else
         self.navigationBarTitleDisplayMode(inline ? .inline : .large)
             .toolbarBackground(Palette.background, for: .navigationBar)
             .background(PhoneNavigationMargins())
+        #endif
         #else
         self
         #endif
