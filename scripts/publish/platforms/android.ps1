@@ -77,7 +77,16 @@ try {
     $verification = & $java -jar $apkSigner verify --verbose --print-certs $signedApk 2>&1
     if ($LASTEXITCODE -ne 0) { throw "APK signature verification failed: $verification" }
     $expectedFingerprint = (Get-FileHash -LiteralPath $certificatePath -Algorithm SHA256).Hash.ToLowerInvariant()
-    if (-not ($verification -match "(?m)^Signer #1 certificate SHA-256 digest: $expectedFingerprint$")) {
+    $verificationText = [string]::Join("`n", $verification)
+    $actualFingerprintMatch = [regex]::Match(
+        $verificationText,
+        '(?im)^Signer #1 certificate SHA-256 digest:\s*([0-9a-f: ]+)\s*$'
+    )
+    if (-not $actualFingerprintMatch.Success) {
+        throw "APK signature verification output did not include the signer SHA-256 digest: $verificationText"
+    }
+    $actualFingerprint = ($actualFingerprintMatch.Groups[1].Value -replace '[^0-9a-f]', '').ToLowerInvariant()
+    if ($actualFingerprint -ne $expectedFingerprint) {
         throw 'APK signer does not match the UCAS signing certificate.'
     }
     & $zipAlign -c -P 16 4 $signedApk

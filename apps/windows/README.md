@@ -8,7 +8,7 @@ C# / .NET 10 / WinUI 3。默认以 unpackaged、自包含程序运行；独立 W
 - `UCASSignIn.Windows/`：应用入口、ViewModels、原生界面及 DPAPI/通知服务。
 - `UCASSignIn.Windows.Package/`：独立 `.wapproj`，默认不随解决方案构建，需单独选择。
 
-不依赖 Android 工作负载。安装仓库 `global.json` 固定的 .NET SDK（当前为 10.0.400）、Visual Studio WinUI 开发工具和 Windows SDK 10.0.26100。
+不依赖 Android 工作负载。安装 .NET SDK 10.0.100 或更新的 .NET 10 SDK、Visual Studio WinUI 开发工具和 Windows SDK 10.0.26100。
 
 ## 构建与运行
 

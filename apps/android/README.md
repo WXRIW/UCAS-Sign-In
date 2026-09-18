@@ -6,7 +6,7 @@ C# / .NET 10 for Android，原生 Material 3，无 MAUI、无 WebView。最低 A
 
 - `UCASSignIn.Android.slnx`：包含 Android 应用、共享核心与核心测试。
 - `UCASSignIn.Android/`：MainActivity、Fragment、ViewModel、Android 系统服务及资源。
-- 安装仓库 `global.json` 固定的 .NET SDK（当前为 10.0.400）、`android` 工作负载、Android SDK 36 和兼容 JDK；无需 Windows App SDK。
+- 安装 .NET SDK 10.0.100 或更新的 .NET 10 SDK、`android` 工作负载、Android SDK 36 和兼容 JDK；无需 Windows App SDK。
 
 ## 构建
 
