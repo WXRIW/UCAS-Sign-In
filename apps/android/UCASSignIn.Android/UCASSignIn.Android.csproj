@@ -1,18 +1,20 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net10.0-android</TargetFramework><OutputType>Exe</OutputType><SupportedOSPlatformVersion>23</SupportedOSPlatformVersion>
-    <ApplicationId>cn.ucas.signin</ApplicationId><ApplicationTitle>果壳签到</ApplicationTitle>
+    <ApplicationId Condition="'$(ActionsBuild)' != 'true'">cn.ucas.signin</ApplicationId>
+    <ApplicationId Condition="'$(ActionsBuild)' == 'true'">cn.ucas.signin.githubactions</ApplicationId>
+    <ApplicationTitle>果壳签到</ApplicationTitle>
     <AndroidManifest>AndroidManifest.xml</AndroidManifest><AndroidPackageFormats>apk</AndroidPackageFormats>
     <AndroidEnableMarshalMethods>false</AndroidEnableMarshalMethods><EmbedAssembliesIntoApk>true</EmbedAssembliesIntoApk>
     <JsonSerializerIsReflectionEnabledByDefault>true</JsonSerializerIsReflectionEnabledByDefault>
     <NuGetLockFilePath>packages.$(Configuration).lock.json</NuGetLockFilePath>
-    <AndroidManifestPlaceholders>debuggable=false</AndroidManifestPlaceholders>
+    <AndroidManifestPlaceholders>debuggable=false;applicationLabel=$(ApplicationTitle)</AndroidManifestPlaceholders>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
     <!-- With embedded assemblies, optimization disables the Android debug runtime and packaged symbols. -->
     <Optimize>false</Optimize>
     <RuntimeIdentifiers>android-arm64;android-x64</RuntimeIdentifiers>
-    <AndroidManifestPlaceholders>debuggable=true</AndroidManifestPlaceholders>
+    <AndroidManifestPlaceholders>debuggable=true;applicationLabel=$(ApplicationTitle)</AndroidManifestPlaceholders>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)' == 'Release'"><RuntimeIdentifiers>android-arm;android-arm64</RuntimeIdentifiers><AndroidPackageFormats>apk;aab</AndroidPackageFormats></PropertyGroup>
   <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''"><RuntimeIdentifiers>$(RuntimeIdentifier)</RuntimeIdentifiers></PropertyGroup>

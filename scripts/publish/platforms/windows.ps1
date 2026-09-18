@@ -1,6 +1,9 @@
 #requires -Version 7.0
 [CmdletBinding()]
-param([string]$MSBuildPath)
+param(
+    [string]$MSBuildPath,
+    [switch]$PortableOnly
+)
 
 $ErrorActionPreference = 'Stop'
 if (-not $IsWindows) { throw 'Windows packaging must run on Windows.' }
@@ -90,12 +93,13 @@ function Invoke-VSPackageBuild {
 Push-Location $repositoryRoot
 try {
     Assert-VersionSynchronized $repositoryRoot
-    if (-not (Test-Path -LiteralPath $signingPropsPath -PathType Leaf) -or
-        -not (Test-Path -LiteralPath $certificatePath -PathType Leaf)) {
-        throw 'Sideload signing is not configured. Run pwsh scripts/signing/windows/new-certificate.ps1 once.'
+    if (-not $PortableOnly) {
+        if (-not (Test-Path -LiteralPath $signingPropsPath -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $certificatePath -PathType Leaf)) {
+            throw 'Sideload signing is not configured. Run pwsh scripts/signing/windows/new-certificate.ps1 once.'
+        }
+        $script:msbuild = Find-MSBuild $MSBuildPath
     }
-
-    $script:msbuild = Find-MSBuild $MSBuildPath
     New-Item -ItemType Directory -Path $stagingDirectory, $outputDirectory, $checksumDirectory -Force | Out-Null
 
     $portableX64Archive = Join-Path $stagingDirectory ([IO.Path]::GetFileName($outputs.PortableX64))
@@ -103,36 +107,40 @@ try {
     Publish-PortableArchive -Platform x64 -RuntimeIdentifier win-x64 -ArchivePath $portableX64Archive
     Publish-PortableArchive -Platform ARM64 -RuntimeIdentifier win-arm64 -ArchivePath $portableArm64Archive
 
-    $sideloadPackageDirectory = Join-Path $stagingDirectory 'sideload-packages'
-    Invoke-VSPackageBuild -BuildMode SideloadOnly -PackageDirectory $sideloadPackageDirectory -SigningEnabled $true
-    $sideloadBundles = @(Get-ChildItem -LiteralPath $sideloadPackageDirectory -Filter '*.msixbundle' -File -Recurse)
-    if ($sideloadBundles.Count -ne 1) { throw "Expected one sideload .msixbundle, found $($sideloadBundles.Count)." }
-
-    $sideloadContents = Join-Path $stagingDirectory 'sideload'
-    New-Item -ItemType Directory -Path $sideloadContents -Force | Out-Null
-    Copy-Item -LiteralPath $sideloadBundles[0].FullName `
-        -Destination (Join-Path $sideloadContents "UCAS-SignIn-$version-windows-x64-arm64.msixbundle")
-    Copy-Item -LiteralPath $certificatePath `
-        -Destination (Join-Path $sideloadContents 'UCAS-SignIn-Sideload.cer')
-    $sideloadArchive = Join-Path $stagingDirectory ([IO.Path]::GetFileName($outputs.Sideload))
-    Compress-Archive -Path (Join-Path $sideloadContents '*') -DestinationPath $sideloadArchive -CompressionLevel Optimal
-
-    $storePackageDirectory = Join-Path $stagingDirectory 'store-packages'
-    Invoke-VSPackageBuild -BuildMode StoreUpload -PackageDirectory $storePackageDirectory -SigningEnabled $false
-    $uploads = @(Get-ChildItem -LiteralPath $storePackageDirectory -Filter '*.msixupload' -File -Recurse)
-    if ($uploads.Count -ne 1) { throw "Expected one x64+ARM64 .msixupload file, found $($uploads.Count)." }
-
     $stagedOutputs = @(
         [pscustomobject]@{ Source = $portableX64Archive; Destination = $outputs.PortableX64 }
         [pscustomobject]@{ Source = $portableArm64Archive; Destination = $outputs.PortableArm64 }
-        [pscustomobject]@{ Source = $sideloadArchive; Destination = $outputs.Sideload }
-        [pscustomobject]@{ Source = $uploads[0].FullName; Destination = $outputs.StoreUpload }
     )
+    if (-not $PortableOnly) {
+        $sideloadPackageDirectory = Join-Path $stagingDirectory 'sideload-packages'
+        Invoke-VSPackageBuild -BuildMode SideloadOnly -PackageDirectory $sideloadPackageDirectory -SigningEnabled $true
+        $sideloadBundles = @(Get-ChildItem -LiteralPath $sideloadPackageDirectory -Filter '*.msixbundle' -File -Recurse)
+        if ($sideloadBundles.Count -ne 1) { throw "Expected one sideload .msixbundle, found $($sideloadBundles.Count)." }
+
+        $sideloadContents = Join-Path $stagingDirectory 'sideload'
+        New-Item -ItemType Directory -Path $sideloadContents -Force | Out-Null
+        Copy-Item -LiteralPath $sideloadBundles[0].FullName `
+            -Destination (Join-Path $sideloadContents "UCAS-SignIn-$version-windows-x64-arm64.msixbundle")
+        Copy-Item -LiteralPath $certificatePath `
+            -Destination (Join-Path $sideloadContents 'UCAS-SignIn-Sideload.cer')
+        $sideloadArchive = Join-Path $stagingDirectory ([IO.Path]::GetFileName($outputs.Sideload))
+        Compress-Archive -Path (Join-Path $sideloadContents '*') -DestinationPath $sideloadArchive -CompressionLevel Optimal
+
+        $storePackageDirectory = Join-Path $stagingDirectory 'store-packages'
+        Invoke-VSPackageBuild -BuildMode StoreUpload -PackageDirectory $storePackageDirectory -SigningEnabled $false
+        $uploads = @(Get-ChildItem -LiteralPath $storePackageDirectory -Filter '*.msixupload' -File -Recurse)
+        if ($uploads.Count -ne 1) { throw "Expected one x64+ARM64 .msixupload file, found $($uploads.Count)." }
+
+        $stagedOutputs += @(
+            [pscustomobject]@{ Source = $sideloadArchive; Destination = $outputs.Sideload }
+            [pscustomobject]@{ Source = $uploads[0].FullName; Destination = $outputs.StoreUpload }
+        )
+    }
     foreach ($item in $stagedOutputs) {
         Copy-Item -LiteralPath $item.Source -Destination $item.Destination -Force
     }
 
-    foreach ($path in $outputs.Values) {
+    foreach ($path in $stagedOutputs.Destination) {
         $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
         $checksumPath = Join-Path $checksumDirectory "$([IO.Path]::GetFileName($path)).sha256"
         "$hash  $([IO.Path]::GetFileName($path))" |
@@ -140,11 +148,13 @@ try {
     }
 
     Write-Host "Windows release files: $outputDirectory"
-    foreach ($path in $outputs.Values) {
+    foreach ($path in $stagedOutputs.Destination) {
         Write-Host "  $([IO.Path]::GetFileName($path))"
         Write-Host "  sha256/$([IO.Path]::GetFileName($path)).sha256"
     }
-    Write-Host 'Upload only the single .msixupload file to Partner Center; it contains both x64 and ARM64.'
+    if (-not $PortableOnly) {
+        Write-Host 'Upload only the single .msixupload file to Partner Center; it contains both x64 and ARM64.'
+    }
 } finally {
     Pop-Location
     if (Test-Path -LiteralPath $stagingDirectory) { Remove-Item -LiteralPath $stagingDirectory -Recurse -Force }

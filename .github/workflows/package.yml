@@ -1,0 +1,134 @@
+name: Package installers
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-android:
+    name: Windows and Android packages
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Restore Android workload
+        shell: pwsh
+        run: dotnet workload restore apps/android/UCASSignIn.Android/UCASSignIn.Android.csproj --skip-manifest-update
+
+      - name: Package Actions Android APK
+        shell: pwsh
+        env:
+          ACTIONS_KEYSTORE_BASE64: ${{ secrets.ANDROID_ACTIONS_KEYSTORE_BASE64 }}
+          ACTIONS_SIGNING_PASSWORD: ${{ secrets.ANDROID_ACTIONS_SIGNING_PASSWORD }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $workspace = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
+          $workspacePrefix = $workspace.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+          $signingDirectory = [IO.Path]::GetFullPath((Join-Path $workspace '.local/android-actions-signing'))
+          if (-not $signingDirectory.StartsWith($workspacePrefix, [StringComparison]::OrdinalIgnoreCase)) {
+              throw 'The temporary signing directory is outside the Actions workspace.'
+          }
+
+          $keyStore = Join-Path $signingDirectory 'ucas-signin-actions.keystore'
+          $certificate = Join-Path $signingDirectory 'ucas-signin-actions.cer'
+          $passwordFile = Join-Path $signingDirectory 'ucas-signin-actions.password.txt'
+          New-Item -ItemType Directory -Path $signingDirectory -Force | Out-Null
+          try {
+              $hasKey = -not [string]::IsNullOrWhiteSpace($env:ACTIONS_KEYSTORE_BASE64)
+              $hasPassword = -not [string]::IsNullOrEmpty($env:ACTIONS_SIGNING_PASSWORD)
+              if ($hasKey -ne $hasPassword) {
+                  throw 'Configure both Android Actions signing secrets, or neither of them.'
+              }
+
+              if ($hasKey) {
+                  [IO.File]::WriteAllBytes($keyStore, [Convert]::FromBase64String($env:ACTIONS_KEYSTORE_BASE64))
+                  $env:UCAS_ANDROID_SIGNING_PASSWORD = $env:ACTIONS_SIGNING_PASSWORD
+                  & keytool -exportcert -keystore $keyStore -storetype PKCS12 `
+                      -alias ucas-signin-actions -storepass:env UCAS_ANDROID_SIGNING_PASSWORD -file $certificate
+                  if ($LASTEXITCODE -ne 0) { throw 'Cannot read the Actions Android signing key.' }
+                  $plainPassword = $env:ACTIONS_SIGNING_PASSWORD
+              } else {
+                  & ./scripts/signing/android/new-actions-key.ps1
+                  $plainPassword = [IO.File]::ReadAllText($passwordFile).Trim()
+              }
+
+              $password = ConvertTo-SecureString $plainPassword -AsPlainText -Force
+              & ./scripts/publish/platforms/android.ps1 -Password $password -ActionsBuild
+          } finally {
+              $env:UCAS_ANDROID_SIGNING_PASSWORD = $null
+              if (Test-Path -LiteralPath $signingDirectory) {
+                  Remove-Item -LiteralPath $signingDirectory -Recurse -Force
+              }
+          }
+
+      - name: Package Windows portable apps
+        shell: pwsh
+        run: ./scripts/publish/platforms/windows.ps1 -PortableOnly
+
+      - name: Read release version
+        id: release
+        shell: pwsh
+        run: |
+          $release = Get-Content eng/version.json -Raw | ConvertFrom-Json
+          "version=$($release.version)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Upload Windows and Android packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-android-packages-${{ github.run_number }}-${{ github.run_attempt }}
+          path: artifacts/publish/${{ steps.release.outputs.version }}/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  apple:
+    name: Apple packages
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Select Xcode 16.4
+        run: sudo xcode-select --switch /Applications/Xcode_16.4.app/Contents/Developer
+
+      - name: Package Apple apps
+        run: scripts/publish/all-on-macos.sh
+
+      - name: Read release version
+        id: release
+        shell: bash
+        run: |
+          version="$(python3 -c 'import json; print(json.load(open("eng/version.json", encoding="utf-8"))["version"])')"
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Apple packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: apple-packages-${{ github.run_number }}-${{ github.run_attempt }}
+          path: artifacts/publish/${{ steps.release.outputs.version }}/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0

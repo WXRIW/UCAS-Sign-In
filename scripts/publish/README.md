@@ -90,6 +90,61 @@ pwsh scripts/publish/platforms/windows.ps1
 
 Windows 旁加载包和商店上传包均由 Visual Studio/MSBuild 的 Windows 打包目标生成。Partner Center 只上传一个 `.msixupload`；该文件内部同时包含 x64 与 ARM64。
 
+### GitHub Actions 自动打包
+
+`.github/workflows/package.yml` 在每次推送到 `main` 以及 Pull Request 时，并行使用 Windows 和 macOS runner 打包。它不创建 GitHub Release，产物从对应工作流页面的 **Artifacts** 下载，保留 7 天：
+
+- `windows-android-packages-<run>-<attempt>`：Actions 专用签名 Android APK，以及 Windows x64、ARM64 便携 ZIP。
+- `apple-packages-<run>-<attempt>`：未签名 iOS IPA，macOS Universal ZIP 和 PKG。
+
+Windows Actions 任务只生成 unpackaged 便携 ZIP，不生成 MSIX、旁加载包或商店上传包。iOS IPA 仍为未签名真机包，需要使用独立签名或侧载工具后才能安装。
+
+#### 配置 Actions 专用 Android 签名
+
+Actions APK 使用包名 `cn.ucas.signin.githubactions` 和独立密钥，启动器名称与正式版一致，均为“果壳签到”。它可与正式版并存，并在后续 Actions 构建之间覆盖升级，但不能更新正式版。
+
+在 Windows PowerShell 中从仓库根目录一次性生成密钥：
+
+```powershell
+pwsh scripts/signing/android/new-actions-key.ps1
+```
+
+脚本会自动查找 Android 使用的 JDK，不要求 `keytool` 已加入 `PATH`。它会生成一个加密安全的随机密码，然后在 `.local/android-actions-signing/` 中生成 keystore、公开证书和 `ucas-signin-actions.password.txt`；如果文件已存在则拒绝覆盖。
+
+密码文件是明文敏感信息，但整个 `.local/` 目录已被 Git 忽略。请将 keystore 与密码文件一同安全备份；同一包名的后续 APK 必须继续使用这把密钥，更换密钥后已安装的 Actions 版无法直接升级。
+
+在仓库 **Settings → Secrets and variables → Actions** 中创建：
+
+| Secret | 内容 |
+| --- | --- |
+| `ANDROID_ACTIONS_KEYSTORE_BASE64` | `ucas-signin-actions.keystore` 的 Base64 内容 |
+| `ANDROID_ACTIONS_SIGNING_PASSWORD` | 生成 keystore 时使用的密码 |
+
+可使用 GitHub CLI 从标准输入写入 Secrets，避免将值放到命令行参数中：
+
+```powershell
+$keyStore = Join-Path (Get-Location) '.local/android-actions-signing/ucas-signin-actions.keystore'
+[Convert]::ToBase64String([IO.File]::ReadAllBytes($keyStore)) |
+    gh secret set ANDROID_ACTIONS_KEYSTORE_BASE64
+$passwordFile = Join-Path (Get-Location) '.local/android-actions-signing/ucas-signin-actions.password.txt'
+[IO.File]::ReadAllText($passwordFile).Trim() |
+    gh secret set ANDROID_ACTIONS_SIGNING_PASSWORD
+```
+
+工作流在能读取这两个 Secrets 时使用固定密钥；Fork PR、Dependabot 等无法读取 Secrets 的运行会自动生成仅用于该次构建的临时密钥，因此仍可正常打包，但临时签名 APK 不能覆盖升级其他运行生成的版本。本地验证 Actions APK 可执行：
+
+```powershell
+$passwordFile = Join-Path (Get-Location) '.local/android-actions-signing/ucas-signin-actions.password.txt'
+$password = ConvertTo-SecureString ([IO.File]::ReadAllText($passwordFile).Trim()) -AsPlainText -Force
+& scripts/publish/platforms/android.ps1 -Password $password -ActionsBuild
+```
+
+只生成 Windows 便携 ZIP 可执行：
+
+```powershell
+pwsh scripts/publish/platforms/windows.ps1 -PortableOnly
+```
+
 ## 4. 产物布局与命名
 
 统一文件名格式：

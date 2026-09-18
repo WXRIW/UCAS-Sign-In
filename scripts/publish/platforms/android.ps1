@@ -3,7 +3,8 @@
 param(
     [Security.SecureString]$Password,
     [string]$JavaHome,
-    [string]$AndroidSdkRoot
+    [string]$AndroidSdkRoot,
+    [switch]$ActionsBuild
 )
 
 $ErrorActionPreference = 'Stop'
@@ -14,12 +15,22 @@ $project = Join-Path $repositoryRoot 'apps/android/UCASSignIn.Android/UCASSignIn
 $release = Read-ReleaseVersion $repositoryRoot
 $version = [string]$release.version
 $build = [int64]$release.build
-$signingDirectory = Join-Path $repositoryRoot '.local/android-signing'
-$keyStore = Join-Path $signingDirectory 'ucas-signin.keystore'
-$certificatePath = Join-Path $signingDirectory 'ucas-signin.cer'
+$signingName = if ($ActionsBuild) { 'ucas-signin-actions' } else { 'ucas-signin' }
+$signingDirectoryName = if ($ActionsBuild) { 'android-actions-signing' } else { 'android-signing' }
+$expectedApplicationId = if ($ActionsBuild) { 'cn.ucas.signin.githubactions' } else { 'cn.ucas.signin' }
+$expectedApplicationLabel = '果壳签到'
+$artifactQualifier = if ($ActionsBuild) { '-githubactions' } else { '' }
+$signingDirectory = Join-Path $repositoryRoot ".local/$signingDirectoryName"
+$keyStore = Join-Path $signingDirectory "$signingName.keystore"
+$certificatePath = Join-Path $signingDirectory "$signingName.cer"
 foreach ($path in @($keyStore, $certificatePath)) {
     if (-not (Test-Path -LiteralPath $path)) {
-        throw "Missing UCAS signing material: $path. Run scripts/signing/android/new-key.ps1 once, or restore the existing key and certificate."
+        $guidance = if ($ActionsBuild) {
+            'Restore the Actions keystore and certificate before packaging.'
+        } else {
+            'Run scripts/signing/android/new-key.ps1 once, or restore the existing key and certificate.'
+        }
+        throw "Missing UCAS signing material: $path. $guidance"
     }
 }
 
@@ -34,28 +45,29 @@ $aapt = Join-Path $buildTools 'aapt.exe'
 $stagingDirectory = Join-Path $repositoryRoot "artifacts/.staging/android/$([Guid]::NewGuid().ToString('N'))"
 $outputDirectory = Join-Path $repositoryRoot "artifacts/publish/$version"
 $checksumDirectory = Join-Path $outputDirectory 'sha256'
-$outputApk = Join-Path $outputDirectory "UCAS-SignIn-$version-android.apk"
+$outputApk = Join-Path $outputDirectory "UCAS-SignIn-$version-android$artifactQualifier.apk"
 $outputChecksum = Join-Path $checksumDirectory "$([IO.Path]::GetFileName($outputApk)).sha256"
 $oldPassword = $env:UCAS_ANDROID_SIGNING_PASSWORD
 if ($null -eq $Password) { $Password = Read-Host 'UCAS signing password' -AsSecureString }
 if ($Password.Length -eq 0) { throw 'The signing password cannot be empty.' }
-$credential = [PSCredential]::new('ucas-signin', $Password)
+$credential = [PSCredential]::new($signingName, $Password)
 
 Push-Location $repositoryRoot
 try {
     Assert-VersionSynchronized $repositoryRoot
     $env:UCAS_ANDROID_SIGNING_PASSWORD = $credential.GetNetworkCredential().Password
-    & $keyTool -list -keystore $keyStore -alias ucas-signin -storepass:env UCAS_ANDROID_SIGNING_PASSWORD 2>&1 | Out-Null
+    & $keyTool -list -keystore $keyStore -alias $signingName -storepass:env UCAS_ANDROID_SIGNING_PASSWORD 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Cannot open the UCAS signing key. Check the password and keystore.' }
     New-Item -ItemType Directory -Path $stagingDirectory, $outputDirectory, $checksumDirectory -Force | Out-Null
     $arguments = @(
         'publish', $project, '-c', 'Release', '-o', $stagingDirectory,
         '-p:RestoreLockedMode=true', '-p:AndroidPackageFormats=apk', '-p:AndroidKeyStore=true',
         "-p:JavaSdkDirectory=$jdk", "-p:AndroidSdkDirectory=$sdk",
-        "-p:AndroidSigningKeyStore=$keyStore", '-p:AndroidSigningKeyAlias=ucas-signin',
+        "-p:AndroidSigningKeyStore=$keyStore", "-p:AndroidSigningKeyAlias=$signingName",
         '-p:AndroidSigningStorePass=env:UCAS_ANDROID_SIGNING_PASSWORD',
         '-p:AndroidSigningKeyPass=env:UCAS_ANDROID_SIGNING_PASSWORD'
     )
+    if ($ActionsBuild) { $arguments += '-p:ActionsBuild=true' }
     & dotnet @arguments
     if ($LASTEXITCODE -ne 0) { throw 'Android publish failed.' }
     $signedPackages = @(Get-ChildItem -LiteralPath $stagingDirectory -Filter '*-Signed.apk' -File -Recurse)
@@ -84,8 +96,13 @@ try {
     $packageName = [regex]::Match($packageLine, "name='([^']+)'").Groups[1].Value
     $actualBuild = [regex]::Match($packageLine, "versionCode='([^']+)'").Groups[1].Value
     $actualVersion = [regex]::Match($packageLine, "versionName='([^']+)'").Groups[1].Value
-    if ($packageName -ne 'cn.ucas.signin' -or $actualVersion -ne $version -or $actualBuild -ne [string]$build) {
+    $labelLine = [string]($badging | Where-Object { $_ -match '^application-label:' } | Select-Object -First 1)
+    $actualApplicationLabel = [regex]::Match($labelLine, "^application-label:'([^']*)'").Groups[1].Value
+    if ($packageName -ne $expectedApplicationId -or $actualVersion -ne $version -or $actualBuild -ne [string]$build) {
         throw "APK metadata mismatch: package=$packageName version=$actualVersion build=$actualBuild."
+    }
+    if ($actualApplicationLabel -ne $expectedApplicationLabel) {
+        throw "APK application label mismatch: expected=$expectedApplicationLabel actual=$actualApplicationLabel."
     }
     if ($badging -match '^application-debuggable') { throw 'Release APK must not be debuggable.' }
 

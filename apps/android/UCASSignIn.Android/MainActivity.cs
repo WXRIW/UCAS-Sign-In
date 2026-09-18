@@ -18,7 +18,7 @@ using UCASSignIn.Android.Fragments;
 using OperationCanceledException = System.OperationCanceledException;
 namespace UCASSignIn.Android;
 
-[Activity(Label = "果壳签到", Theme = "@style/AppTheme", MainLauncher = true, Exported = true, LaunchMode = LaunchMode.SingleTop, WindowSoftInputMode = SoftInput.AdjustResize)]
+[Activity(Label = "${applicationLabel}", Theme = "@style/AppTheme", MainLauncher = true, Exported = true, LaunchMode = LaunchMode.SingleTop, WindowSoftInputMode = SoftInput.AdjustResize)]
 public sealed class MainActivity : AppCompatActivity
 {
     public MainViewModel Vm { get; private set; } = null!;
