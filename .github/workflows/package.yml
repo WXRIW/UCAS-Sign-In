@@ -31,7 +31,7 @@ jobs:
       - name: Set up .NET
         uses: actions/setup-dotnet@v6
         with:
-          global-json-file: global.json
+          dotnet-version: 10.0.111
 
       - name: Restore Android workload
         shell: pwsh
@@ -75,6 +75,16 @@ jobs:
               }
 
               $password = ConvertTo-SecureString $plainPassword -AsPlainText -Force
+              $androidScript = Join-Path $workspace 'scripts/publish/platforms/android.ps1'
+              $legacyPattern = '''(?im)^Signer #1 certificate SHA-256 digest:\s*([0-9a-f: ]+)\s*$'''
+              $compatiblePattern = '''(?is)certificate SHA-256 digest:\s*([0-9a-f: ]{32,})'''
+              $scriptText = Get-Content -LiteralPath $androidScript -Raw
+              if ($scriptText.Contains($legacyPattern)) {
+                  $scriptText = $scriptText.Replace($legacyPattern, $compatiblePattern)
+              } elseif (-not $scriptText.Contains($compatiblePattern)) {
+                  throw 'Expected Android signer digest pattern was not found in packaging script.'
+              }
+              [IO.File]::WriteAllText($androidScript, $scriptText, [Text.UTF8Encoding]::new($false))
               & ./scripts/publish/platforms/android.ps1 -Password $password -ActionsBuild
           } finally {
               $env:UCAS_ANDROID_SIGNING_PASSWORD = $null
