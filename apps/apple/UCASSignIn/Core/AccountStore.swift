@@ -1,12 +1,75 @@
 import Foundation
 
+public enum PreferenceOverride: String, Codable, CaseIterable, Identifiable, Sendable {
+    case inherit, enabled, disabled
+    public var id: String { rawValue }
+    public func resolve(default value: Bool) -> Bool {
+        switch self { case .inherit: value; case .enabled: true; case .disabled: false }
+    }
+}
+
+public struct CoursePreferences: Codable, Equatable, Sendable {
+    public var confirmation: PreferenceOverride
+    public var autoSign: PreferenceOverride
+    public var reminders: PreferenceOverride
+    public var reminderLeadMinutes: Int?
+    public var signInDisabled: Bool
+
+    public init(confirmation: PreferenceOverride = .inherit, autoSign: PreferenceOverride = .inherit,
+                reminders: PreferenceOverride = .inherit, reminderLeadMinutes: Int? = nil,
+                signInDisabled: Bool = false) {
+        self.confirmation = confirmation
+        self.autoSign = autoSign
+        self.reminders = reminders
+        self.reminderLeadMinutes = reminderLeadMinutes
+        self.signInDisabled = signInDisabled
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case confirmation, autoSign, reminders, reminderLeadMinutes, signInDisabled
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        confirmation = try values.decodeIfPresent(PreferenceOverride.self, forKey: .confirmation) ?? .inherit
+        autoSign = try values.decodeIfPresent(PreferenceOverride.self, forKey: .autoSign) ?? .inherit
+        reminders = try values.decodeIfPresent(PreferenceOverride.self, forKey: .reminders) ?? .inherit
+        reminderLeadMinutes = try values.decodeIfPresent(Int.self, forKey: .reminderLeadMinutes)
+        signInDisabled = try values.decodeIfPresent(Bool.self, forKey: .signInDisabled) ?? false
+    }
+}
+
 public struct AccountPreferences: Codable, Equatable, Sendable {
     public var autoSignEnabled: Bool
     public var remindersEnabled: Bool
+    public var confirmationEnabled: Bool
+    public var reminderLeadMinutes: Int
+    public var courses: [String: CoursePreferences]
 
-    public init(autoSignEnabled: Bool = false, remindersEnabled: Bool = false) {
+    public init(autoSignEnabled: Bool = false, remindersEnabled: Bool = false,
+                confirmationEnabled: Bool = false, reminderLeadMinutes: Int = 10,
+                courses: [String: CoursePreferences] = [:]) {
         self.autoSignEnabled = autoSignEnabled
         self.remindersEnabled = remindersEnabled
+        self.confirmationEnabled = confirmationEnabled
+        self.reminderLeadMinutes = Self.validLeadTimes.contains(reminderLeadMinutes) ? reminderLeadMinutes : 10
+        self.courses = courses
+    }
+
+    public static let validLeadTimes = [5, 10, 15, 30]
+
+    private enum CodingKeys: String, CodingKey {
+        case autoSignEnabled, remindersEnabled, confirmationEnabled, reminderLeadMinutes, courses
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        autoSignEnabled = try values.decodeIfPresent(Bool.self, forKey: .autoSignEnabled) ?? false
+        remindersEnabled = try values.decodeIfPresent(Bool.self, forKey: .remindersEnabled) ?? false
+        confirmationEnabled = try values.decodeIfPresent(Bool.self, forKey: .confirmationEnabled) ?? false
+        let lead = try values.decodeIfPresent(Int.self, forKey: .reminderLeadMinutes) ?? 10
+        reminderLeadMinutes = Self.validLeadTimes.contains(lead) ? lead : 10
+        courses = try values.decodeIfPresent([String: CoursePreferences].self, forKey: .courses) ?? [:]
     }
 }
 

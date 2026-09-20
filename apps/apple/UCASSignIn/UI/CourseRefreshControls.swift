@@ -1,10 +1,10 @@
 import SwiftUI
 
-#if os(macOS)
 struct CourseRefreshButton: View {
     let title: String
     let isRefreshing: Bool
     let isConnected: Bool
+    var showsTitle = false
     let refresh: @MainActor () async -> Void
     @State private var isRequested = false
 
@@ -17,12 +17,18 @@ struct CourseRefreshButton: View {
                 await performVisibleRefresh(refresh)
             }
         } label: {
-            ZStack {
-                Label(title, systemImage: "arrow.clockwise")
-                    .labelStyle(.iconOnly)
-                    .opacity(isRefreshing || isRequested ? 0 : 1)
-                if isRefreshing || isRequested { ProgressView().controlSize(.small) }
+            HStack(spacing: 6) {
+                if isRefreshing || isRequested {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                }
+                if showsTitle {
+                    Text(title).font(PreferenceTypography.detail.weight(.medium))
+                }
             }
+            .foregroundStyle(Palette.green)
+            .frame(minWidth: showsTitle ? 52 : nil)
         }
         .disabled(!isConnected || isRefreshing || isRequested)
         .accessibilityLabel(title)
@@ -30,8 +36,6 @@ struct CourseRefreshButton: View {
         .help("\(title)（⌘R）")
     }
 }
-
-#endif
 
 @MainActor
 private func performVisibleRefresh(_ action: @MainActor () async -> Void) async {
@@ -48,23 +52,12 @@ extension View {
         if enabled {
             self.refreshable {
                 UISelectionFeedbackGenerator().selectionChanged()
-                await performVisibleRefresh(action)
+                await action()
             }
-            .courseScrollBounce()
         } else { self }
         #else
         self
         #endif
     }
 
-    @ViewBuilder
-    private func courseScrollBounce() -> some View {
-        #if os(iOS)
-        if #available(iOS 16.4, *) {
-            self.scrollBounceBehavior(.always, axes: .vertical)
-        } else { self }
-        #else
-        self
-        #endif
-    }
 }

@@ -4,6 +4,7 @@ import WidgetKit
 
 @MainActor
 protocol NotificationClient {
+    func authorizationStatus() async -> UNAuthorizationStatus
     func requestAuthorization() async throws -> Bool
     func add(_ request: UNNotificationRequest) async throws
     func removeAll()
@@ -11,6 +12,9 @@ protocol NotificationClient {
 }
 
 struct LiveNotificationClient: NotificationClient {
+    func authorizationStatus() async -> UNAuthorizationStatus {
+        await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
+    }
     func requestAuthorization() async throws -> Bool {
         try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
     }

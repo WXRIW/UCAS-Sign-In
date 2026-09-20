@@ -59,10 +59,29 @@ struct SettingsView: View {
                 settingsSection("课堂偏好", footer: model.isConnected ? autoSignExplanation : disconnectedClassroomPreferences) {
                     VStack(spacing: 0) {
                         Toggle(isOn: Binding(get: { model.remindersEnabled }, set: { enabled in Task { await model.setReminders(enabled) } })) {
-                            settingsLabel("课程提醒", subtitle: "已同步课程将在开课前 10 分钟提醒", symbol: "bell")
+                            settingsLabel("课程提醒", subtitle: "已同步课程将在设定时间提醒", symbol: "bell")
                         }.toggleStyle(.switch).accessibilityIdentifier("settings.reminders")
                             .accessibilityLabel("课程提醒")
-                            .accessibilityHint("已同步课程将在开课前 10 分钟提醒")
+                            .accessibilityHint("已同步课程将在设定时间提醒")
+                            .padding(.vertical, 18)
+                        if model.remindersEnabled {
+                            PreferenceDivider()
+                            HStack(spacing: PreferenceRowLayout.spacing) {
+                                Image(systemName: "clock").font(.system(size: 17)).foregroundStyle(Palette.green)
+                                    .frame(width: PreferenceRowLayout.iconWidth)
+                                Text("默认提醒时间").font(PreferenceTypography.body).foregroundStyle(Palette.ink)
+                                Spacer(minLength: 12)
+                                Picker("默认提醒时间", selection: Binding(get: { model.reminderLeadMinutes }, set: { value in
+                                    Task { await model.setReminderLead(value) }
+                                })) {
+                                    ForEach(AccountPreferences.validLeadTimes, id: \.self) { Text("课前 \($0) 分钟").tag($0) }
+                                }.labelsHidden().pickerStyle(.menu).fixedSize()
+                            }.padding(.vertical, 18)
+                        }
+                        PreferenceDivider()
+                        Toggle(isOn: Binding(get: { model.confirmationEnabled }, set: { model.setConfirmation($0) })) {
+                            settingsLabel("签到前二次确认", subtitle: "手动签到前显示课程与上课时间", symbol: "questionmark.circle")
+                        }.toggleStyle(.switch).accessibilityIdentifier("settings.confirmation")
                             .padding(.vertical, 18)
                         PreferenceDivider()
                         Toggle(isOn: Binding(get: { model.autoSignEnabled }, set: { model.setAutoSign($0) })) {
@@ -136,9 +155,9 @@ struct SettingsView: View {
 
     private var disconnectedClassroomPreferences: String {
         #if os(macOS)
-        "连接学校账户后，可开启课程提醒与自动签到。"
+        "连接学校账户后，可设置签到确认、课程提醒与自动签到。"
         #else
-        "连接学校账户后，可开启课程提醒与前台自动签到。"
+        "连接学校账户后，可设置签到确认、课程提醒与前台自动签到。"
         #endif
     }
 
@@ -195,8 +214,12 @@ struct SettingsView: View {
 
     #if os(macOS)
     private func openSystemSettings() {
-        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.systempreferences") else { return }
-        NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
+        if let notifications = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension"),
+           NSWorkspace.shared.open(notifications) {
+            return
+        }
+        guard let settings = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.systempreferences") else { return }
+        NSWorkspace.shared.openApplication(at: settings, configuration: NSWorkspace.OpenConfiguration())
     }
     #endif
     private func settingsLabel(_ title: String, subtitle: String, symbol: String) -> some View {

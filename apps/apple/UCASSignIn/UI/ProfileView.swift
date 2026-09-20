@@ -18,52 +18,55 @@ struct ProfileView: View {
     var body: some View {
         NavigationStack(path: $path) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 25) {
-                    accountCard
-                    VStack(spacing: 0) {
-                        Button { model.showAccountManagement = true } label: {
-                            PreferenceNavigationRow(title: "切换与管理账户", symbol: "person.2")
-                        }.buttonStyle(.plain)
-                            .disabled(!model.canChangeAccount)
-                            .accessibilityIdentifier("accounts.manage")
-                        PreferenceDivider()
-                        Button { path.append(.records) } label: { PreferenceNavigationRow(title: "本机签到记录", symbol: "clock.arrow.circlepath") }.buttonStyle(.plain)
-                            .accessibilityIdentifier("profile.records")
-                    }.padding(.horizontal, PreferenceRowLayout.horizontalPadding).cardSurface()
-                    VStack(spacing: 0) {
-                        Button { path.append(.settings) } label: {
-                            PreferenceNavigationRow(title: "设置", symbol: "gearshape")
-                        }.buttonStyle(.plain)
-                            .accessibilityIdentifier("profile.settings")
-                        PreferenceDivider()
-                        Button { path.append(.about) } label: {
-                            PreferenceNavigationRow(title: "关于", symbol: "info.circle")
-                        }.buttonStyle(.plain)
-                            .accessibilityIdentifier("profile.about")
-                        PreferenceDivider()
-                        Button { path.append(.disclaimer) } label: {
-                            PreferenceNavigationRow(title: "免责声明", symbol: "doc.text")
-                        }.buttonStyle(.plain)
-                            .accessibilityIdentifier("profile.disclaimer")
-                    }.padding(.horizontal, PreferenceRowLayout.horizontalPadding).cardSurface()
-                    if model.isConnected {
-                        Button(role: model.isDemo ? nil : .destructive) {
-                            accountToRemove = model.activeAccountID
-                            logoutWasDemo = model.isDemo
-                            showLogout = true
-                        } label: {
-                            Text(model.isDemo ? "退出演示模式" : "退出并移除此账户")
-                                .font(PreferenceTypography.body.weight(.medium))
-                                .foregroundStyle(model.isDemo ? Palette.secondary : .red)
-                                .frame(maxWidth: .infinity).padding(18).cardSurface()
-                                .contentShape(RoundedRectangle(cornerRadius: 22))
-                        }.buttonStyle(.plain).disabled(!model.canChangeAccount)
-                            .accessibilityIdentifier("profile.logout")
+                VStack(alignment: .leading, spacing: 16.5) {
+                    VStack(alignment: .leading, spacing: 25) {
+                        accountCard
+                        VStack(spacing: 0) {
+                            Button { model.showAccountManagement = true } label: {
+                                PreferenceNavigationRow(title: "切换与管理账户", symbol: "person.2")
+                            }.buttonStyle(.plain)
+                                .disabled(!model.canChangeAccount)
+                                .accessibilityIdentifier("accounts.manage")
+                            PreferenceDivider()
+                            Button { path.append(.records) } label: { PreferenceNavigationRow(title: "本机签到记录", symbol: "clock.arrow.circlepath") }.buttonStyle(.plain)
+                                .accessibilityIdentifier("profile.records")
+                        }.padding(.horizontal, PreferenceRowLayout.horizontalPadding).cardSurface()
+                        VStack(spacing: 0) {
+                            Button { path.append(.settings) } label: {
+                                PreferenceNavigationRow(title: "设置", symbol: "gearshape")
+                            }.buttonStyle(.plain)
+                                .accessibilityIdentifier("profile.settings")
+                            PreferenceDivider()
+                            Button { path.append(.about) } label: {
+                                PreferenceNavigationRow(title: "关于", symbol: "info.circle")
+                            }.buttonStyle(.plain)
+                                .accessibilityIdentifier("profile.about")
+                            PreferenceDivider()
+                            Button { path.append(.disclaimer) } label: {
+                                PreferenceNavigationRow(title: "免责声明", symbol: "doc.text")
+                            }.buttonStyle(.plain)
+                                .accessibilityIdentifier("profile.disclaimer")
+                        }.padding(.horizontal, PreferenceRowLayout.horizontalPadding).cardSurface()
+                        if model.isConnected {
+                            Button(role: model.isDemo ? nil : .destructive) {
+                                accountToRemove = model.activeAccountID
+                                logoutWasDemo = model.isDemo
+                                showLogout = true
+                            } label: {
+                                Text(model.isDemo ? "退出演示模式" : "退出并移除此账户")
+                                    .font(PreferenceTypography.body.weight(.medium))
+                                    .foregroundStyle(model.isDemo ? Palette.secondary : .red)
+                                    .frame(maxWidth: .infinity).padding(18).cardSurface()
+                                    .contentShape(RoundedRectangle(cornerRadius: 22))
+                            }.buttonStyle(.plain).disabled(!model.canChangeAccount)
+                                .accessibilityIdentifier("profile.logout")
+                        }
                     }
                     Text("果壳签到 · \(UpdateCoordinator.currentVersion)")
                         .font(PreferenceTypography.footer).lineSpacing(5).foregroundStyle(Palette.secondary)
-                        .multilineTextAlignment(.center).frame(maxWidth: .infinity).padding(.vertical, 8)
-                }.appPagePadding()
+                        .multilineTextAlignment(.center).frame(maxWidth: .infinity)
+                }.appPageHorizontalPadding()
+                    .padding(.top, 24).padding(.bottom, 16)
                     .frame(maxWidth: 680).frame(maxWidth: .infinity)
             }
             .accessibilityIdentifier("profile.scroll")

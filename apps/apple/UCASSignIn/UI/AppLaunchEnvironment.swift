@@ -65,6 +65,7 @@ private final class FixtureAccountStore: AccountStore {
 }
 
 private struct FixtureNotifications: NotificationClient {
+    func authorizationStatus() async -> UNAuthorizationStatus { .authorized }
     func requestAuthorization() async throws -> Bool { true }
     func add(_ request: UNNotificationRequest) async throws { }
     func removeAll() { }
@@ -78,6 +79,7 @@ private struct FixtureWidgets: WidgetClient {
 
 private actor AccountFixtureTransport: HTTPTransport {
     private var signed: Set<String> = []
+    private var catalogRequests = 0
     func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         let url = request.url!
         var form = URLComponents()
@@ -93,6 +95,20 @@ private actor AccountFixtureTransport: HTTPTransport {
             payload = ["STATUS": "0", "result": ["id": "fixture-\(index + 1)",
                         "sessionId": "fixture-session-\(index + 1)", "studentNo": username,
                         "realName": ["林清", "周宁", "顾言"][index]]]
+        } else if url.path.hasSuffix("get_base_school_year.action") {
+            payload = ["STATUS": "0", "result": [["code": "fixture-semester", "name": "测试学期",
+                       "beginDate": "2026-01-01", "endDate": "2026-12-31", "yearStatus": "1"]]]
+        } else if url.path.hasSuffix("get_myall_course.action") {
+            catalogRequests += 1
+            if catalogRequests > 1 {
+                // Exercise the real loading path, with both fast and slow responses.
+                try await Task.sleep(for: .milliseconds(catalogRequests.isMultiple(of: 2) ? 80 : 900))
+            }
+            payload = ["STATUS": "0", "result": (1...18).map { index in
+                ["course_id": "fixture-course-\(index)", "course_name": "测试课程\(index)",
+                 "courseNum": "TEST00\(index)", "teacher_name": "示例教师",
+                 "semesterId": "fixture-semester"]
+            }]
         } else if url.path.hasSuffix("get_timestamp.do") {
             payload = ["STATUS": "0", "timestamp": Int64(Date().timeIntervalSince1970 * 1000)]
         } else if url.path.hasSuffix("stu_scan_sign.action") {

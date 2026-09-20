@@ -77,6 +77,120 @@ final class UCASSignInUITests: XCTestCase {
     }
 
     @MainActor
+    func testCourseDetailRemainsStableAcrossTabSwitches() {
+        let app = launchDemo()
+        selectTab("课程", in: app)
+        let course = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "矩阵分析")).firstMatch
+        tapAfterScrolling(course, in: app)
+
+        XCTAssertTrue(app.scrollViews["catalogCourseDetail.scroll"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["courseDetail.refreshAttendance"].exists)
+        XCTAssertFalse(app.buttons["刷新考勤"].exists)
+
+        selectTab("今日", in: app)
+        XCTAssertTrue(app.scrollViews["today.scroll"].waitForExistence(timeout: 5))
+        selectTab("课程", in: app)
+
+        XCTAssertTrue(app.navigationBars["矩阵分析"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.scrollViews["catalogCourseDetail.scroll"].exists)
+        XCTAssertFalse(app.collectionViews["courses.scroll"].exists)
+        XCTAssertTrue(app.buttons["courseDetail.refreshAttendance"].exists)
+    }
+
+    @MainActor
+    func testDisablingCourseHidesSignOptionsAndShowsCardTag() {
+        let app = launchDemo()
+        selectTab("课程", in: app)
+        let card = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "矩阵分析")).firstMatch
+        tapAfterScrolling(card, in: app)
+        let toggle = app.switches["coursePreference.signInDisabled"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["手动签到二次确认"].exists)
+        XCTAssertTrue(app.staticTexts["自动签到"].exists)
+        tapAfterScrolling(toggle, in: app)
+        assertEventually("禁用签到后仅隐藏签到相关选项") {
+            !app.staticTexts["手动签到二次确认"].exists && !app.staticTexts["自动签到"].exists
+                && app.staticTexts["课前提醒"].exists
+        }
+        capture(app, name: "课程禁用签到-红色开关")
+        app.navigationBars["矩阵分析"].buttons.firstMatch.tap()
+        assertEventually("课程卡片保留提醒并以红色禁用标记替换签到状态") {
+            card.exists && card.label.contains("提醒") && card.label.contains("已禁用签到")
+                && !card.label.contains("二次确认") && !card.label.contains("自动签到")
+        }
+        capture(app, name: "课程禁用签到-卡片标记")
+        card.tap()
+        XCTAssertEqual(toggle.value as? String, "1")
+        tapAfterScrolling(toggle, in: app)
+        assertEventually("重新启用后恢复签到设置") {
+            app.staticTexts["手动签到二次确认"].exists && app.staticTexts["自动签到"].exists
+        }
+    }
+
+    @MainActor
+    func testRepeatedCourseRefreshReturnsContentToItsRestingPosition() {
+        let app = launchDemo()
+        selectTab("课程", in: app)
+        let scroll = app.collectionViews["courses.scroll"]
+        let search = app.searchFields["课程名、课程编号或教师"]
+        let semester = app.staticTexts["演示学期"]
+        XCTAssertTrue(scroll.waitForExistence(timeout: 5))
+        XCTAssertTrue(search.waitForExistence(timeout: 5), "应使用原生搜索框")
+        XCTAssertTrue(semester.waitForExistence(timeout: 5))
+        let navigationBar = app.navigationBars["课程"]
+        // Native search can expand/collapse; measure blank space below the bar,
+        // rather than mistaking its legitimate height change for a stuck refresh.
+        let restingGap = semester.frame.minY - navigationBar.frame.maxY
+
+        for refresh in 1...3 {
+            scroll.swipeDown()
+            assertEventually("第 \(refresh) 次下拉刷新后课程内容应完全回到原位") {
+                let gap = semester.frame.minY - navigationBar.frame.maxY
+                return semester.exists && gap >= 0 && gap <= restingGap + 2
+            }
+        }
+    }
+
+    @MainActor
+    func testCourseRefreshWithDelayedResponsesAndHeldPulls() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--account-fixtures", "--fixture-reset",
+                               "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
+        app.launch()
+        selectTab("课程", in: app)
+        let scroll = app.collectionViews["courses.scroll"]
+        let semester = app.staticTexts["测试学期"]
+        let sync = app.descendants(matching: .any)["courses.syncStatus"].firstMatch
+        XCTAssertTrue(scroll.waitForExistence(timeout: 5))
+        XCTAssertTrue(semester.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["courses.refresh"].exists)
+        let navigationBar = app.navigationBars["课程"]
+        // Native search can expand/collapse; measure blank space below the bar,
+        // rather than mistaking its legitimate height change for a stuck refresh.
+        let restingGap = semester.frame.minY - navigationBar.frame.maxY
+        capture(app, name: "课程刷新前")
+        for index in 1...4 {
+            let previousSync = sync.value as? String
+            // Use screen coordinates: a collection view's accessibility frame can
+            // change with the search drawer while XCTest resolves a drag.
+            let window = app.windows.firstMatch
+            let start = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.4))
+            let end = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.85))
+            start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow,
+                        thenHoldForDuration: index.isMultiple(of: 2) ? 0 : 1)
+            assertEventually("第 \(index) 次确实完成了一次刷新") {
+                let value = sync.value as? String
+                return value != nil && value != "正在刷新" && value != previousSync
+            }
+            capture(app, name: "课程第\(index)次刷新后")
+            assertEventually("第 \(index) 次刷新不应残留额外顶部空白；初始间距 \(restingGap)，当前间距 \(semester.frame.minY - navigationBar.frame.maxY)") {
+                let gap = semester.frame.minY - navigationBar.frame.maxY
+                return gap >= 0 && gap <= restingGap + 2
+            }
+        }
+    }
+
+    @MainActor
     func testRecordsLogoutAndLoginSheet() {
         let app = launchDemo()
         selectTab("账户", in: app)
@@ -340,12 +454,13 @@ final class UCASSignInUITests: XCTestCase {
         let pages = [
             (tab: "今日", title: "果壳签到", scroll: "today.scroll"),
             (tab: "课表", title: "课表", scroll: "schedule.scroll"),
+            (tab: "课程", title: "课程", scroll: "courses.scroll"),
             (tab: "账户", title: "账户", scroll: "profile.scroll")
         ]
 
         for page in pages {
             selectTab(page.tab, in: app)
-            let scrollView = app.scrollViews[page.scroll]
+            let scrollView = page.tab == "课程" ? app.collectionViews[page.scroll] : app.scrollViews[page.scroll]
             XCTAssertTrue(scrollView.waitForExistence(timeout: 5))
             XCTAssertTrue(app.navigationBars[page.title].exists)
             scrollView.swipeUp()
@@ -614,7 +729,7 @@ final class UCASSignInUITests: XCTestCase {
             assertEventually("应选中标签页：\(title)", file: file, line: line) { tab.isSelected }
         } else {
             // iPadOS 18 exposes its native top tabs as buttons outside a TabBar.
-            let symbols = ["今日": "square.grid.2x2", "课表": "calendar", "账户": "person.crop.circle"]
+            let symbols = ["今日": "square.grid.2x2", "课表": "calendar", "课程": "book.closed", "账户": "person.crop.circle"]
             let topTab = app.buttons.matching(identifier: symbols[title] ?? title).firstMatch
             XCTAssertTrue(topTab.waitForExistence(timeout: 5), "应显示原生标签页：\(title)", file: file, line: line)
             topTab.tap()
@@ -637,7 +752,7 @@ final class UCASSignInUITests: XCTestCase {
     @MainActor
     private func assertMainNavigationAvailable(in app: XCUIApplication,
                                                file: StaticString = #filePath, line: UInt = #line) {
-        let symbols = ["今日": "square.grid.2x2", "课表": "calendar", "账户": "person.crop.circle"]
+        let symbols = ["今日": "square.grid.2x2", "课表": "calendar", "课程": "book.closed", "账户": "person.crop.circle"]
         for (title, symbol) in symbols {
             let bottomTab = app.tabBars.buttons[title]
             let tab = bottomTab.exists ? bottomTab : app.buttons.matching(identifier: symbol).firstMatch
@@ -698,7 +813,7 @@ final class UCASSignInUITests: XCTestCase {
     @MainActor
     private func tapAfterScrolling(_ element: XCUIElement, in app: XCUIApplication,
                                    file: StaticString = #filePath, line: UInt = #line) {
-        let scrollView = app.scrollViews.firstMatch
+        let scrollView = app.scrollViews.firstMatch.exists ? app.scrollViews.firstMatch : app.collectionViews.firstMatch
         for _ in 0..<8 {
             if element.exists && element.isHittable {
                 element.tap()

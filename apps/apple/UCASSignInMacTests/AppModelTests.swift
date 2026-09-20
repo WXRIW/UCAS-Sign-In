@@ -297,6 +297,70 @@ final class AppModelTests: XCTestCase {
         }
     }
 
+    func testDeniedNotificationPermissionDoesNotRequestAgainOrSaveReminder() async {
+        let notifications = TestNotifications()
+        notifications.status = .denied
+        let store = MemoryAccountStore(accounts: [accountA], active: accountA.id)
+        let transport = PlannedTransport(["courses:session-a": [.init(courseResponse("甲课程"))]])
+        let model = makeModel(store, transport, notifications: notifications)
+        await model.restore()
+
+        await model.setReminders(true)
+
+        XCTAssertEqual(notifications.authorizationCalls, 0)
+        XCTAssertFalse(model.remindersEnabled)
+        XCTAssertFalse(store.vault.accounts[0].preferences.remindersEnabled)
+        XCTAssertTrue(model.notificationSettingsNeeded)
+        XCTAssertTrue(model.errorMessage?.contains("系统设置") == true)
+        XCTAssertFalse(model.errorMessage?.contains("UNErrorDomain") == true)
+    }
+
+    func testNotificationsNotAllowedErrorUsesPermissionMessage() async {
+        let notifications = TestNotifications()
+        notifications.authorizationError = NSError(
+            domain: UNErrorDomain,
+            code: UNError.Code.notificationsNotAllowed.rawValue
+        )
+        let store = MemoryAccountStore(accounts: [accountA], active: accountA.id)
+        let transport = PlannedTransport(["courses:session-a": [.init(courseResponse("甲课程"))]])
+        let model = makeModel(store, transport, notifications: notifications)
+        await model.restore()
+
+        await model.setReminders(true)
+
+        XCTAssertEqual(notifications.authorizationCalls, 1)
+        XCTAssertFalse(model.remindersEnabled)
+        XCTAssertTrue(model.notificationSettingsNeeded)
+        XCTAssertFalse(model.errorMessage?.contains("UNErrorDomain") == true)
+    }
+
+    func testLateCourseReminderAuthorizationCannotChangeNewAccount() async {
+        let permissionGate = ResponseGate()
+        let notifications = TestNotifications()
+        notifications.authorizationGate = permissionGate
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("甲课程"))],
+            "courses:session-b": [.init(courseResponse("乙课程"))]
+        ])
+        let store = MemoryAccountStore(accounts: [accountA, accountB], active: accountA.id)
+        let model = makeModel(store, transport, notifications: notifications)
+        await model.restore()
+
+        let permission = Task {
+            await model.setCoursePreferences(CoursePreferences(reminders: .enabled), for: "stable-course")
+        }
+        await assertEventually { notifications.authorizationCalls == 1 }
+        await model.switchAccount(id: accountB.id)
+        await permissionGate.open()
+        let saved = await permission.value
+
+        XCTAssertFalse(saved)
+        XCTAssertEqual(model.activeAccountID, accountB.id)
+        XCTAssertEqual(model.coursePreferences(for: "stable-course"), CoursePreferences())
+        XCTAssertNil(model.errorMessage)
+        XCTAssertTrue(store.vault.accounts.allSatisfy { $0.preferences.courses.isEmpty })
+    }
+
     func testLateNotificationAddCannotLeakIntoNewAccountOrReportOldFailure() async {
         for fails in [false, true] {
             let addGate = ResponseGate()
@@ -402,6 +466,177 @@ final class AppModelTests: XCTestCase {
         XCTAssertFalse(model.records[0].succeeded)
     }
 
+    func testManualSignConfirmationDefersSubmissionUntilConfirmed() async throws {
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("甲课程")), .init(courseResponse("甲课程"))],
+            "clock": [.init(clockResponse)],
+            "sign": [.init(#"{"STATUS":"0","ERRCODE":"0","result":{"stuSignStatus":"1"}}"#)]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), transport)
+        await model.restore()
+        model.setConfirmation(true)
+        await model.signManually(try XCTUnwrap(model.todayCourses.first))
+        XCTAssertNotNil(model.pendingSignConfirmation)
+        let beforeConfirmation = await transport.count("sign")
+        XCTAssertEqual(beforeConfirmation, 0)
+        await model.confirmPendingSign()
+        let afterConfirmation = await transport.count("sign")
+        XCTAssertEqual(afterConfirmation, 1)
+    }
+
+    func testCourseOverrideCanEnableAutoSignWhenGlobalDefaultIsOff() async throws {
+        let schoolNow = try XCTUnwrap(CourseTime.parse(day: SchoolDate.key(.now), time: "08:30"))
+        let clock = "{\"STATUS\":\"0\",\"timestamp\":\(Int64(schoolNow.timeIntervalSince1970 * 1_000))}"
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("甲课程")), .init(courseResponse("甲课程"))],
+            "clock": [.init(clock)],
+            "sign": [.init(#"{"STATUS":"0","ERRCODE":"0","result":{"stuSignStatus":"1"}}"#)]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), transport)
+        await model.restore()
+        XCTAssertFalse(model.autoSignEnabled)
+        await model.setCoursePreferences(CoursePreferences(autoSign: .enabled), for: "stable-course")
+        await model.foregroundTick()
+        let signCount = await transport.count("sign")
+        XCTAssertEqual(signCount, 1)
+    }
+
+    func testDisablingCourseBlocksSignInAndPreservesOverrides() async throws {
+        var account = accountA
+        account.preferences = AccountPreferences(autoSignEnabled: true, remindersEnabled: true,
+                                                confirmationEnabled: true)
+        let store = MemoryAccountStore(accounts: [account], active: account.id)
+        let transport = PlannedTransport(["courses:session-a": [.init(courseResponse("甲课程"))]])
+        let model = makeModel(store, transport)
+        await model.restore()
+        let course = try XCTUnwrap(model.todayCourses.first)
+        let preferences = CoursePreferences(confirmation: .enabled, autoSign: .enabled, signInDisabled: true)
+        let saved = await model.setCoursePreferences(preferences, for: "stable-course")
+        XCTAssertTrue(saved)
+        XCTAssertFalse(model.canSign(course))
+        XCTAssertFalse(model.effectiveAutoSign(for: "stable-course"))
+        XCTAssertFalse(model.effectiveConfirmation(for: "stable-course"))
+        XCTAssertTrue(model.effectiveReminders(for: "stable-course"))
+        XCTAssertFalse(model.isSignInDisabled(for: "other-course"))
+        await model.signManually(course)
+        await model.sign(course)
+        await model.foregroundTick()
+        XCTAssertNil(model.pendingSignConfirmation)
+        let signCount = await transport.count("sign")
+        XCTAssertEqual(signCount, 0)
+        XCTAssertEqual(store.vault.accounts[0].preferences.courses["stable-course"], preferences)
+
+        var enabled = preferences
+        enabled.signInDisabled = false
+        let restored = await model.setCoursePreferences(enabled, for: "stable-course")
+        XCTAssertTrue(restored)
+        XCTAssertTrue(model.canSign(course))
+        XCTAssertTrue(model.effectiveAutoSign(for: "stable-course"))
+        XCTAssertTrue(model.effectiveConfirmation(for: "stable-course"))
+    }
+
+    func testDisablingCourseInvalidatesPendingConfirmationAndFailedSaveKeepsState() async throws {
+        let store = MemoryAccountStore(accounts: [accountA], active: accountA.id)
+        let transport = PlannedTransport(["courses:session-a": [.init(courseResponse("甲课程"))]])
+        let model = makeModel(store, transport)
+        await model.restore()
+        model.setConfirmation(true)
+        let course = try XCTUnwrap(model.todayCourses.first)
+        await model.signManually(course)
+        XCTAssertNotNil(model.pendingSignConfirmation)
+        store.failWrites = true
+        let failed = await model.setCoursePreferences(CoursePreferences(signInDisabled: true), for: "stable-course")
+        XCTAssertFalse(failed)
+        XCTAssertFalse(model.isSignInDisabled(for: "stable-course"))
+        XCTAssertNotNil(model.pendingSignConfirmation)
+        store.failWrites = false
+        let saved = await model.setCoursePreferences(CoursePreferences(signInDisabled: true), for: "stable-course")
+        XCTAssertTrue(saved)
+        XCTAssertNil(model.pendingSignConfirmation)
+        await model.confirmPendingSign()
+        let signCount = await transport.count("sign")
+        XCTAssertEqual(signCount, 0)
+    }
+
+    func testDisablingCourseDuringClockWaitPreventsSubmission() async throws {
+        for automatically in [false, true] {
+            let gate = ResponseGate()
+            let schoolNow = try XCTUnwrap(CourseTime.parse(day: SchoolDate.key(.now), time: "08:30"))
+            let clock = "{\"STATUS\":\"0\",\"timestamp\":\(Int64(schoolNow.timeIntervalSince1970 * 1_000))}"
+            let store = MemoryAccountStore(accounts: [accountA], active: accountA.id)
+            let transport = PlannedTransport([
+                "courses:session-a": [.init(courseResponse("甲课程"))],
+                "clock": [.init(clock, gate: gate)]
+            ])
+            let model = makeModel(store, transport)
+            await model.restore()
+            model.setAutoSign(true)
+            let course = try XCTUnwrap(model.todayCourses.first)
+            let task = Task {
+                if automatically { await model.foregroundTick() }
+                else { await model.signManually(course) }
+            }
+            await assertEventually { await transport.count("clock") == 1 }
+            let saved = await model.setCoursePreferences(CoursePreferences(signInDisabled: true), for: "stable-course")
+            XCTAssertTrue(saved)
+            await gate.open()
+            await task.value
+            let signCount = await transport.count("sign")
+            XCTAssertEqual(signCount, 0)
+            XCTAssertTrue(model.records.isEmpty)
+            XCTAssertNil(model.errorMessage)
+            XCTAssertNil(model.signingID)
+        }
+    }
+
+    func testDisabledCourseIsIsolatedByAccountAndPersistsAcrossSwitches() async {
+        let store = MemoryAccountStore(accounts: [accountA, accountB], active: accountA.id)
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("甲课程")), .init(courseResponse("甲课程"))],
+            "courses:session-b": [.init(courseResponse("乙课程"))]
+        ])
+        let model = makeModel(store, transport)
+        await model.restore()
+        let saved = await model.setCoursePreferences(CoursePreferences(signInDisabled: true), for: "stable-course")
+        XCTAssertTrue(saved)
+        await model.switchAccount(id: accountB.id)
+        XCTAssertFalse(model.isSignInDisabled(for: "stable-course"))
+        await model.switchAccount(id: accountA.id)
+        XCTAssertTrue(model.isSignInDisabled(for: "stable-course"))
+    }
+
+    func testCatalogRefreshMergesConcurrentRequestsAndHonorsFreshCache() async {
+        let semesterGate = ResponseGate()
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("甲课程"))],
+            "semesters:session-a": [.init(semesterResponse, gate: semesterGate)],
+            "catalog:session-a": [.init(catalogResponse)]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), transport)
+        await model.restore()
+
+        let first = Task { await model.refreshCatalog(force: true) }
+        await assertEventually { await transport.count("semesters:session-a") == 1 }
+        let second = Task { await model.refreshCatalog(force: true) }
+        for _ in 0..<10 { await Task.yield() }
+        await semesterGate.open()
+        await first.value
+        await second.value
+
+        XCTAssertEqual(model.selectedSemester?.id, "2026202701")
+        XCTAssertEqual(model.catalogCourses.map(\.id), ["stable-course"])
+        let mergedSemesterRequests = await transport.count("semesters:session-a")
+        let mergedCatalogRequests = await transport.count("catalog:session-a")
+        XCTAssertEqual(mergedSemesterRequests, 1)
+        XCTAssertEqual(mergedCatalogRequests, 1)
+
+        await model.refreshCatalog()
+        let cachedSemesterRequests = await transport.count("semesters:session-a")
+        let cachedCatalogRequests = await transport.count("catalog:session-a")
+        XCTAssertEqual(cachedSemesterRequests, 1)
+        XCTAssertEqual(cachedCatalogRequests, 1)
+    }
+
     private func makeModel(_ store: MemoryAccountStore, _ transport: PlannedTransport,
                            notifications: TestNotifications? = nil, widgets: TestWidgets? = nil) -> AppModel {
         AppModel(service: QingxinService(transport: transport), accountStore: store, defaults: defaults,
@@ -423,9 +658,11 @@ private let accountB = StoredAccount(session: SchoolSession(userId: "user-b", se
 private let rememberedAccountA = StoredAccount(session: accountA.session, credentials: StoredCredentials(username: "a@example.edu", password: "remembered-a"), loginUsername: "a@example.edu")
 private let expiredResponse = #"{"STATUS":"1","ERRMSG":"登录已过期，请重新登录"}"#
 private var clockResponse: String { "{\"STATUS\":\"0\",\"timestamp\":\(Int64(Date().timeIntervalSince1970 * 1_000))}" }
+private let semesterResponse = #"{"STATUS":"0","result":[{"code":"2026202701","name":"2026-2027秋季学期","beginDate":"2026-08-31","endDate":"2027-01-31","yearStatus":"1"}]}"#
+private let catalogResponse = #"{"STATUS":"0","result":[{"course_id":"stable-course","courseNum":"CS6001","course_name":"高级人工智能","teacher_name":"陈老师","course_address":"教学楼 A101","semesterId":"2026202701","course_beignDate":"2026-08-31","course_endDate":"2027-01-31","jc_num":"16","jc_num_studyed":"3"}]}"#
 
 private func courseResponse(_ name: String) -> String {
-    #"{"STATUS":"0","result":[{"id":"1234567","courseName":"\#(name)","teacherName":"教师","classBeginTime":"08:00","classEndTime":"09:40","signStatus":"0"}]}"#
+    #"{"STATUS":"0","result":[{"id":"1234567","courseId":"stable-course","courseName":"\#(name)","teacherName":"教师","classBeginTime":"08:00","classEndTime":"09:40","signStatus":"0"}]}"#
 }
 
 private func loginResponse(_ session: SchoolSession) -> String {
@@ -459,16 +696,20 @@ private final class TestWidgets: WidgetClient {
 
 @MainActor
 private final class TestNotifications: NotificationClient {
+    var status: UNAuthorizationStatus = .notDetermined
     var authorizationGate: ResponseGate?
     var authorizationFails = false
+    var authorizationError: Error?
     var authorizationCalls = 0
     var addGate: ResponseGate?
     var addFails = false
     var addCalls = 0
     var pendingIDs = Set<String>()
+    func authorizationStatus() async -> UNAuthorizationStatus { status }
     func requestAuthorization() async throws -> Bool {
         authorizationCalls += 1
         await authorizationGate?.wait()
+        if let authorizationError { throw authorizationError }
         if authorizationFails { throw TestFailure.expected }
         return true
     }
@@ -522,6 +763,9 @@ private actor PlannedTransport: HTTPTransport {
         if path.hasSuffix("login.action") { return "login" }
         if path.hasSuffix("get_timestamp.do") { return "clock" }
         if path.hasSuffix("stu_scan_sign.action") { return "sign" }
+        if path.hasSuffix("get_base_school_year.action") { return "semesters:\(request.value(forHTTPHeaderField: "sessionId") ?? "")" }
+        if path.hasSuffix("get_myall_course.action") { return "catalog:\(request.value(forHTTPHeaderField: "sessionId") ?? "")" }
+        if path.hasSuffix("get_my_course_sign_detail.action") { return "attendance:\(request.value(forHTTPHeaderField: "sessionId") ?? "")" }
         return "courses:\(request.value(forHTTPHeaderField: "sessionId") ?? "")"
     }
 }

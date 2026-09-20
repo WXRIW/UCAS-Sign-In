@@ -16,6 +16,8 @@ public struct SchoolSession: Codable, Hashable, Sendable {
 
 public struct Course: Identifiable, Codable, Hashable, Sendable {
     public let id: String
+    /// Stable course identifier shared by all scheduled meetings of a course.
+    public let courseId: String?
     public let uuid: String
     public let name: String
     public let teacher: String
@@ -25,8 +27,9 @@ public struct Course: Identifiable, Codable, Hashable, Sendable {
     public let day: String
     public var signed: Bool
 
-    public init(id: String, uuid: String = "", name: String, teacher: String = "", classroom: String? = nil, beginTime: String, endTime: String, day: String, signed: Bool = false) {
+    public init(id: String, courseId: String? = nil, uuid: String = "", name: String, teacher: String = "", classroom: String? = nil, beginTime: String, endTime: String, day: String, signed: Bool = false) {
         self.id = id
+        self.courseId = courseId?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         self.uuid = uuid
         self.name = name
         self.teacher = teacher
@@ -42,6 +45,86 @@ public struct Course: Identifiable, Codable, Hashable, Sendable {
     public var endDate: Date? { CourseTime.parse(day: day, time: endTime) }
     public var timeRange: String { "\(CourseTime.display(beginTime))–\(CourseTime.display(endTime))" }
     public var qrIdentifier: String { id.range(of: "^[0-9]{7}$", options: .regularExpression) != nil ? id : uuid }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
+public struct SchoolSemester: Identifiable, Codable, Hashable, Sendable {
+    public let id: String
+    public let name: String
+    public let beginDate: String
+    public let endDate: String
+    public let isCurrent: Bool
+
+    public init(id: String, name: String, beginDate: String, endDate: String, isCurrent: Bool) {
+        self.id = id
+        self.name = name
+        self.beginDate = beginDate
+        self.endDate = endDate
+        self.isCurrent = isCurrent
+    }
+}
+
+public struct CatalogCourse: Identifiable, Codable, Hashable, Sendable {
+    public let id: String
+    public let number: String
+    public let name: String
+    public let teacher: String
+    public let classroom: String?
+    public let semesterId: String
+    public let beginDate: String
+    public let endDate: String
+    public let totalSessions: Int?
+    public let completedSessions: Int?
+
+    public init(id: String, number: String, name: String, teacher: String, classroom: String?, semesterId: String,
+                beginDate: String, endDate: String, totalSessions: Int? = nil, completedSessions: Int? = nil) {
+        self.id = id
+        self.number = number
+        self.name = name
+        self.teacher = teacher
+        self.classroom = classroom?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        self.semesterId = semesterId
+        self.beginDate = beginDate
+        self.endDate = endDate
+        self.totalSessions = totalSessions
+        self.completedSessions = completedSessions
+    }
+}
+
+public struct CourseAttendance: Identifiable, Codable, Hashable, Sendable {
+    public let id: String
+    public let courseId: String
+    public let scheduledCourseId: String
+    public let day: String
+    public let beginTime: String
+    public let endTime: String
+    public let signed: Bool
+
+    public init(id: String, courseId: String, scheduledCourseId: String, day: String,
+                beginTime: String, endTime: String, signed: Bool) {
+        self.id = id
+        self.courseId = courseId
+        self.scheduledCourseId = scheduledCourseId
+        self.day = day
+        self.beginTime = beginTime
+        self.endTime = endTime
+        self.signed = signed
+    }
+}
+
+public struct CourseAttendanceSummary: Codable, Equatable, Sendable {
+    public let signedCount: Int
+    public let unsignedCount: Int
+    public let records: [CourseAttendance]
+
+    public init(signedCount: Int, unsignedCount: Int, records: [CourseAttendance]) {
+        self.signedCount = signedCount
+        self.unsignedCount = unsignedCount
+        self.records = records
+    }
 }
 
 public struct CourseQueryResult: Codable, Sendable {

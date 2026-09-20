@@ -111,11 +111,54 @@ final class QingxinServiceTests: XCTestCase {
         let legacy = Data(#"{"id":"1234567","uuid":"","name":"高等数学","teacher":"张老师","beginTime":"08:00","endTime":"09:40","day":"20260915","signed":false}"#.utf8)
         let restored = try JSONDecoder().decode(Course.self, from: legacy)
         XCTAssertNil(restored.classroom)
+        XCTAssertNil(restored.courseId)
         XCTAssertEqual(restored.name, "高等数学")
         let course = try XCTUnwrap(ResponseParser.scheduledCourses([json(courseFixture)], day: "20260915").first)
         let cached = try JSONDecoder().decode(Course.self, from: JSONEncoder().encode(course))
         XCTAssertEqual(cached, course)
         XCTAssertEqual(cached.classroom, "教一楼002")
+    }
+
+    func testSemesterCatalogAndAttendanceRequestsUseObservedContracts() async throws {
+        let semesters = #"{"STATUS":"0","result":[{"code":"2026202701","name":"2026-2027秋季学期","beginDate":"2026-08-31","endDate":"2027-01-31","yearStatus":"1"}]}"#
+        let catalog = #"{"STATUS":"0","total":1,"result":[{"course_id":"course-a","courseNum":"CS6001","course_name":"高级人工智能","teacher_name":"陈老师","course_address":"教学楼 A101","semesterId":"2026202701","course_beignDate":"2026-08-31","course_endDate":"2027-01-31","jc_num":"16","jc_num_studyed":"3"}]}"#
+        let attendance = #"{"STATUS":"0","mySignNum":"1","myNoSignNum":"1","result":[{"id":"record-a","courseId":"course-a","courseSchedId":"1234567","teachTime":"20260920","signStatus":"1","classBeginTime":"2026-09-20 09:20:00","classEndTime":"2026-09-20 12:00:00"},{"id":"record-b","courseId":"course-a","courseSchedId":"1234568","teachTime":"20260927","signStatus":"0","classBeginTime":"2026-09-27 09:20:00","classEndTime":"2026-09-27 12:00:00"}]}"#
+        let transport = FixtureTransport([semesters, catalog, attendance])
+        let service = QingxinService(transport: transport)
+
+        let terms = try await service.semesters(session: testSession)
+        let courses = try await service.catalogCourses(session: testSession, semesterId: terms[0].id)
+        let summary = try await service.courseAttendance(session: testSession, courseId: courses[0].id)
+
+        XCTAssertTrue(terms[0].isCurrent)
+        XCTAssertEqual(courses[0].number, "CS6001")
+        XCTAssertEqual(courses[0].totalSessions, 16)
+        XCTAssertEqual(summary.signedCount, 1)
+        XCTAssertEqual(summary.unsignedCount, 1)
+        XCTAssertEqual(summary.records.map(\.scheduledCourseId), ["1234567", "1234568"])
+        let requests = await transport.requests
+        XCTAssertEqual(requests.map { $0.url!.path }, [
+            "/app/course/get_base_school_year.action",
+            "/app/choosecourse/get_myall_course.action",
+            "/app/my/get_my_course_sign_detail.action"
+        ])
+        XCTAssertEqual(URLComponents(url: requests[1].url!, resolvingAgainstBaseURL: false)?.queryItems?.first?.value, "1")
+        XCTAssertEqual(decodeForm(requests[0].httpBody), ["userId": "student-id", "type": "2"])
+        XCTAssertEqual(decodeForm(requests[1].httpBody), ["id": "student-id", "xq_code": "2026202701"])
+        XCTAssertEqual(decodeForm(requests[2].httpBody), ["id": "student-id", "courseId": "course-a"])
+    }
+
+    func testCatalogRejectsSemesterMismatchAndAttendanceRejectsWrongCourse() throws {
+        XCTAssertThrowsError(try ResponseParser.catalogCourses(json(#"{"STATUS":"0","result":[{"course_id":"a","course_name":"课程","semesterId":"other"}]}"#), semesterId: "current"))
+        XCTAssertThrowsError(try ResponseParser.courseAttendance(json(#"{"STATUS":"0","result":[{"id":"r","courseId":"other","courseSchedId":"1234567","teachTime":"20260920"}]}"#), courseId: "expected"))
+    }
+
+    func testScheduledCourseKeepsStableCourseIdSeparateFromSignId() throws {
+        var entry = try json(courseFixture)
+        entry["courseId"] = "stable-course"
+        let course = try XCTUnwrap(ResponseParser.scheduledCourses([entry], day: "20260915").first)
+        XCTAssertEqual(course.id, "1234567")
+        XCTAssertEqual(course.courseId, "stable-course")
     }
 
     func testWeeklyErrorsAndMalformedPayloadsAreNeverAnEmptySchedule() async throws {

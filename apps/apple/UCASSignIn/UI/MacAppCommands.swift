@@ -8,23 +8,30 @@ struct MacAppCommands: Commands {
 
     var body: some Commands {
         CommandGroup(replacing: .appSettings) {
-            Button("设置…") { navigate(to: 2); model.showSettings = true }
+            Button("设置…") { navigate(to: 3); model.showSettings = true }
                 .keyboardShortcut(",")
                 .disabled(model.showLogin)
         }
         CommandMenu("课堂") {
             Button("今日课程") { navigate(to: 0) }.keyboardShortcut("1")
             Button("课表") { navigate(to: 1) }.keyboardShortcut("2")
-            Button("账户") { navigate(to: 2) }.keyboardShortcut("3")
+            Button("课程") { navigate(to: 2) }.keyboardShortcut("3")
+            Button("账户") { navigate(to: 3) }.keyboardShortcut("4")
             Divider()
             Button("刷新课程") {
                 Task {
                     if selection == 1 { await model.refresh() }
+                    else if selection == 2, let courseId = model.visibleCatalogCourseId {
+                        await model.refreshAttendance(for: courseId, force: true)
+                    }
+                    else if selection == 2 { await model.refreshCatalog(force: true) }
                     else { await model.refresh(on: .now) }
                 }
             }
             .keyboardShortcut("r")
-            .disabled(!model.isConnected || model.isRefreshing(on: selection == 1 ? model.selectedDate : .now) || model.showLogin)
+            .disabled(!model.isConnected || model.isCatalogRefreshing ||
+                      model.visibleCatalogCourseId.map { model.attendanceRefreshing.contains($0) } == true ||
+                      model.isRefreshing(on: selection == 1 ? model.selectedDate : .now) || model.showLogin)
             Divider()
             Button("添加学校账户…") {
                 openWindow(id: "main")

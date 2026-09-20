@@ -100,12 +100,33 @@ public actor QingxinService {
         return try ResponseParser.week(weekly, day: day)
     }
 
+    public func semesters(session: SchoolSession) async throws -> [SchoolSemester] {
+        let json = try await execute(path: "course/get_base_school_year.action", session: session,
+                                     fields: [("userId", session.userId), ("type", "2")])
+        return try ResponseParser.semesters(json)
+    }
+
+    public func catalogCourses(session: SchoolSession, semesterId: String) async throws -> [CatalogCourse] {
+        let json = try await execute(path: "choosecourse/get_myall_course.action", session: session,
+                                     fields: [("id", session.userId), ("xq_code", semesterId)],
+                                     query: [URLQueryItem(name: "user_type", value: "1")])
+        return try ResponseParser.catalogCourses(json, semesterId: semesterId)
+    }
+
+    public func courseAttendance(session: SchoolSession, courseId: String) async throws -> CourseAttendanceSummary {
+        let json = try await execute(path: "my/get_my_course_sign_detail.action", session: session,
+                                     fields: [("id", session.userId), ("courseId", courseId)])
+        return try ResponseParser.courseAttendance(json, courseId: courseId)
+    }
+
     /// A sign-in is never retried automatically: an ambiguous network response may already have committed.
-    public func sign(course: Course, session: SchoolSession) async throws -> SignResult {
+    public func sign(course: Course, session: SchoolSession,
+                     authorizeSubmission: @MainActor @Sendable () throws -> Void = {}) async throws -> SignResult {
         guard course.id.range(of: "^[0-9]{7}$", options: .regularExpression) != nil else {
             throw APIError(code: "COURSE_ID_INVALID", message: "课程缺少有效的 7 位签到 ID，请刷新课表")
         }
         let reading = try await synchronizedReading()
+        try await authorizeSubmission()
         let json = try await execute(path: "course/stu_scan_sign.action", session: session, query: [
             URLQueryItem(name: "courseSchedId", value: course.id),
             URLQueryItem(name: "timestamp", value: String(reading.timestamp)),
@@ -262,6 +283,75 @@ enum ResponseParser {
         return SchoolSession(userId: id, sessionId: sessionId, studentNo: studentNo, name: name?.isEmpty == false ? name : nil)
     }
 
+    static func semesters(_ json: [String: Any]) throws -> [SchoolSemester] {
+        try rejectSessionError(json)
+        guard scalar(json["STATUS"]) == "0", let entries = json["result"] as? [[String: Any]] else {
+            throw APIError(code: "SEMESTER_REJECTED", message: "学校暂未返回可用学期，请稍后重试")
+        }
+        let values = try entries.map { entry -> SchoolSemester in
+            let code = scalar(entry["code"]), name = scalar(entry["name"])
+            guard !code.isEmpty, !name.isEmpty,
+                  let begin = CourseTime.normalizeDay(scalar(entry["beginDate"])),
+                  let end = CourseTime.normalizeDay(scalar(entry["endDate"])) else {
+                throw APIError(code: "SEMESTER_BAD_RESPONSE", message: "学校学期数据不完整，请稍后重试")
+            }
+            return SchoolSemester(id: code, name: name, beginDate: begin, endDate: end,
+                                  isCurrent: scalar(entry["yearStatus"]) == "1")
+        }
+        guard !values.isEmpty else {
+            throw APIError(code: "SEMESTER_EMPTY", message: "学校暂未返回可用学期，请稍后重试")
+        }
+        return values
+    }
+
+    static func catalogCourses(_ json: [String: Any], semesterId: String) throws -> [CatalogCourse] {
+        try rejectSessionError(json)
+        guard scalar(json["STATUS"]) == "0", let entries = json["result"] as? [[String: Any]] else {
+            throw APIError(code: "COURSE_CATALOG_REJECTED", message: "学校暂未返回课程目录，请稍后重试")
+        }
+        return try entries.map { entry -> CatalogCourse in
+            let id = scalar(entry["course_id"]), name = scalar(entry["course_name"])
+            guard !id.isEmpty, !name.isEmpty else {
+                throw APIError(code: "COURSE_CATALOG_BAD_RESPONSE", message: "学校课程目录数据不完整，请稍后重试")
+            }
+            let returnedSemester = scalar(entry["semesterId"])
+            guard returnedSemester.isEmpty || returnedSemester == semesterId else {
+                throw APIError(code: "COURSE_CATALOG_SEMESTER_MISMATCH", message: "学校返回了其他学期的课程，请重新刷新")
+            }
+            return CatalogCourse(
+                id: id, number: scalar(entry["courseNum"]), name: name,
+                teacher: scalar(entry["teacher_name"]), classroom: scalar(entry["course_address"]),
+                semesterId: semesterId,
+                beginDate: CourseTime.normalizeDay(scalar(entry["course_beignDate"])) ?? "",
+                endDate: CourseTime.normalizeDay(scalar(entry["course_endDate"])) ?? "",
+                totalSessions: Int(scalar(entry["jc_num"])),
+                completedSessions: Int(scalar(entry["jc_num_studyed"]))
+            )
+        }
+    }
+
+    static func courseAttendance(_ json: [String: Any], courseId: String) throws -> CourseAttendanceSummary {
+        try rejectSessionError(json)
+        guard scalar(json["STATUS"]) == "0", let entries = json["result"] as? [[String: Any]] else {
+            throw APIError(code: "ATTENDANCE_REJECTED", message: "学校暂未返回课程考勤，请稍后重试")
+        }
+        let records = try entries.map { entry -> CourseAttendance in
+            let id = scalar(entry["id"]), returnedCourseId = scalar(entry["courseId"])
+            let scheduledId = scalar(entry["courseSchedId"])
+            guard !id.isEmpty, returnedCourseId == courseId, !scheduledId.isEmpty,
+                  let day = CourseTime.normalizeDay(scalar(entry["teachTime"])) else {
+                throw APIError(code: "ATTENDANCE_BAD_RESPONSE", message: "学校课程考勤数据不完整，请稍后重试")
+            }
+            return CourseAttendance(id: id, courseId: returnedCourseId, scheduledCourseId: scheduledId,
+                                    day: day, beginTime: scalar(entry["classBeginTime"]),
+                                    endTime: scalar(entry["classEndTime"]),
+                                    signed: scalar(entry["signStatus"]) == "1")
+        }
+        return CourseAttendanceSummary(signedCount: Int(scalar(json["mySignNum"])) ?? records.filter(\.signed).count,
+                                       unsignedCount: Int(scalar(json["myNoSignNum"])) ?? records.filter { !$0.signed }.count,
+                                       records: records)
+    }
+
     static func timestamp(_ json: [String: Any]) throws -> Int64 {
         guard scalar(json["STATUS"]) == "0", let number = json["timestamp"] as? NSNumber,
               CFGetTypeID(number) != CFBooleanGetTypeID() else { throw badTimestamp }
@@ -290,7 +380,11 @@ enum ResponseParser {
             if !seen.insert(id).inserted { continue }
             let name = scalar(entry["courseName"])
             let classroom = entry["classroomName"] as? String
-            result.append(Course(id: id, uuid: uuid, name: name.isEmpty ? "未命名课程" : name, teacher: scalar(entry["teacherName"]), classroom: classroom, beginTime: scalar(entry["classBeginTime"]), endTime: scalar(entry["classEndTime"]), day: day, signed: scalar(entry["signStatus"]) == "1"))
+            result.append(Course(id: id, courseId: scalar(entry["courseId"]), uuid: uuid,
+                                 name: name.isEmpty ? "未命名课程" : name,
+                                 teacher: scalar(entry["teacherName"]), classroom: classroom,
+                                 beginTime: scalar(entry["classBeginTime"]), endTime: scalar(entry["classEndTime"]),
+                                 day: day, signed: scalar(entry["signStatus"]) == "1"))
         }
         return result.sorted { ($0.startDate ?? .distantFuture) < ($1.startDate ?? .distantFuture) }
     }

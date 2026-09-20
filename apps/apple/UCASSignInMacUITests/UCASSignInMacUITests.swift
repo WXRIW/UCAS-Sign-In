@@ -47,6 +47,9 @@ final class UCASSignInMacUITests: XCTestCase {
         assertScheduleSelectionAndCourses(nextWeek, in: app)
 
         app.typeKey("3", modifierFlags: .command)
+        XCTAssertTrue(app.scrollViews["courses.scroll"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons.matching(identifier: "courses.refresh").firstMatch.exists)
+        app.typeKey("4", modifierFlags: .command)
         XCTAssertTrue(app.buttons["profile.privacyToggle"].waitForExistence(timeout: 5))
         selectSidebar("today", in: app)
         XCTAssertTrue(app.staticTexts["今日安排"].waitForExistence(timeout: 5))
@@ -136,7 +139,7 @@ final class UCASSignInMacUITests: XCTestCase {
             assertSidebarAvailable(in: app)
             app.typeKey("1", modifierFlags: .command)
             XCTAssertTrue(app.scrollViews["today.scroll"].waitForExistence(timeout: 5))
-            app.typeKey("3", modifierFlags: .command)
+            app.typeKey("4", modifierFlags: .command)
             XCTAssertTrue(content.waitForExistence(timeout: 5))
             capture(app, name: "Mac-\(page.entry)-子页面")
             returnToParent(content: "profile.scroll", in: app)
@@ -152,7 +155,7 @@ final class UCASSignInMacUITests: XCTestCase {
     @MainActor
     func testAccountPrivacyAndLoginSheetCancellation() {
         let app = launchDemo()
-        app.typeKey("3", modifierFlags: .command)
+        app.typeKey("4", modifierFlags: .command)
         let toggle = app.buttons["profile.privacyToggle"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 5))
         if toggle.label == "显示账户信息" { toggle.click() }
@@ -445,7 +448,7 @@ final class UCASSignInMacUITests: XCTestCase {
     @MainActor
     private func assertSidebarAvailable(in app: XCUIApplication,
                                         file: StaticString = #filePath, line: UInt = #line) {
-        for page in ["today", "schedule", "profile"] {
+        for page in ["today", "schedule", "courses", "profile"] {
             let row = app.descendants(matching: .any).matching(identifier: "mac.sidebar.\(page)").firstMatch
             XCTAssertTrue(row.exists && row.isHittable, "子页面应保留 Mac 侧栏入口：\(page)", file: file, line: line)
         }

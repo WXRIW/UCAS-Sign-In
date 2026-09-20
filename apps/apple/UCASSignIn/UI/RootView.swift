@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 struct RootView: View {
     @EnvironmentObject private var model: AppModel
@@ -10,6 +13,7 @@ struct RootView: View {
     @State private var refreshTodayOnSelection = false
     @State private var todayPath: [Course] = []
     @State private var schedulePath: [Course] = []
+    @State private var coursesPath: [CatalogCourse] = []
     @State private var profilePath: [ProfileDestination] = []
     @State private var deferLoginPresentation = false
     @State private var pendingLogin: PendingLogin?
@@ -42,10 +46,22 @@ struct RootView: View {
                 model.showAccountManagement = false
             }
         }
-        .alert("温馨提示", isPresented: Binding(get: { model.errorMessage != nil && model.loginRequest == nil }, set: { if !$0 { model.errorMessage = nil } })) {
-            Button("知道了", role: .cancel) { model.errorMessage = nil }
+        .alert("温馨提示", isPresented: Binding(
+            get: { model.errorMessage != nil && model.loginRequest == nil },
+            set: { if !$0 { model.dismissError() } }
+        )) {
+            if model.notificationSettingsNeeded {
+                Button("打开系统设置") {
+                    model.dismissError()
+                    if let url = notificationSettingsURL { openURL(url) }
+                }
+                Button("取消", role: .cancel) { model.dismissError() }
+            } else {
+                Button("知道了", role: .cancel) { model.dismissError() }
+            }
         } message: { Text(model.errorMessage ?? "") }
         .background { updateAlertHost }
+        .background { signConfirmationHost }
         .preferredColorScheme(appearance.colorScheme)
         .onOpenURL { url in
             guard url.scheme == "ucas-signin" else { return }
@@ -61,6 +77,14 @@ struct RootView: View {
             }
             #endif
         }
+    }
+
+    private var notificationSettingsURL: URL? {
+        #if os(macOS)
+        URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension")
+        #else
+        URL(string: UIApplication.openSettingsURLString)
+        #endif
     }
 
     private var updateAlertHost: some View {
@@ -84,6 +108,21 @@ struct RootView: View {
             }
     }
 
+    private var signConfirmationHost: some View {
+        Color.clear.frame(width: 0, height: 0)
+            .alert("确认签到？", isPresented: Binding(
+                get: { model.pendingSignConfirmation != nil },
+                set: { if !$0 { model.pendingSignConfirmation = nil } }
+            )) {
+                Button("取消", role: .cancel) { model.pendingSignConfirmation = nil }
+                Button("确认签到") { Task { await model.confirmPendingSign() } }
+            } message: {
+                if let request = model.pendingSignConfirmation {
+                    Text("\(request.course.name)\n\(request.course.day) · \(request.course.timeRange)")
+                }
+            }
+    }
+
     @ViewBuilder private var navigation: some View {
         #if os(macOS)
         NavigationSplitView {
@@ -92,8 +131,10 @@ struct RootView: View {
                     .tag(0).accessibilityIdentifier("mac.sidebar.today")
                 Label("课表", systemImage: "calendar")
                     .tag(1).accessibilityIdentifier("mac.sidebar.schedule")
+                Label("课程", systemImage: "book.closed")
+                    .tag(2).accessibilityIdentifier("mac.sidebar.courses")
                 Label("账户", systemImage: "person.crop.circle")
-                    .tag(2).accessibilityIdentifier("mac.sidebar.profile")
+                    .tag(3).accessibilityIdentifier("mac.sidebar.profile")
             }
             .listStyle(.sidebar)
             .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 240)
@@ -112,7 +153,8 @@ struct RootView: View {
             Group {
                 switch selection {
                 case 1: ScheduleView(path: activePath($schedulePath, for: 1), isActive: selection == 1)
-                case 2: ProfileView(path: activePath($profilePath, for: 2))
+                case 2: CoursesView(path: activePath($coursesPath, for: 2))
+                case 3: ProfileView(path: activePath($profilePath, for: 3))
                 default: TodayView(path: activePath($todayPath, for: 0), isActive: selection == 0, openSchedule: { selectTab(1) })
                 }
             }
@@ -128,9 +170,12 @@ struct RootView: View {
             ScheduleView(path: $schedulePath, isActive: selection == 1)
                 .tabItem { Label("课表", systemImage: "calendar") }
                 .tag(1)
+            CoursesView(path: $coursesPath)
+                .tabItem { Label("课程", systemImage: "book.closed") }
+                .tag(2)
             ProfileView(path: $profilePath)
                 .tabItem { Label("账户", systemImage: "person.crop.circle") }
-                .tag(2)
+                .tag(3)
         }
         #endif
     }
@@ -150,12 +195,13 @@ struct RootView: View {
         refreshTodayOnSelection = false
         todayPath.removeAll()
         schedulePath.removeAll()
+        coursesPath.removeAll()
         profilePath.removeAll()
     }
 
     private func openRequestedSettings() {
         guard model.showSettings else { return }
-        selection = 2
+        selection = 3
         profilePath = [.settings]
         model.showSettings = false
     }
@@ -234,30 +280,32 @@ struct TodayView: View {
     var body: some View {
         NavigationStack(path: $path) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 26) {
-                    introduction
-                    if model.isConnected {
-                        if model.isDemo { demoBanner }
-                        if model.isCached(on: .now) { CachedCoursesBanner(date: .now) }
-                        if let course = model.featuredCourse {
-                            FeaturedCourseCard(course: course, accountGeneration: model.accountGeneration, openDetail: { path.append(course) })
-                                .id(model.accountGeneration)
-                        } else if model.todayCourses.isEmpty {
-                            emptyDay
-                        }
-                        progressCard
-                        courseList
-                        if let notice = model.notice(on: .now), !model.isCached(on: .now) {
-                            Label(notice, systemImage: "info.circle")
-                                .font(.system(size: 12)).foregroundStyle(Palette.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    } else { welcomeCard }
+                VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 26) {
+                        introduction
+                        if model.isConnected {
+                            if model.isDemo { demoBanner }
+                            if model.isCached(on: .now) { CachedCoursesBanner(date: .now) }
+                            if let course = model.featuredCourse {
+                                FeaturedCourseCard(course: course, accountGeneration: model.accountGeneration, openDetail: { path.append(course) })
+                                    .id(model.accountGeneration)
+                            } else if model.todayCourses.isEmpty {
+                                emptyDay
+                            }
+                            progressCard
+                            courseList
+                            if let notice = model.notice(on: .now), !model.isCached(on: .now) {
+                                Label(notice, systemImage: "info.circle")
+                                    .font(.system(size: 12)).foregroundStyle(Palette.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        } else { welcomeCard }
+                    }
                     HStack(spacing: 6) {
                         Image(systemName: "leaf").font(.system(size: 11))
                         Text("专注课堂，把琐事交给果壳").font(.system(size: 11)).tracking(1)
                     }.foregroundStyle(Palette.secondary.opacity(0.75))
-                        .frame(maxWidth: .infinity).padding(.top, 3).padding(.bottom, 16)
+                        .frame(maxWidth: .infinity).padding(.bottom, 16)
                 }.appPageHorizontalPadding().padding(.top, 17)
                     .frame(maxWidth: 680).frame(maxWidth: .infinity)
             }
@@ -443,11 +491,11 @@ struct FeaturedCourseCard: View {
                 .font(.system(size: 11)).foregroundStyle(.white.opacity(0.68))
                 .padding(.top, 9)
             HStack(spacing: 10) {
-                Button { Task { await model.sign(course, accountGeneration: accountGeneration) } } label: {
+                Button { Task { await model.signManually(course, accountGeneration: accountGeneration) } } label: {
                     HStack(spacing: 7) {
                         if model.signingID == course.id { ProgressView().tint(Palette.hero) }
                         else { Image(systemName: course.signed ? "checkmark.circle.fill" : "checkmark.circle").font(.system(size: 17)) }
-                        Text(course.signed ? "已完成签到" : "一键签到").font(.system(size: 14, weight: .semibold))
+                        Text(model.isSignInDisabled(for: course.courseId) ? "已禁用签到" : course.signed ? "已完成签到" : "一键签到").font(.system(size: 14, weight: .semibold))
                     }.foregroundStyle(Palette.hero).frame(maxWidth: .infinity).padding(.vertical, 14)
                         .background(Palette.accent, in: RoundedRectangle(cornerRadius: 13))
                 }.buttonStyle(.plain).disabled(!model.canSign(course, accountGeneration: accountGeneration))

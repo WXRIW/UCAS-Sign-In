@@ -26,6 +26,7 @@ struct CourseDetailView: View {
     private var currentCourse: Course { latestCourse ?? course }
     private var courseWasRemoved: Bool { latestCourse == nil && !model.needsCourseRefresh(course) }
 
+    private var signInDisabled: Bool { model.isSignInDisabled(for: currentCourse.courseId) }
     private var canRefreshQR: Bool {
         belongsToCurrentAccount && isVisible && isActive && scenePhase == .active && !model.showLogin && !model.showAccountManagement
     }
@@ -58,9 +59,9 @@ struct CourseDetailView: View {
                         Button("重新同步二维码") { retry = UUID() }.font(.system(size: 13, weight: .semibold))
                     }
                 }.frame(maxWidth: .infinity).padding(.vertical, 26).cardSurface()
-                PrimaryButton(title: courseWasRemoved ? "课程已不在最新课表中" : currentCourse.signed ? "已完成签到" : "为本节课程签到", symbol: "checkmark.circle",
+                PrimaryButton(title: courseWasRemoved ? "课程已不在最新课表中" : signInDisabled ? "已禁用签到" : currentCourse.signed ? "已完成签到" : "为本节课程签到", symbol: "checkmark.circle",
                               loading: model.signingID == course.id) {
-                    Task { await model.sign(currentCourse, accountGeneration: accountGeneration) }
+                    Task { await model.signManually(currentCourse, accountGeneration: accountGeneration) }
                 }
                     .disabled(!model.canSign(currentCourse, accountGeneration: accountGeneration))
                 Text(model.isDemo ? "这里是完整的交互演示，所有操作均不会提交给学校。" : "二维码随学校时间自动刷新。签到是否成功，以学校返回结果为准。")

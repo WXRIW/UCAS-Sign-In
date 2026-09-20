@@ -4,6 +4,40 @@ import Foundation
 
 @MainActor
 final class AccountStoreTests: XCTestCase {
+    func testLegacyPreferencesDecodeWithNewDefaults() throws {
+        let data = Data(#"{"autoSignEnabled":true,"remindersEnabled":false}"#.utf8)
+        let value = try JSONDecoder().decode(AccountPreferences.self, from: data)
+        XCTAssertTrue(value.autoSignEnabled)
+        XCTAssertFalse(value.remindersEnabled)
+        XCTAssertFalse(value.confirmationEnabled)
+        XCTAssertEqual(value.reminderLeadMinutes, 10)
+        XCTAssertTrue(value.courses.isEmpty)
+    }
+
+    func testLegacyCoursePreferencesKeepSettingsAndAllowSignIn() throws {
+        let data = Data(#"{"confirmation":"enabled","autoSign":"enabled","reminders":"disabled","reminderLeadMinutes":15}"#.utf8)
+        let value = try JSONDecoder().decode(CoursePreferences.self, from: data)
+        XCTAssertFalse(value.signInDisabled)
+        XCTAssertEqual(value.confirmation, .enabled)
+        XCTAssertEqual(value.autoSign, .enabled)
+        XCTAssertEqual(value.reminderLeadMinutes, 15)
+        var disabled = value
+        disabled.signInDisabled = true
+        XCTAssertEqual(try JSONDecoder().decode(CoursePreferences.self, from: JSONEncoder().encode(disabled)), disabled)
+    }
+
+    func testCourseOverridesRoundTripAndResolveGlobals() throws {
+        let override = CoursePreferences(confirmation: .enabled, autoSign: .disabled,
+                                         reminders: .enabled, reminderLeadMinutes: 30)
+        let original = AccountPreferences(autoSignEnabled: true, remindersEnabled: false,
+                                          confirmationEnabled: false, reminderLeadMinutes: 10,
+                                          courses: ["course-a": override])
+        let restored = try JSONDecoder().decode(AccountPreferences.self, from: JSONEncoder().encode(original))
+        XCTAssertEqual(restored, original)
+        XCTAssertTrue(restored.courses["course-a"]!.confirmation.resolve(default: false))
+        XCTAssertFalse(restored.courses["course-a"]!.autoSign.resolve(default: true))
+    }
+
     func testUpsertUsesSchoolIdentityInsteadOfLoginAlias() async throws {
         let original = account("1001", username: "student@ucas.ac.cn")
         let other = account("1002")
