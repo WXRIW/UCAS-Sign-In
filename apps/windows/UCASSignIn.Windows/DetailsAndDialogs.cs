@@ -49,6 +49,25 @@ public sealed partial class MainWindow
         dialog.Closed += (_, _) => { if (!closed) source.AcknowledgeSignInError(error.Id); };
         await Show(dialog);
     }
+    async Task RequestManualSignAsync(Course requested)
+    {
+        var epoch = Model.Generation;
+        var current = Model.Courses.FirstOrDefault(x => x.Id == requested.Id && x.Day == requested.Day);
+        if (current is null || !Model.CanSign(current)) return;
+        if (Model.EffectiveConfirmation(current.CourseId))
+        {
+            var result = await Show(new ContentDialog
+            {
+                Title = "确认手动签到",
+                Content = new TextBlock { Text = $"{current.Name}\n{CourseTime.Date(current.Day):yyyy 年 M 月 d 日} · {current.TimeRange}", TextWrapping = TextWrapping.Wrap },
+                PrimaryButtonText = "确认签到", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Close
+            });
+            if (result != ContentDialogResult.Primary) return;
+        }
+        current = Model.Courses.FirstOrDefault(x => x.Id == requested.Id && x.Day == requested.Day);
+        if (epoch == Model.Generation && current is not null && Model.CanSign(current))
+            await Model.SignAsync(current, epoch);
+    }
     async Task CheckForUpdates(bool manual)
     {
         if (updateCheckRunning || closed || (!manual && dialogOpen))
@@ -323,8 +342,8 @@ public sealed partial class MainWindow
         var canvas = new Border { Child = image, Width = 250, Height = 250, Padding = new(13), Background = Brush("FFFFFF"), CornerRadius = new(12), HorizontalAlignment = HorizontalAlignment.Center };
         Page.Children.Add(Card(Column(canvas, progress, caption), 26));
         var removed = !Model.Courses.Any(c => c.Id == course.Id && c.Day == course.Day) && Model.IsFresh(course);
-        var signText = removed ? "课程已不在最新课表中" : course.Signed ? "已完成签到" : "为本节课程签到";
-        var sign = Button(signText, () => Model.SignAsync(course, Model.Generation), true);
+        var signText = Model.IsSignInDisabled(course.CourseId) ? "本课程已禁用签到" : removed ? "课程已不在最新课表中" : course.Signed ? "已完成签到" : "为本节课程签到";
+        var sign = Button(signText, () => RequestManualSignAsync(course), true);
         if (!removed)
         {
             var content = Row(new FontIcon { Glyph = "\uE73E", FontSize = 16 },

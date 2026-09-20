@@ -400,8 +400,8 @@ struct CatalogCourseDetailView: View {
                     .frame(width: PreferenceRowLayout.iconWidth)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("学校返回记录").font(PreferenceTypography.body.weight(.medium)).foregroundStyle(Palette.ink)
-                    Text("已签到、未签到及课次明细").font(PreferenceTypography.detail).foregroundStyle(Palette.secondary)
+                    Text("考勤统计与明细").font(PreferenceTypography.body.weight(.medium)).foregroundStyle(Palette.ink)
+                    Text("学校记录的签到次数及每次上课的签到状态").font(PreferenceTypography.detail).foregroundStyle(Palette.secondary)
                 }
                 Spacer(minLength: 12)
                 CourseRefreshButton(title: "刷新", isRefreshing: model.attendanceRefreshing.contains(course.id),
@@ -410,16 +410,16 @@ struct CatalogCourseDetailView: View {
                 }
                 .accessibilityIdentifier("courseDetail.refreshAttendance")
             }
-            .padding(.vertical, 18)
-            PreferenceDivider()
+            .padding(.top, 18)
+            .padding(.bottom, model.attendanceByCourse[course.id] != nil ? 12 : 18)
             if let summary = model.attendanceByCourse[course.id] {
                 HStack(spacing: 10) {
                     metric("已签到", summary.signedCount, Palette.green)
                     metric("未签到", summary.unsignedCount, Palette.secondary)
                 }
-                .padding(.vertical, 16)
+                .padding(.bottom, 16)
                 ForEach(summary.records.sorted { $0.day > $1.day }) { record in
-                    PreferenceDivider()
+                    attendanceDivider
                     HStack(spacing: 12) {
                         VStack(alignment: .leading, spacing: 6) {
                             Text(formattedDay(record.day)).font(PreferenceTypography.body.weight(.medium)).foregroundStyle(Palette.ink)
@@ -434,17 +434,24 @@ struct CatalogCourseDetailView: View {
                     .padding(.vertical, 16)
                 }
             } else if let error = model.attendanceErrors[course.id] {
+                attendanceDivider
                 Label(error, systemImage: "wifi.exclamationmark")
                     .font(PreferenceTypography.detail)
                     .foregroundStyle(Palette.secondary)
                     .padding(.vertical, 18)
             } else {
+                attendanceDivider
                 Text("暂无学校考勤记录")
                     .font(PreferenceTypography.detail)
                     .foregroundStyle(Palette.secondary)
                     .padding(.vertical, 18)
             }
         }
+    }
+
+    private var attendanceDivider: some View {
+        Rectangle().fill(Palette.line).frame(height: 0.5)
+            .accessibilityHidden(true)
     }
 
     private var localRecordsContent: some View {

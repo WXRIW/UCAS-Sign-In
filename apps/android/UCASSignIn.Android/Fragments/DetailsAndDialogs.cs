@@ -25,7 +25,7 @@ public sealed partial class MainPageFragment
             // Dismiss notifications are queued; a new dialog may already be visible.
             if (Host.ActiveDialog != dialog) return;
             Host.ActiveDialog = null;
-            if (Route == "detail") Render();
+            if (Route is "detail" or "catalog-detail") Render();
             // A failure can arrive while another native dialog is open.
             Host.Window?.DecorView?.Post(ShowPendingSignInError);
         };
@@ -43,6 +43,30 @@ public sealed partial class MainPageFragment
             .SetPositiveButton("知道了", (_, _) => source.AcknowledgeSignInError(error.Id))!
             .SetCancelable(false)!.Create()!;
         Track(dialog, () => false);
+    }
+    async Task RequestManualSignAsync(Course requested)
+    {
+        var epoch = Model.Generation;
+        var current = Model.Courses.FirstOrDefault(x => x.Id == requested.Id && x.Day == requested.Day);
+        if (current is null || !Model.CanSign(current)) return;
+        if (Model.EffectiveConfirmation(current.CourseId))
+        {
+            var answer = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var dialog = new MaterialAlertDialogBuilder(Ui).SetTitle("确认手动签到")!
+                .SetMessage($"{current.Name}\n{CourseTime.Date(current.Day):yyyy 年 M 月 d 日} · {current.TimeRange}")!
+                .SetNegativeButton("取消", (_, _) => answer.TrySetResult(false))!
+                .SetPositiveButton("确认签到", (_, _) => answer.TrySetResult(true))!
+                .SetOnCancelListener(new CancelAnswer(answer))!.Create()!;
+            Track(dialog);
+            if (!await answer.Task) return;
+        }
+        current = Model.Courses.FirstOrDefault(x => x.Id == requested.Id && x.Day == requested.Day);
+        if (epoch == Model.Generation && current is not null && Model.CanSign(current))
+            await Model.SignAsync(current, epoch);
+    }
+    sealed class CancelAnswer(TaskCompletionSource<bool> answer) : Java.Lang.Object, IDialogInterfaceOnCancelListener
+    {
+        public void OnCancel(IDialogInterface? dialog) => answer.TrySetResult(false);
     }
     public async Task CheckForUpdates(bool manual)
     {
@@ -118,6 +142,32 @@ public sealed partial class MainPageFragment
         {
             if (Host.ActiveDialog is { } current)
                 DismissThen(current, () => { Host.SetAppearance(new[] { "system", "light", "dark" }[e.Which]); return Task.CompletedTask; });
+        })!.SetNegativeButton("取消", (_, _) => { })!.Create()!;
+        Track(dialog);
+    }
+
+    void ReminderLeadTime(int? selectedMinutes, bool includeInherit, int inheritedMinutes, Func<int?, Task> save)
+    {
+        int?[] values = includeInherit ? [null, 5, 10, 15, 30] : [5, 10, 15, 30];
+        var labels = values.Select(value => value is null ? $"跟随全局（{inheritedMinutes} 分钟）" : $"{value} 分钟").ToArray();
+        var selected = Math.Max(0, Array.IndexOf(values, selectedMinutes));
+        var dialog = new MaterialAlertDialogBuilder(Ui).SetTitle("提醒时间")!.SetSingleChoiceItems(labels, selected, (_, e) =>
+        {
+            if (Host.ActiveDialog is { } current)
+                DismissThen(current, () => save(values[e.Which]));
+        })!.SetNegativeButton("取消", (_, _) => { })!.Create()!;
+        Track(dialog);
+    }
+
+    void PreferenceOverridePicker(string title, PreferenceOverride selectedValue, bool inheritedValue, Func<PreferenceOverride, Task> save)
+    {
+        var values = new[] { PreferenceOverride.Inherit, PreferenceOverride.Enabled, PreferenceOverride.Disabled };
+        var labels = new[] { $"跟随全局（当前{(inheritedValue ? "启用" : "停用")}）", "启用", "停用" };
+        var selected = Math.Max(0, Array.IndexOf(values, CoursePreferences.Normalize(selectedValue)));
+        var dialog = new MaterialAlertDialogBuilder(Ui).SetTitle(title)!.SetSingleChoiceItems(labels, selected, (_, e) =>
+        {
+            if (Host.ActiveDialog is { } current)
+                DismissThen(current, () => save(values[e.Which]));
         })!.SetNegativeButton("取消", (_, _) => { })!.Create()!;
         Track(dialog);
     }
@@ -233,7 +283,7 @@ public sealed partial class MainPageFragment
         var qrCard = Card(canvas, TwoColumns ? 16 : 24);
         if (!TwoColumns) Add(qrCard);
         var removed = !Model.Courses.Any(c => c.Id == course.Id && c.Day == course.Day) && Model.IsFresh(course);
-        var sign = Button(removed ? "课程已不在最新课表中" : course.Signed ? "✓ 已完成签到" : "✓ 为本节课程签到", () => Model.SignAsync(course, Model.Generation), true);
+        var sign = Button(Model.IsSignInDisabled(course.CourseId) ? "本课程已禁用签到" : removed ? "课程已不在最新课表中" : course.Signed ? "✓ 已完成签到" : "✓ 为本节课程签到", () => RequestManualSignAsync(course), true);
         sign.Enabled = Model.CanSign(course);
         var disabledInk = Color.Argb(97, Ink.R, Ink.G, Ink.B);
         sign.BackgroundTintList = EnabledColors(C("285C45"), Color.Argb(31, Ink.R, Ink.G, Ink.B));

@@ -50,9 +50,76 @@ public static class ResponseParser
             var room = Field(e, "classroomName").ValueKind == JsonValueKind.String ? Text(e, "classroomName") : "";
             var name = Text(e, "courseName");
             courses.Add(new(id, Text(e, "uuid"), name.Length > 0 ? name : "未命名课程", Text(e, "teacherName"), room.Length == 0 ? null : room,
-                Text(e, "classBeginTime"), Text(e, "classEndTime"), day, Text(e, "signStatus") == "1"));
+                Text(e, "classBeginTime"), Text(e, "classEndTime"), day, Text(e, "signStatus") == "1", EmptyToNull(Text(e, "courseId"))));
         }
         return courses.OrderBy(c => c.Start ?? DateTimeOffset.MaxValue).ToList();
+    }
+    static string? EmptyToNull(string value) => value.Length == 0 ? null : value;
+    static int? OptionalInt(JsonElement e, string key)
+    {
+        var text = Text(e, key);
+        return int.TryParse(text, out var value) ? value : null;
+    }
+    public static IReadOnlyList<SchoolSemester> Semesters(JsonElement json)
+    {
+        RejectSessionError(json);
+        var entries = Field(json, "result");
+        if (Text(json, "STATUS") != "0" || entries.ValueKind != JsonValueKind.Array)
+            throw new SchoolException("SEMESTER_REJECTED", "学校暂未返回可用学期，请稍后重试");
+        var result = new List<SchoolSemester>();
+        foreach (var entry in entries.EnumerateArray())
+        {
+            var id = Text(entry, "code"); var name = Text(entry, "name");
+            var begin = CourseTime.NormalizeDay(Text(entry, "beginDate")); var end = CourseTime.NormalizeDay(Text(entry, "endDate"));
+            if (id.Length == 0 || name.Length == 0 || begin is null || end is null)
+                throw new SchoolException("SEMESTER_BAD_RESPONSE", "学校学期数据不完整，请稍后重试");
+            result.Add(new(id, name, begin, end, Text(entry, "yearStatus") == "1"));
+        }
+        if (result.Count == 0)
+            throw new SchoolException("SEMESTER_EMPTY", "学校暂未返回可用学期，请稍后重试");
+        return result;
+    }
+    public static IReadOnlyList<CatalogCourse> CatalogCourses(JsonElement json, string semesterId)
+    {
+        RejectSessionError(json);
+        var entries = Field(json, "result");
+        if (Text(json, "STATUS") != "0" || entries.ValueKind != JsonValueKind.Array)
+            throw new SchoolException("COURSE_CATALOG_REJECTED", "学校暂未返回课程目录，请稍后重试");
+        var result = new List<CatalogCourse>();
+        foreach (var entry in entries.EnumerateArray())
+        {
+            var id = Text(entry, "course_id"); var name = Text(entry, "course_name"); var returnedSemester = Text(entry, "semesterId");
+            if (id.Length == 0 || name.Length == 0)
+                throw new SchoolException("COURSE_CATALOG_BAD_RESPONSE", "学校课程目录数据不完整，请稍后重试");
+            if (returnedSemester.Length > 0 && returnedSemester != semesterId)
+                throw new SchoolException("COURSE_CATALOG_SEMESTER_MISMATCH", "学校返回了其他学期的课程，请重新刷新");
+            result.Add(new(id, Text(entry, "courseNum"), name, Text(entry, "teacher_name"), EmptyToNull(Text(entry, "course_address")), semesterId,
+                CourseTime.NormalizeDay(Text(entry, "course_beignDate")) ?? "", CourseTime.NormalizeDay(Text(entry, "course_endDate")) ?? "",
+                OptionalInt(entry, "jc_num"), OptionalInt(entry, "jc_num_studyed")));
+        }
+        var total = OptionalInt(json, "total");
+        if (total is not null && total != result.Count)
+            throw new SchoolException("COURSE_CATALOG_INCOMPLETE", "学校返回的课程目录不完整，请重新刷新");
+        return result;
+    }
+    public static CourseAttendanceSummary CourseAttendance(JsonElement json, string courseId)
+    {
+        RejectSessionError(json);
+        var entries = Field(json, "result");
+        if (Text(json, "STATUS") != "0" || entries.ValueKind != JsonValueKind.Array)
+            throw new SchoolException("ATTENDANCE_REJECTED", "学校暂未返回课程考勤，请稍后重试");
+        var result = new List<CourseAttendance>();
+        foreach (var entry in entries.EnumerateArray())
+        {
+            var id = Text(entry, "id"); var returnedCourse = Text(entry, "courseId"); var scheduled = Text(entry, "courseSchedId");
+            var day = CourseTime.NormalizeDay(Text(entry, "teachTime"));
+            if (id.Length == 0 || returnedCourse != courseId || scheduled.Length == 0 || day is null)
+                throw new SchoolException("ATTENDANCE_BAD_RESPONSE", "学校课程考勤数据不完整，请稍后重试");
+            result.Add(new(id, returnedCourse, scheduled, day, Text(entry, "classBeginTime"), Text(entry, "classEndTime"), Text(entry, "signStatus") == "1"));
+        }
+        var signed = OptionalInt(json, "mySignNum") ?? result.Count(x => x.Signed);
+        var unsigned = OptionalInt(json, "myNoSignNum") ?? result.Count(x => !x.Signed);
+        return new(signed, unsigned, result);
     }
     public static CourseQueryResult Week(JsonElement json, string day)
     {

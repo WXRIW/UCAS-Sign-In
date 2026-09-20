@@ -16,8 +16,9 @@ public sealed class MainViewModel
     {
         get; set;
     }
-    public string?[] Routes { get; } = new string?[3];
-    public Course?[] Details { get; } = new Course?[3];
+    public string?[] Routes { get; } = new string?[4];
+    public Course?[] Details { get; } = new Course?[4];
+    public CatalogCourse?[] CatalogDetails { get; } = new CatalogCourse?[4];
     public bool HideIdentity
     {
         get => prefs.GetBoolean("hide", false); set => prefs.Edit()!.PutBoolean("hide", value)!.Apply();

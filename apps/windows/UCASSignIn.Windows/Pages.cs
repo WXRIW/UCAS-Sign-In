@@ -12,7 +12,9 @@ public sealed partial class MainWindow
 {
     string? route;
     Course? detail;
-    readonly Dictionary<string, (string? Route, Course? Detail)> paths = [];
+    CatalogCourse? catalogDetail;
+    string courseSearch = "";
+    readonly Dictionary<string, (string? Route, Course? Detail, CatalogCourse? CatalogDetail)> paths = [];
     bool dark => Root.ActualTheme == ElementTheme.Dark;
     SolidColorBrush Brush(string hex) => new(global::Windows.UI.Color.FromArgb(255, Convert.ToByte(hex[..2], 16), Convert.ToByte(hex[2..4], 16), Convert.ToByte(hex[4..6], 16)));
     SolidColorBrush Ink => Brush(dark ? "F3F3F3" : "1A1A1A");
@@ -175,7 +177,7 @@ public sealed partial class MainWindow
         qrCancellation?.Cancel();
         ApplyTheme();
         Page.Children.Clear();
-        Page.Spacing = section == "account" || route == "settings" ? 24 : 20;
+        Page.Spacing = section == "account" || route is "settings" or "catalog-detail" ? 24 : 20;
         AccountMenuLabel.Text = AccountName;
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(AccountMenu, AccountName);
         AccountMenu.IsEnabled = Model.CanChangeAccount;
@@ -188,12 +190,13 @@ public sealed partial class MainWindow
         PageTitle.Text = route switch
         {
             "detail" => "课程签到",
+            "catalog-detail" => catalogDetail?.Name ?? "课程详情",
             "settings" => "设置",
             "records" => Model.IsDemo ? "演示签到记录" : "本机签到记录",
             "about" => "关于",
             "source" => "项目源码与致谢",
             "disclaimer" => "免责声明",
-            _ => section == "today" ? "果壳签到" : section == "schedule" ? "课表" : "账户"
+            _ => section == "today" ? "果壳签到" : section == "schedule" ? "课表" : section == "courses" ? "课程" : "账户"
         };
         Status.Message = Model.Message ?? "";
         Status.IsOpen = !string.IsNullOrWhiteSpace(Model.Message);
@@ -201,6 +204,11 @@ public sealed partial class MainWindow
         if (route == "detail" && detail is { } c)
         {
             RenderDetail(Model.Courses.FirstOrDefault(x => x.Id == c.Id && x.Day == c.Day) ?? c);
+            return;
+        }
+        if (route == "catalog-detail" && catalogDetail is { } catalogCourse)
+        {
+            RenderCatalogDetail(Model.CatalogCourses.FirstOrDefault(x => x.Id == catalogCourse.Id) ?? catalogCourse);
             return;
         }
         if (route is not null)
@@ -217,6 +225,11 @@ public sealed partial class MainWindow
         if (section == "schedule")
         {
             RenderSchedule();
+            return;
+        }
+        if (section == "courses")
+        {
+            RenderCourses();
             return;
         }
         RenderToday();
@@ -258,7 +271,7 @@ public sealed partial class MainWindow
         var featured = current is { Signed: false } ? current : next ?? current ?? courses.LastOrDefault();
         if (featured is not null)
         {
-            var sign = Button(featured.Signed ? "已完成签到" : "一键签到", () => Model.SignAsync(featured, Model.Generation), true);
+            var sign = Button(featured.Signed ? "已完成签到" : "一键签到", () => RequestManualSignAsync(featured), true);
             sign.IsEnabled = Model.CanSign(featured);
             sign.MinWidth = 132;
             sign.Height = 36;
@@ -466,15 +479,31 @@ public sealed partial class MainWindow
         Page.Children.Add(SettingsGroup("外观", SettingRow("主题", "选择应用的显示模式", "\uE790", theme)));
         var prefs = Model.Preferences;
         var reminders = new ToggleSwitch { IsOn = prefs.RemindersEnabled, OnContent = "", OffContent = "", Width = 50, MinWidth = 0, IsEnabled = Model.IsConnected && Model.CanChangeAccount };
+        var confirmation = new ToggleSwitch { IsOn = prefs.ConfirmBeforeSign, OnContent = "", OffContent = "", Width = 50, MinWidth = 0, IsEnabled = Model.IsConnected && Model.CanChangeAccount };
         var auto = new ToggleSwitch { IsOn = prefs.AutoSignEnabled, OnContent = "", OffContent = "", Width = 50, MinWidth = 0, IsEnabled = Model.IsConnected && Model.CanChangeAccount };
-        reminders.Toggled += async (_, _) => await Run(() => Model.SetPreferencesAsync(auto.IsOn, reminders.IsOn));
-        auto.Toggled += async (_, _) => await Run(() => Model.SetPreferencesAsync(auto.IsOn, reminders.IsOn));
+        reminders.Toggled += async (_, _) => await Run(() => Model.SetPreferencesAsync(auto.IsOn, reminders.IsOn, confirmation.IsOn, prefs.ReminderLeadMinutes));
+        confirmation.Toggled += async (_, _) => await Run(() => Model.SetPreferencesAsync(auto.IsOn, reminders.IsOn, confirmation.IsOn, prefs.ReminderLeadMinutes));
+        auto.Toggled += async (_, _) => await Run(() => Model.SetPreferencesAsync(auto.IsOn, reminders.IsOn, confirmation.IsOn, prefs.ReminderLeadMinutes));
         var preferences = SettingsGroup("课堂偏好",
-            SettingRow("课程提醒", "已同步课程将在开课前 10 分钟提醒", "\uE787", reminders),
-            SettingRow("自动签到", "果壳签到运行时，进入签到时段后尝试一次", "\uE73E", auto));
+            SettingRow("课程提醒", "按全局默认值安排本机通知", "\uE787", reminders));
+        var preferenceCards = (StackPanel)preferences.Children[1];
+        if (prefs.RemindersEnabled)
+        {
+            var lead = new ComboBox { ItemsSource = new[] { "5 分钟", "10 分钟", "15 分钟", "30 分钟" }, MinWidth = 160,
+                SelectedIndex = prefs.ReminderLeadMinutes switch { 5 => 0, 15 => 2, 30 => 3, _ => 1 } };
+            lead.SelectionChanged += async (_, _) =>
+            {
+                var minutes = new[] { 5, 10, 15, 30 }[Math.Max(0, lead.SelectedIndex)];
+                if (minutes != prefs.ReminderLeadMinutes) await Run(() => Model.SetPreferencesAsync(auto.IsOn, reminders.IsOn, confirmation.IsOn, minutes));
+            };
+            preferenceCards.Children.Add(SettingRow("提醒时间", "课程可单独覆盖此默认值", "\uE823", lead));
+        }
+        preferenceCards.Children.Add(SettingRow("手动签到二次确认", "提交前再次核对课程、日期和时间", "\uE9D5", confirmation));
+        preferenceCards.Children.Add(SettingRow("自动签到", "果壳签到运行时，进入签到时段后尝试一次", "\uE73E", auto));
         preferences.Children.Add(SettingsNote("窗口可最小化，也可切换到其他应用；退出果壳签到或设备睡眠时会暂停。签到结果以学校返回状态为准。"));
         Page.Children.Add(preferences);
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(reminders, "课程提醒");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(confirmation, "手动签到二次确认");
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(auto, "自动签到");
         var notifications = Button("系统通知设置", async () => { await Launcher.LaunchUriAsync(new("ms-settings:notifications")); });
         notifications.IsEnabled = true;
@@ -542,6 +571,7 @@ public sealed partial class MainWindow
     {
         route = route == "source" ? "about" : null;
         detail = null;
+        catalogDetail = null;
         Render(NavigationMotion.Back);
     }
     async void PickDate(CalendarDatePicker sender, CalendarDatePickerDateChangedEventArgs e)
@@ -554,6 +584,11 @@ public sealed partial class MainWindow
     {
         detail = course;
         return Navigate("detail");
+    }
+    Task CatalogDetail(CatalogCourse course)
+    {
+        catalogDetail = course;
+        return Navigate("catalog-detail");
     }
     Task Records() => Navigate("records");
     Task About() => Navigate("about");

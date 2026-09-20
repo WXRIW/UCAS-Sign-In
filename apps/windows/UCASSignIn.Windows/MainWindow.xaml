@@ -18,6 +18,7 @@
       <NavigationView.MenuItems>
         <NavigationViewItem Content="今日" Tag="today" Icon="Home" />
         <NavigationViewItem Content="课表" Tag="schedule" Icon="Calendar" />
+        <NavigationViewItem Content="课程" Tag="courses" Icon="Library" />
         <NavigationViewItem Content="账户" Tag="account" Icon="Contact" />
       </NavigationView.MenuItems>
       <Grid x:Name="ContentSurface" RowSpacing="0" SizeChanged="ContentSizeChanged"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>

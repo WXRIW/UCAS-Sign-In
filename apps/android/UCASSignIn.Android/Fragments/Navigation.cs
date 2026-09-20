@@ -51,7 +51,15 @@ public sealed partial class MainPageFragment
         pull.AddView(scroller);
         pull.Refresh += async (_, _) =>
         {
-            try { await Host.Run(() => Model.RefreshAsync(Host.Vm.Page == 0 ? UCASSignIn.Core.CourseTime.Today() : Model.SelectedDate)); }
+            try
+            {
+                if (Host.Vm.Page == 2 && route == "catalog-detail" && CurrentCatalogDetail is { } course)
+                    await Host.Run(() => Model.RefreshAttendanceAsync(course.Id, true));
+                else if (Host.Vm.Page == 2)
+                    await Host.Run(() => Model.RefreshCatalogAsync(true));
+                else
+                    await Host.Run(() => Model.RefreshAsync(Host.Vm.Page == 0 ? UCASSignIn.Core.CourseTime.Today() : Model.SelectedDate));
+            }
             finally { pull.Refreshing = false; }
         };
         var root = new LinearLayout(Ui) { Orientation = global::Android.Widget.Orientation.Vertical };
@@ -107,6 +115,8 @@ public sealed partial class MainPageFragment
         if (sceneHost is not null) TransitionManager.EndTransitions(sceneHost);
         sceneHost?.RemoveAllViews();
         scenes.Clear();
+        coursePageBody = null;
+        updateCoursePage = null;
         activeScene = previewScene = null;
         backSeek = null;
         backPreview = false;
@@ -180,6 +190,7 @@ public sealed partial class MainPageFragment
         if (!backPreview || previewScene is null) { Back(); return; }
         Route = previewScene.Route;
         CurrentDetail = null;
+        CurrentCatalogDetail = null;
         Host.DetailCourseId = Host.DetailCourseDay = null;
         UseScene(previewScene);
         backSeek?.AnimateToEnd();
@@ -197,12 +208,13 @@ public sealed partial class MainPageFragment
     {
         if (scene.Route is not null) return;
         var collapsed = Landscape || scene.Scroll.ScrollY > D(48);
-        scene.Toolbar.Title = collapsed ? new[] { "果壳签到", "课表", "账户" }[scene.Tab] : "";
+        scene.Toolbar.Title = collapsed ? new[] { "果壳签到", "课表", "课程", "账户" }[scene.Tab] : "";
         scene.Brand.Visibility = !collapsed && scene.Tab == 0 ? ViewStates.Visible : ViewStates.Gone;
     }
     string? PageTitle(string? route) => route switch
     {
         "detail" => "课程签到",
+        "catalog-detail" => CurrentCatalogDetail?.Name ?? "课程详情",
         "settings" => "设置",
         "records" => Model.IsDemo ? "演示签到记录" : "本机签到记录",
         "about" => "关于",

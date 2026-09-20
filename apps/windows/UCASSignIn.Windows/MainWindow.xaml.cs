@@ -37,6 +37,7 @@ public sealed partial class MainWindow : Window
                 paths.Clear();
                 route = null;
                 detail = null;
+                catalogDetail = null;
                 qrCancellation?.Cancel();
                 renderedGeneration = Model.Generation;
             }
@@ -44,7 +45,16 @@ public sealed partial class MainWindow : Window
             ShowPendingSignInError();
         };
         renderedGeneration = Model.Generation;
-        Activated += (_, e) => { Model.IsForeground = e.WindowActivationState != WindowActivationState.Deactivated; if (Model.IsForeground) { ShowPendingSignInError(); _ = Run(Tick); } };
+        Activated += (_, e) =>
+        {
+            Model.IsForeground = e.WindowActivationState != WindowActivationState.Deactivated;
+            if (Model.IsForeground)
+            {
+                ShowPendingSignInError(); _ = Run(Tick);
+                if (section == "courses" && route == "catalog-detail" && catalogDetail is { } course) _ = Run(() => Model.RefreshAttendanceAsync(course.Id));
+                else if (section == "courses") _ = Run(() => Model.RefreshCatalogAsync());
+            }
+        };
         Closed += (_, _) => { closed = true; Model.IsForeground = false; timer.Stop(); qrCancellation?.Cancel(); activeDialog?.Hide(); };
         Root.ActualThemeChanged += (_, _) => Render();
         timer.Tick += async (_, _) => await Run(Tick);
@@ -52,6 +62,7 @@ public sealed partial class MainWindow : Window
         AddKey(VirtualKey.Number1, () => Select(0));
         AddKey(VirtualKey.Number2, () => Select(1));
         AddKey(VirtualKey.Number3, () => Select(2));
+        AddKey(VirtualKey.Number4, () => Select(3));
         var browserBack = new KeyboardAccelerator { Key = VirtualKey.GoBack };
         browserBack.Invoked += (_, args) => args.Handled = TryMouseBack();
         Root.KeyboardAccelerators.Add(browserBack);
@@ -112,9 +123,9 @@ public sealed partial class MainWindow : Window
     }
     void NavigationChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
     {
-        paths[section] = (route, detail);
+        paths[section] = (route, detail, catalogDetail);
         section = (args.SelectedItem as NavigationViewItem)?.Tag?.ToString() ?? "today";
-        (route, detail) = paths.GetValueOrDefault(section);
+        (route, detail, catalogDetail) = paths.GetValueOrDefault(section);
         qrCancellation?.Cancel();
         if (PageFrame is not null)
             Render();

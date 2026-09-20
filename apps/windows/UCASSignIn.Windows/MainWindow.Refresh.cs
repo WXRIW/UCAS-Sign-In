@@ -15,9 +15,9 @@ public sealed partial class MainWindow
     {
         if (RefreshButton is null) return;
         var date = RefreshDate;
-        var visible = section is "today" or "schedule";
-        var refreshing = Model.IsLoadingCourses(date) || requestedRefreshes.Contains((Model.Generation, section, date));
-        var title = section == "schedule" ? "刷新课表" : "刷新课程";
+        var visible = section is "today" or "schedule" || section == "courses" && route is null;
+        var refreshing = section == "courses" ? Model.IsCatalogRefreshing : Model.IsLoadingCourses(date) || requestedRefreshes.Contains((Model.Generation, section, date));
+        var title = section == "schedule" ? "刷新课表" : section == "courses" ? "刷新课程目录" : "刷新课程";
         RefreshButton.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
         RefreshButton.IsEnabled = Model.IsConnected && !refreshing;
         RefreshIcon.Visibility = refreshing ? Visibility.Collapsed : Visibility.Visible;
@@ -32,6 +32,14 @@ public sealed partial class MainWindow
     async Task RefreshCurrentCoursesAsync()
     {
         var model = Model;
+        if (section == "courses")
+        {
+            if (route == "catalog-detail" && catalogDetail is { } course)
+                await model.RefreshAttendanceAsync(course.Id, true);
+            else if (route is null)
+                await model.RefreshCatalogAsync(true);
+            return;
+        }
         var date = RefreshDate;
         var request = (model.Generation, section, date);
         if (!model.IsConnected || dialogOpen || model.IsLoadingCourses(date) || !requestedRefreshes.Add(request)) return;

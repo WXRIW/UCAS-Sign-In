@@ -21,7 +21,8 @@ public sealed class AndroidAutoSignService : Service
 
     public static void Sync(Context context, AccountCoordinator model)
     {
-        if (!model.IsDemo && model.ActiveAccount?.Preferences.AutoSignEnabled == true)
+        if (!model.IsDemo && model.ActiveAccount is not null && model.NeedsAutoSignService
+            && NotificationManagerCompat.From(context)!.AreNotificationsEnabled())
         {
             if (Volatile.Read(ref running) == 0)
                 Start(context);
@@ -45,7 +46,9 @@ public sealed class AndroidAutoSignService : Service
         {
             var path = Path.Combine(context.FilesDir!.AbsolutePath, "accounts.dat");
             var vault = await new AndroidAccountStore(path).LoadAsync();
-            if (vault.Accounts.FirstOrDefault(account => account.Id == vault.ActiveAccountId)?.Preferences.AutoSignEnabled == true)
+            if (vault.Accounts.FirstOrDefault(account => account.Id == vault.ActiveAccountId)?.Preferences is { } preferences
+                && NotificationManagerCompat.From(context)!.AreNotificationsEnabled()
+                && (preferences.AutoSignEnabled || preferences.Courses.Any(x => !x.Value.SignInDisabled && x.Value.AutoSign == PreferenceOverride.Enabled)))
                 Start(context);
         }
         catch
@@ -82,7 +85,7 @@ public sealed class AndroidAutoSignService : Service
             await model.InitializeAsync();
             while (!cancellationToken.IsCancellationRequested)
             {
-                if (model.IsDemo || model.ActiveAccount?.Preferences.AutoSignEnabled != true)
+                if (model.IsDemo || model.ActiveAccount is null || !model.NeedsAutoSignService)
                 {
                     StopSelf();
                     return;
@@ -116,6 +119,7 @@ public sealed class AndroidAutoSignService : Service
         var now = DateTimeOffset.UtcNow;
         var today = CourseTime.DayKey(CourseTime.Today());
         var courses = model.Courses.Where(course => course.Day == today && !course.Signed
+            && model.EffectiveAutoSign(course.CourseId)
             && course.Start is not null && course.End is not null).ToList();
         if (courses.Any(course => now >= course.Start!.Value.AddMinutes(-30) && now < course.End!.Value.AddMinutes(5)))
             return TimeSpan.FromSeconds(30);

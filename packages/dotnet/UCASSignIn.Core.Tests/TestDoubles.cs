@@ -49,10 +49,13 @@ public sealed class MemoryAccounts : IAccountStore
         return Task.CompletedTask;
     }
 }
-public sealed class MemoryData : ICourseStore, IRecordStore
+public sealed class MemoryData : ICourseStore, IRecordStore, ICourseCatalogStore
 {
     public Dictionary<string, CourseCache> Cache = [];
     public Dictionary<string, List<AttendanceRecord>> Records = [];
+    public Dictionary<string, SemesterCache> Semesters = [];
+    public Dictionary<string, CourseCatalogCache> Catalogs = [];
+    public Dictionary<string, CourseAttendanceCache> Attendance = [];
     public Func<string, string, Task<CourseCache?>>? LoadCourses;
     public Task<CourseCache?> LoadAsync(string accountId, string day, CancellationToken ct = default) => LoadCourses?.Invoke(accountId, day) ?? Task.FromResult(Cache.GetValueOrDefault(accountId + "|" + day));
     public Task SaveAsync(string accountId, string day, CourseCache cache, CancellationToken ct = default)
@@ -74,13 +77,30 @@ public sealed class MemoryData : ICourseStore, IRecordStore
         Records.Remove(accountId);
         return Task.CompletedTask;
     }
+    public Task<SemesterCache?> LoadSemestersAsync(string accountId, CancellationToken ct = default) => Task.FromResult(Semesters.GetValueOrDefault(accountId));
+    public Task SaveSemestersAsync(string accountId, SemesterCache cache, CancellationToken ct = default) { Semesters[accountId] = cache; return Task.CompletedTask; }
+    public Task<CourseCatalogCache?> LoadCatalogAsync(string accountId, string semesterId, CancellationToken ct = default) => Task.FromResult(Catalogs.GetValueOrDefault(accountId + "|" + semesterId));
+    public Task SaveCatalogAsync(string accountId, string semesterId, CourseCatalogCache cache, CancellationToken ct = default) { Catalogs[accountId + "|" + semesterId] = cache; return Task.CompletedTask; }
+    public Task<CourseAttendanceCache?> LoadAttendanceAsync(string accountId, string semesterId, string courseId, CancellationToken ct = default) => Task.FromResult(Attendance.GetValueOrDefault(accountId + "|" + semesterId + "|" + courseId));
+    public Task SaveAttendanceAsync(string accountId, string semesterId, string courseId, CourseAttendanceCache cache, CancellationToken ct = default) { Attendance[accountId + "|" + semesterId + "|" + courseId] = cache; return Task.CompletedTask; }
+    public Task RemoveCatalogAsync(string accountId, CancellationToken ct = default)
+    {
+        Semesters.Remove(accountId);
+        foreach (var key in Catalogs.Keys.Where(x => x.StartsWith(accountId + "|")).ToArray()) Catalogs.Remove(key);
+        foreach (var key in Attendance.Keys.Where(x => x.StartsWith(accountId + "|")).ToArray()) Attendance.Remove(key);
+        return Task.CompletedTask;
+    }
 }
 public sealed class FakeSchool : ISchoolClient
 {
     public Func<string, Task<SchoolSession>> Login = id => Task.FromResult(TestData.Session(id));
     public Func<SchoolSession, DateOnly, Task<CourseQueryResult>> Query = (_, date) => Task.FromResult(new CourseQueryResult([TestData.Course() with { Day = CourseTime.DayKey(date) }], "同步成功"));
     public Func<Task<SignResult>> Sign = () => Task.FromResult(new SignResult(SignOutcome.Signed, "成功"));
-    public int Logins, Reads, Signs, ClockReads;
+    public Func<Task> BeforeSignAuthorization = () => Task.CompletedTask;
+    public Func<Task<IReadOnlyList<SchoolSemester>>> SemesterQuery = () => Task.FromResult<IReadOnlyList<SchoolSemester>>([new("2026", "2026 秋季", "20260901", "20270131", true)]);
+    public Func<string, Task<IReadOnlyList<CatalogCourse>>> CatalogQuery = semester => Task.FromResult<IReadOnlyList<CatalogCourse>>([new("course-1", "CS001", "示例课程", "示例教师", null, semester, "20260901", "20270131")]);
+    public Func<string, Task<CourseAttendanceSummary>> AttendanceQuery = course => Task.FromResult(new CourseAttendanceSummary(0, 0, []));
+    public int Logins, Reads, Signs, ClockReads, SemesterReads, CatalogReads, AttendanceReads;
     public Task<SchoolSession> LoginAsync(string username, string password, CancellationToken ct = default)
     {
         Logins++;
@@ -91,10 +111,15 @@ public sealed class FakeSchool : ISchoolClient
         Reads++;
         return Query(session, date);
     }
-    public Task<SignResult> SignAsync(Course course, SchoolSession session, CancellationToken ct = default)
+    public Task<IReadOnlyList<SchoolSemester>> SemestersAsync(SchoolSession session, CancellationToken ct = default) { SemesterReads++; return SemesterQuery(); }
+    public Task<IReadOnlyList<CatalogCourse>> CatalogCoursesAsync(SchoolSession session, string semesterId, CancellationToken ct = default) { CatalogReads++; return CatalogQuery(semesterId); }
+    public Task<CourseAttendanceSummary> CourseAttendanceAsync(SchoolSession session, string courseId, CancellationToken ct = default) { AttendanceReads++; return AttendanceQuery(courseId); }
+    public async Task<SignResult> SignAsync(Course course, SchoolSession session, CancellationToken ct = default, Func<bool>? authorize = null)
     {
+        await BeforeSignAuthorization();
+        if (authorize is not null && !authorize()) throw new OperationCanceledException();
         Signs++;
-        return Sign();
+        return await Sign();
     }
     public Task<QrSnapshot> QrAsync(Course course, CancellationToken ct = default) => throw new NotImplementedException();
     public Task<DateTimeOffset> SchoolNowAsync(CancellationToken ct = default)

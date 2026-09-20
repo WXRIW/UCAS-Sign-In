@@ -19,6 +19,8 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
     LinearLayout? body;
     ScrollView? scroll;
     AndroidX.SwipeRefreshLayout.Widget.SwipeRefreshLayout? refresh;
+    LinearLayout? coursePageBody;
+    Action? updateCoursePage;
     CancellationTokenSource? qrCancellation;
     string? Route
     {
@@ -28,6 +30,11 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
     {
         get => Host.Vm.Details[Host.Vm.Page]; set => Host.Vm.Details[Host.Vm.Page] = value;
     }
+    CatalogCourse? CurrentCatalogDetail
+    {
+        get => Host.Vm.CatalogDetails[Host.Vm.Page]; set => Host.Vm.CatalogDetails[Host.Vm.Page] = value;
+    }
+    string courseSearch = "";
     bool Dark => (Resources!.Configuration!.UiMode & UiMode.NightMask) == UiMode.NightYes;
     Color Ink => C(Dark ? "EDF3ED" : "1C342B");
     Color Secondary => C(Dark ? "A0ADA4" : "7B8780");
@@ -169,13 +176,25 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
     void RenderContent()
     {
         var y = scroll!.ScrollY;
+        if (Host.Vm.Page == 2 && Route is null && ReferenceEquals(coursePageBody, body) && updateCoursePage is not null)
+        {
+            updateCoursePage();
+            var existingScroll = scroll;
+            existingScroll.Post(() => existingScroll.ScrollTo(0, y));
+            return;
+        }
         body!.RemoveAllViews();
         scroll!.SetBackgroundColor(C(Dark ? "111A16" : "F6F7F2"));
         if (refresh is not null)
-            refresh.Enabled = Route is null && Host.Vm.Page < 2 && Model.IsConnected;
+            refresh.Enabled = (Route is null && Host.Vm.Page < 3 || Route == "catalog-detail") && Host.Vm.Page != 3 && Model.IsConnected;
         if (Route == "detail" && CurrentDetail is { } d)
         {
             RenderDetail(Model.Courses.FirstOrDefault(c => c.Id == d.Id && c.Day == d.Day) ?? d);
+            return;
+        }
+        if (Route == "catalog-detail" && CurrentCatalogDetail is { } catalog)
+        {
+            RenderCatalogDetail(Model.CatalogCourses.FirstOrDefault(c => c.Id == catalog.Id) ?? catalog);
             return;
         }
         if (Route is not null)
@@ -184,11 +203,13 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
             else InformationPage();
             return;
         }
-        if (!Landscape) Add(Text(new[] { "果壳签到", "课表", "账户" }[Host.Vm.Page], 32, true), 22);
-        if (Host.Vm.Page == 2 && !string.IsNullOrWhiteSpace(Model.Message))
+        if (!Landscape) Add(Text(new[] { "果壳签到", "课表", "课程", "账户" }[Host.Vm.Page], 32, true), 22);
+        if (Host.Vm.Page == 3 && !string.IsNullOrWhiteSpace(Model.Message))
             Add(Text(Model.Message!, 12, color: Secondary), 12);
-        if (Host.Vm.Page == 2)
+        if (Host.Vm.Page == 3)
             Account();
+        else if (Host.Vm.Page == 2)
+            CoursesPage();
         else if (Host.Vm.Page == 1)
             Schedule();
         else
@@ -263,7 +284,7 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
         var featured = current is { Signed: false } ? current : next ?? current ?? courses.LastOrDefault();
         if (featured is not null)
         {
-            var sign = Button(featured.Signed ? "✓  已完成签到" : "✓  一键签到", () => Model.SignAsync(featured, Model.Generation), true);
+            var sign = Button(featured.Signed ? "✓  已完成签到" : "✓  一键签到", () => RequestManualSignAsync(featured), true);
             sign.Enabled = Model.CanSign(featured);
             var signForeground = EnabledColors(C("1F4736"), Color.Argb(97, 255, 255, 255));
             sign.BackgroundTintList = EnabledColors(C("C9E69C"), Color.Argb(31, 255, 255, 255));
@@ -532,16 +553,41 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
     }
     void SettingsPage()
     {
-        var appearance = Tap(Across(Text("主题", 14), Text(Host.Vm.Theme == "system" ? "跟随系统  ›" : Host.Vm.Theme == "dark" ? "深色  ›" : "浅色  ›", 13, color: Secondary)), () => { Appearance(); return Task.CompletedTask; }, "主题");
-        appearance.SetMinimumHeight(D(48));
-        Add(Card(Column(Text("外观", 20, true), appearance)));
+        var appearance = Tap(Across(
+            SettingLabel(Resource.Drawable.ic_sun_horizon, "主题", "选择应用的显示模式"),
+            Text(Host.Vm.Theme == "system" ? "跟随系统  ›" : Host.Vm.Theme == "dark" ? "深色  ›" : "浅色  ›", 13, color: Secondary)),
+            () => { Appearance(); return Task.CompletedTask; }, "主题");
+        appearance.SetPadding(0, D(8), 0, D(8));
+        Add(MaterialSettingsSection("外观", appearance));
         var prefs = Model.Preferences;
         var remind = new MaterialSwitch(Ui) { Checked = prefs.RemindersEnabled, Enabled = Model.IsConnected && Model.CanChangeAccount, ContentDescription = "课程提醒" };
+        var confirmation = new MaterialSwitch(Ui) { Checked = prefs.ConfirmBeforeSign, Enabled = Model.IsConnected && Model.CanChangeAccount, ContentDescription = "手动签到二次确认" };
         var auto = new MaterialSwitch(Ui) { Checked = prefs.AutoSignEnabled, Enabled = Model.IsConnected && Model.CanChangeAccount, ContentDescription = "后台自动签到" };
-        remind.CheckedChange += async (_, _) => await Host.Run(() => Host.SetClassroomPreferences(auto.Checked, remind.Checked));
-        auto.CheckedChange += async (_, _) => await Host.Run(() => Host.SetClassroomPreferences(auto.Checked, remind.Checked));
-        Add(Card(Column(Text("课堂偏好", 20, true), Across(SettingLabel(Resource.Drawable.ic_bell, "课程提醒", "已同步课程将在开课前 10 分钟提醒"), remind), Rule(), Across(SettingLabel(Resource.Drawable.ic_check_circle, "后台自动签到", "无需保持 App 前台，进入签到时段后尝试一次"), auto), Text("开启后会显示常驻状态通知；系统省电、自启动限制或强行停止 App 仍可能使任务延迟或中断。签到结果以学校返回状态为准。", 11, color: Secondary))));
-        Add(Card(Column(Text("通知", 20, true), Button("系统通知设置", OpenNotificationSettings))));
+        remind.CheckedChange += async (_, _) => await Host.Run(() => Host.SetClassroomPreferences(auto.Checked, remind.Checked, confirmation.Checked, prefs.ReminderLeadMinutes));
+        confirmation.CheckedChange += async (_, _) => await Host.Run(() => Host.SetClassroomPreferences(auto.Checked, remind.Checked, confirmation.Checked, prefs.ReminderLeadMinutes));
+        auto.CheckedChange += async (_, _) => await Host.Run(() => Host.SetClassroomPreferences(auto.Checked, remind.Checked, confirmation.Checked, prefs.ReminderLeadMinutes));
+        var classroom = Column(Across(SettingLabel(Resource.Drawable.ic_bell, "课程提醒", "按全局默认值安排本机通知"), remind));
+        if (prefs.RemindersEnabled)
+        {
+            classroom.AddView(SettingsRule());
+            var lead = Tap(Across(
+                SettingLabel(Resource.Drawable.ic_clock, "提醒时间", "课程可单独覆盖此默认值"),
+                Text($"{prefs.ReminderLeadMinutes} 分钟  ›", 13, color: Secondary)),
+                () =>
+                {
+                    ReminderLeadTime(prefs.ReminderLeadMinutes, false, prefs.ReminderLeadMinutes,
+                        selected => Host.SetClassroomPreferences(auto.Checked, remind.Checked, confirmation.Checked, selected));
+                    return Task.CompletedTask;
+                }, "提醒时间");
+            classroom.AddView(lead);
+        }
+        classroom.AddView(SettingsRule());
+        classroom.AddView(Across(SettingLabel(Resource.Drawable.ic_check_circle, "手动签到二次确认", "提交前再次核对课程、日期和时间"), confirmation));
+        classroom.AddView(SettingsRule());
+        classroom.AddView(Across(SettingLabel(Resource.Drawable.ic_check, "后台自动签到", "无需保持 App 前台，进入签到时段后尝试一次"), auto));
+        Add(MaterialSettingsSection("课堂偏好", classroom,
+            "开启后会显示常驻状态通知；系统省电、自启动限制或强行停止 App 仍可能使任务延迟或中断。签到结果以学校返回状态为准。"));
+        Add(MaterialSettingsSection("通知", Button("系统通知设置", OpenNotificationSettings)));
         var automaticUpdates = new MaterialSwitch(Ui)
         {
             Checked = Host.Vm.AutoCheckUpdates,
@@ -553,11 +599,13 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
             Icon(Resource.Drawable.ic_chevron_right, 11, Secondary)),
             () => CheckForUpdates(true), "检查更新");
         manualUpdate.SetPadding(0, D(12), 0, D(12));
-        Add(Card(Column(Text("更新", 20, true),
+        Add(MaterialSettingsSection("更新", Column(
             Across(SettingLabel(Resource.Drawable.ic_notification, "自动检查更新", "每天最多检查一次，有新版本时提醒"), automaticUpdates),
-            Rule(), manualUpdate,
-            Text("从 GitHub 检查最新的正式版本。", 11, color: Secondary))));
-        ArrangeColumns(i => i != 1 && i != 3);
+            SettingsRule(), manualUpdate),
+            "从 GitHub 检查最新的正式版本。"));
+        // Landscape: keep the long classroom section in one column and stack the
+        // shorter app-level sections in portrait order in the equally wide column.
+        ArrangeColumns(i => i == 1, .5f);
     }
     Task OpenNotificationSettings()
     {
@@ -588,6 +636,7 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
             return false;
         Route = Route == "source" ? "about" : null;
         CurrentDetail = null;
+        CurrentCatalogDetail = null;
         Host.DetailCourseId = null;
         Host.DetailCourseDay = null;
         Render();
@@ -600,6 +649,11 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
         Host.DetailCourseDay = course.Day;
         _ = Navigate("detail");
     }
+    public void CatalogDetail(CatalogCourse course)
+    {
+        CurrentCatalogDetail = course;
+        _ = Navigate("catalog-detail");
+    }
     public void ToolbarAction(int id)
     {
         if (id == 10)
@@ -607,6 +661,6 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
         else if (id == 11)
             _ = Host.Run(PickDate);
         else
-            _ = Host.Run(() => Model.RefreshAsync(Host.Vm.Page == 1 ? Model.SelectedDate : CourseTime.Today()));
+            _ = Host.Run(() => Host.Vm.Page == 2 ? Model.RefreshCatalogAsync(true) : Model.RefreshAsync(Host.Vm.Page == 1 ? Model.SelectedDate : CourseTime.Today()));
     }
 }

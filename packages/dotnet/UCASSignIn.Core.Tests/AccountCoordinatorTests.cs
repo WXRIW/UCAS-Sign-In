@@ -521,13 +521,13 @@ public sealed class AccountCoordinatorTests
         Assert.Equal(0, school.Reads);
     }
     [Fact]
-    public async Task DeniedNotificationPermissionDoesNotEnableReminderPreference()
+    public async Task DeniedNotificationPermissionStillSavesReminderPreference()
     {
         var h = new Harness();
         await h.Model.InitializeAsync();
         h.Reminders.Permission = () => Task.FromResult(false);
         await h.Model.SetPreferencesAsync(false, true);
-        Assert.False(h.Model.Preferences.RemindersEnabled);
+        Assert.True(h.Model.Preferences.RemindersEnabled);
         Assert.Empty(h.Reminders.Scheduled);
         Assert.Contains("通知权限", h.Model.Message);
     }

@@ -23,7 +23,7 @@ public sealed partial class MainWindow
         rendering = true;
         try
         {
-            var destination = (section, route, route == "detail" ? detail?.Id : null,
+            var destination = (section, route, route == "detail" ? detail?.Id : route == "catalog-detail" ? catalogDetail?.Id : null,
                 route == "detail" ? detail?.Day : null, Model.Generation);
             if (displayedPage == destination)
             {

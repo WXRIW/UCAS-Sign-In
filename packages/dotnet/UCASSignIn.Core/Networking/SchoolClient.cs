@@ -46,11 +46,31 @@ public sealed class SchoolClient : ISchoolClient, IDisposable
         }
         return ResponseParser.Week(await ExecuteAsync("course/get_stu_course_sched_week.action", session, fields, ct: ct), day);
     }
-    public async Task<SignResult> SignAsync(Course course, SchoolSession session, CancellationToken ct = default)
+    public async Task<IReadOnlyList<SchoolSemester>> SemestersAsync(SchoolSession session, CancellationToken ct = default)
+        => ResponseParser.Semesters(await ExecuteAsync("course/get_base_school_year.action", session, new()
+        {
+            ["userId"] = session.UserId,
+            ["type"] = "2"
+        }, ct: ct));
+    public async Task<IReadOnlyList<CatalogCourse>> CatalogCoursesAsync(SchoolSession session, string semesterId, CancellationToken ct = default)
+        => ResponseParser.CatalogCourses(await ExecuteAsync("choosecourse/get_myall_course.action", session, new()
+        {
+            ["id"] = session.UserId,
+            ["xq_code"] = semesterId
+        }, new() { ["user_type"] = "1" }, ct: ct), semesterId);
+    public async Task<CourseAttendanceSummary> CourseAttendanceAsync(SchoolSession session, string courseId, CancellationToken ct = default)
+        => ResponseParser.CourseAttendance(await ExecuteAsync("my/get_my_course_sign_detail.action", session, new()
+        {
+            ["id"] = session.UserId,
+            ["courseId"] = courseId
+        }, ct: ct), courseId);
+    public async Task<SignResult> SignAsync(Course course, SchoolSession session, CancellationToken ct = default, Func<bool>? authorize = null)
     {
         if (!Regex.IsMatch(course.Id, "^[0-9]{7}$"))
             throw new SchoolException("COURSE_ID_INVALID", "课程缺少有效的 7 位签到 ID，请刷新课表");
         var reading = await ReadingAsync(ct);
+        if (authorize is not null && !authorize())
+            throw new OperationCanceledException("签到设置已改变，未向学校提交", ct);
         var json = await ExecuteAsync("course/stu_scan_sign.action", session, query: new()
         {
             ["courseSchedId"] = course.Id,

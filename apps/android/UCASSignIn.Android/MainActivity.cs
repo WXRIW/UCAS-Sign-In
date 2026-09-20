@@ -88,7 +88,8 @@ public sealed class MainActivity : AppCompatActivity
         if (navigation is BottomNavigationView bottomBar) bottomBar.ItemHorizontalTranslationEnabled = false;
         navigation.Menu!.Add(0, 1, 0, "今日")!.SetIcon(Resource.Drawable.ic_today);
         navigation.Menu.Add(0, 2, 1, "课表")!.SetIcon(Resource.Drawable.ic_calendar);
-        navigation.Menu.Add(0, 3, 2, "账户")!.SetIcon(Resource.Drawable.ic_account);
+        navigation.Menu.Add(0, 3, 2, "课程")!.SetIcon(Resource.Drawable.ic_book);
+        navigation.Menu.Add(0, 4, 3, "账户")!.SetIcon(Resource.Drawable.ic_account);
         navigation.SelectedItemId = Vm.Page + 1;
         navigationListener = new NavigationListener(id => { Vm.Page = id - 1; ShowPage(); });
         navigation.SetOnItemSelectedListener(navigationListener);
@@ -163,11 +164,13 @@ public sealed class MainActivity : AppCompatActivity
                 await Model.SelectDateAsync(CourseTime.Date(selected));
             if (savedInstanceState is not null && savedInstanceState.GetString("accountState") == (Model.IsDemo ? "demo" : Model.ActiveAccount?.Id))
             {
-                for (var index = 0; index < 3; index++)
+                for (var index = 0; index < 4; index++)
                 {
                     Vm.Routes[index] = savedInstanceState.GetString("route" + index);
                     var json = savedInstanceState.GetString("detail" + index);
                     Vm.Details[index] = json is null ? null : System.Text.Json.JsonSerializer.Deserialize<Course>(json);
+                    var catalogJson = savedInstanceState.GetString("catalogDetail" + index);
+                    Vm.CatalogDetails[index] = catalogJson is null ? null : System.Text.Json.JsonSerializer.Deserialize<CatalogCourse>(catalogJson);
                 }
                 page?.Render();
             }
@@ -205,6 +208,7 @@ public sealed class MainActivity : AppCompatActivity
                     ActiveDialog?.Dismiss();
                 Array.Clear(Vm.Routes);
                 Array.Clear(Vm.Details);
+                Array.Clear(Vm.CatalogDetails);
                 DetailCourseId = null;
                 DetailCourseDay = null;
                 renderedGeneration = Model.Generation;
@@ -309,15 +313,12 @@ public sealed class MainActivity : AppCompatActivity
         catch (OperationCanceledException) { }
         catch (Exception e) { Model.SetMessage(e.Message); }
     }
-    public async Task SetClassroomPreferences(bool autoSign, bool reminders)
+    public async Task SetClassroomPreferences(bool autoSign, bool reminders, bool? confirmation = null, int? reminderLeadMinutes = null)
     {
-        if (autoSign && !Model.Preferences.AutoSignEnabled && !await RequestNotificationPermission())
-        {
-            Model.SetMessage("通知权限未开启，无法显示后台自动签到状态与结果");
-            return;
-        }
-        await Model.SetPreferencesAsync(autoSign, reminders);
-        AndroidAutoSignService.Sync(UiContext, Model);
+        var permissionGranted = !autoSign || Model.Preferences.AutoSignEnabled || await RequestNotificationPermission();
+        await Model.SetPreferencesAsync(autoSign, reminders, confirmation, reminderLeadMinutes);
+        if (permissionGranted) AndroidAutoSignService.Sync(UiContext, Model);
+        else Model.SetMessage("偏好已保存；通知权限未开启，后台自动签到暂不能运行");
     }
     protected override void OnResume()
     {
@@ -327,6 +328,10 @@ public sealed class MainActivity : AppCompatActivity
         foreground?.Cancel();
         foreground = new();
         _ = Ticks(foreground.Token);
+        if (ready && Vm.Page == 2 && Vm.Routes[2] == "catalog-detail" && Vm.CatalogDetails[2] is { } course)
+            _ = Run(() => Model.RefreshAttendanceAsync(course.Id));
+        else if (ready && Vm.Page == 2)
+            _ = Run(() => Model.RefreshCatalogAsync());
     }
     async Task Ticks(CancellationToken ct)
     {
@@ -353,10 +358,11 @@ public sealed class MainActivity : AppCompatActivity
         outState.PutInt("page", Vm.Page);
         outState.PutBoolean("demoState", Model.IsDemo);
         outState.PutString("accountState", Model.IsDemo ? "demo" : Model.ActiveAccount?.Id);
-        for (var index = 0; index < 3; index++)
+        for (var index = 0; index < 4; index++)
         {
             outState.PutString("route" + index, Vm.Routes[index]);
             outState.PutString("detail" + index, Vm.Details[index] is { } course ? System.Text.Json.JsonSerializer.Serialize(course) : null);
+            outState.PutString("catalogDetail" + index, Vm.CatalogDetails[index] is { } catalog ? System.Text.Json.JsonSerializer.Serialize(catalog) : null);
         }
         base.OnSaveInstanceState(outState);
     }
