@@ -28,8 +28,36 @@ struct PendingSignConfirmation: Identifiable {
 final class AppModel: ObservableObject {
     @Published var session: SchoolSession?
     @Published var isDemo = false
-    @Published var courses: [Course] = []
+    @Published var courses: [Course] = [] {
+        didSet { weekPresentations.removeAll() }
+    }
+    private var weekPresentations: [String: WeekSchedulePresentation] = [:]
     @Published var selectedDate = Date()
+    @Published var scheduleMode: ScheduleMode = .day {
+        didSet { defaults.set(scheduleMode.rawValue, forKey: "scheduleViewMode") }
+    }
+    @Published var showOutsideWeekCourses = false {
+        didSet {
+            defaults.set(showOutsideWeekCourses, forKey: "showOutsideWeekCourses")
+            weekPresentations.removeAll()
+        }
+    }
+    @Published private(set) var semesterSchedules: [String: SemesterScheduleCache] = [:] {
+        didSet { weekPresentations.removeAll() }
+    }
+    @Published private(set) var isSemesterSyncing = false
+    @Published private(set) var scheduleSyncError: String?
+    @Published private(set) var scheduleSyncProgress = ""
+    @Published private(set) var scheduleDayErrors: [String: String] = [:]
+    private var scheduleSyncTask: Task<Void, Never>?
+    private var scheduleRetryAfter: Date?
+    private var scheduleFailureCount = 0
+    private var checkedScheduleDays = Set<String>()
+    private var dayRetryAfter: [String: Date] = [:]
+    private var needsFullScheduleRefresh = false
+    private var pendingSemesterRefreshes = Set<String>()
+    private var pendingScheduleWeeks = Set<String>()
+    private var scheduleMonitoringStarted = false
     @Published private var isAuthenticating = false
     @Published private var refreshTasks: [String: Task<Void, Never>] = [:]
     @Published var signingID: String?
@@ -58,9 +86,13 @@ final class AppModel: ObservableObject {
     @Published private(set) var confirmationEnabled = false
     @Published private(set) var reminderLeadMinutes = 10
     @Published private(set) var coursePreferences: [String: CoursePreferences] = [:]
-    @Published private(set) var semesters: [SchoolSemester] = []
+    @Published private(set) var semesters: [SchoolSemester] = [] {
+        didSet { if oldValue != semesters { weekPresentations.removeAll() } }
+    }
     @Published private(set) var selectedSemester: SchoolSemester?
-    @Published private(set) var catalogCourses: [CatalogCourse] = []
+    @Published private(set) var catalogCourses: [CatalogCourse] = [] {
+        didSet { if oldValue != catalogCourses { weekPresentations.removeAll() } }
+    }
     @Published private(set) var catalogUpdatedAt: Date?
     @Published private(set) var catalogIsCached = false
     @Published private(set) var isCatalogRefreshing = false
@@ -86,6 +118,7 @@ final class AppModel: ObservableObject {
     }
     private var refreshSequence = 0
     private var courseRefreshSequences: [String: Int] = [:]
+    private var scheduleWriteSequences: [String: Int] = [:]
     private var reminderGeneration = UUID()
     private var todayIsFresh: Bool { courseFreshness[SchoolDate.key(.now)] == true }
     private var autoAttempts: Set<String> = []
@@ -102,6 +135,8 @@ final class AppModel: ObservableObject {
          widgets: (any WidgetClient)? = nil) {
         self.service = service
         self.defaults = defaults
+        self.scheduleMode = ScheduleMode(rawValue: defaults.string(forKey: "scheduleViewMode") ?? "") ?? .day
+        self.showOutsideWeekCourses = defaults.bool(forKey: "showOutsideWeekCourses")
         self.notifications = notifications ?? LiveNotificationClient()
         self.widgets = widgets ?? LiveWidgetClient()
         #if os(macOS)
@@ -132,17 +167,15 @@ final class AppModel: ObservableObject {
         guard let current = courses.first(where: {
             $0.id == course.id && normalizedDay($0.day) == normalizedDay(course.day)
         }) else { return false }
-        return !current.signed && !isSignInDisabled(for: current.courseId) && signingID == nil && !needsCourseRefresh(current)
+        return !current.signed && !isSignInDisabled(for: current) && signingID == nil && !needsCourseRefresh(current)
     }
 
     var isConnected: Bool { isDemo || session != nil }
     var selectedCourses: [Course] {
-        courses.filter { normalizedDay($0.day) == SchoolDate.key(selectedDate) }
-            .sorted { ($0.startDate ?? .distantFuture) < ($1.startDate ?? .distantFuture) }
+        courses(on: selectedDate)
     }
     var todayCourses: [Course] {
-        courses.filter { normalizedDay($0.day) == SchoolDate.key(.now) }
-            .sorted { ($0.startDate ?? .distantFuture) < ($1.startDate ?? .distantFuture) }
+        courses(on: .now)
     }
     var featuredCourse: Course? {
         let pair = CourseTime.currentAndNext(todayCourses, now: .now)
@@ -154,8 +187,26 @@ final class AppModel: ObservableObject {
     var accountStudentNo: String? { isDemo ? "2026123456" : session?.studentNo }
 
     func coursePreferences(for courseId: String) -> CoursePreferences {
-        coursePreferences[courseId] ?? CoursePreferences()
+        let canonical = canonicalCourseID(for: courseId)
+        if let saved = coursePreferences[canonical] { return saved }
+        let legacy = coursePreferences.filter { canonicalCourseID(for: $0.key) == canonical }.map(\.value)
+        // Preserve restrictive legacy choices until the user explicitly saves the unified course setting.
+        func override(_ values: [PreferenceOverride], preferred: PreferenceOverride) -> PreferenceOverride {
+            if values.contains(preferred) { return preferred }
+            return values.first { $0 != .inherit } ?? .inherit
+        }
+        return CoursePreferences(confirmation: override(legacy.map(\.confirmation), preferred: .enabled),
+                                 autoSign: override(legacy.map(\.autoSign), preferred: .disabled),
+                                 reminders: override(legacy.map(\.reminders), preferred: .disabled),
+                                 reminderLeadMinutes: legacy.compactMap(\.reminderLeadMinutes).max(),
+                                 signInDisabled: legacy.contains { $0.signInDisabled })
     }
+
+    func isSignInDisabled(for course: Course) -> Bool { isSignInDisabled(for: preferenceID(for: course)) }
+    func effectiveConfirmation(for course: Course) -> Bool { effectiveConfirmation(for: preferenceID(for: course)) }
+    func effectiveAutoSign(for course: Course) -> Bool { effectiveAutoSign(for: preferenceID(for: course)) }
+    func effectiveReminders(for course: Course) -> Bool { effectiveReminders(for: preferenceID(for: course)) }
+    func effectiveReminderLead(for course: Course) -> Int { effectiveReminderLead(for: preferenceID(for: course)) }
     func isSignInDisabled(for courseId: String?) -> Bool {
         guard let courseId else { return false }
         return coursePreferences(for: courseId).signInDisabled
@@ -290,6 +341,19 @@ final class AppModel: ObservableObject {
     private func resetAccountState() {
         generation = UUID()
         cancelRefreshes()
+        scheduleSyncTask?.cancel()
+        scheduleSyncTask = nil
+        semesterSchedules = [:]
+        isSemesterSyncing = false
+        scheduleSyncError = nil
+        scheduleSyncProgress = ""
+        scheduleDayErrors = [:]
+        dayRetryAfter = [:]
+        scheduleRetryAfter = nil
+        scheduleFailureCount = 0
+        needsFullScheduleRefresh = false
+        pendingSemesterRefreshes = []
+        pendingScheduleWeeks = []
         reminderGeneration = UUID()
         recoveryTask?.cancel()
         recoveryTask = nil
@@ -348,6 +412,7 @@ final class AppModel: ObservableObject {
         automaticRefreshPaused = account.requiresLogin
         loadRecords()
         loadCatalogCache(for: account.id)
+        loadSemesterSchedules(for: account.session)
         if loadCache(for: account.session, date: selectedDate) {
             courseFreshness[SchoolDate.key(selectedDate)] = false
             notice = "正在显示本机缓存，同步成功后即可签到。"
@@ -388,6 +453,7 @@ final class AppModel: ObservableObject {
             lastUpdated = .now
             courseUpdates[day] = lastUpdated
             courseNotices[day] = nil
+            checkedScheduleDays.insert("demo|\(day)")
             return
         }
         guard let session else { return }
@@ -404,6 +470,7 @@ final class AppModel: ObservableObject {
         }
         refreshTasks[day] = task
         await task.value
+        if generation == accountToken, scheduleMonitoringStarted, needsFullScheduleRefresh { await synchronizeSchedules() }
     }
 
     private func performRefresh(on date: Date, session: SchoolSession, accountToken: UUID, requestSequence: Int) async {
@@ -414,40 +481,59 @@ final class AppModel: ObservableObject {
         guard !Task.isCancelled, generation == accountToken else { return }
         var requestSession = session
         do {
-            let result: CourseQueryResult
+            let result: [Course]
             do {
-                result = try await service.courses(session: session, date: date)
+                result = try await service.dailySchedule(session: session, date: date)
             } catch let error as APIError where error.isSessionExpired {
                 guard let renewed = await recoverSession(session, accountToken: accountToken) else { throw error }
                 guard !Task.isCancelled, generation == accountToken else { return }
                 requestSession = renewed
                 // Only this read is retried. A second expiry ends this recovery cycle.
-                result = try await service.courses(session: renewed, date: date)
+                result = try await service.dailySchedule(session: renewed, date: date)
             }
             guard !Task.isCancelled, generation == accountToken,
                   self.session?.sessionId == requestSession.sessionId,
                   !accounts.contains(where: { $0.id == activeAccountID && $0.requiresLogin }) else { return }
-            let returnedDays = Set(result.courses.map { normalizedDay($0.day) }).union([queriedDay])
-            // A weekly fallback may overlap a newer request for another date.
-            let acceptedDays = Set(returnedDays.filter { courseRefreshSequences[$0, default: 0] <= requestSequence })
-            guard !acceptedDays.isEmpty else { return }
-            mergeCourses(result.courses.filter { acceptedDays.contains(normalizedDay($0.day)) }, replacingDays: acceptedDays)
+            // dailySchedule returns only this date, including when it uses the weekly endpoint.
+            guard courseRefreshSequences[queriedDay, default: 0] <= requestSequence else { return }
+            let hadBaseline = courseUpdates[queriedDay] != nil
+            let previous = courses.filter { normalizedDay($0.day) == queriedDay }
+            let incoming = result.map { value in
+                value.preservingIdentity(from: previous.first { $0.id == value.id })
+            }
+            let changed = !ScheduleCalendar.sameArrangements(previous, incoming)
+            let attendanceChanged = previous.contains { old in incoming.first(where: { $0.id == old.id })?.signed != old.signed }
+            if hadBaseline && changed {
+                needsFullScheduleRefresh = true
+                savePendingScheduleSync(for: session)
+            }
+            if changed || !hadBaseline {
+                mergeCourses(incoming, replacingDays: [queriedDay])
+            } else if attendanceChanged {
+                // Preserve the arrangement objects when only attendance changed.
+                var updated = courses
+                for index in courses.indices where normalizedDay(courses[index].day) == queriedDay {
+                    if let value = incoming.first(where: { $0.id == courses[index].id }) {
+                        updated[index].signed = value.signed
+                    }
+                }
+                courses = updated
+            }
+            checkedScheduleDays.insert("\(session.studentNo)|\(queriedDay)")
+            dayRetryAfter[queriedDay] = nil
+            scheduleDayErrors[queriedDay] = nil
             automaticRefreshPaused = false
             let updatedAt = Date()
-            for day in acceptedDays {
-                courseRefreshSequences[day] = requestSequence
-                courseFreshness[day] = true
-                courseUpdates[day] = updatedAt
-                courseNotices[day] = nil
-                if let courseDate = CourseTime.parse(day: day, time: "00:00") {
-                    saveCache(for: session, date: courseDate)
-                }
+            courseRefreshSequences[queriedDay] = requestSequence
+            scheduleWriteSequences[queriedDay] = requestSequence
+            courseFreshness[queriedDay] = true
+            courseUpdates[queriedDay] = updatedAt
+            courseNotices[queriedDay] = nil
+            if changed || attendanceChanged || !hadBaseline {
+                saveCache(for: session, date: date)
             }
             lastUpdated = updatedAt
-            if acceptedDays.contains(queriedDay) {
-                notice = result.fromWeeklyFallback ? "所选日期没有课程，课表中可查看学校返回的本周课程。" : nil
-                courseNotices[queriedDay] = notice
-            }
+            notice = nil
             publishWidget()
             if hasEnabledReminders { await scheduleReminders() }
         } catch {
@@ -460,12 +546,15 @@ final class AppModel: ObservableObject {
                 return
             }
             guard courseRefreshSequences[queriedDay] == requestSequence else { return }
+            scheduleDayErrors[queriedDay] = error.localizedDescription
+            dayRetryAfter[queriedDay] = Date().addingTimeInterval(60)
             if courseFreshness[queriedDay] != nil || loadCache(for: session, date: date) {
                 courseFreshness[queriedDay] = false
                 notice = "网络暂不可用，正在显示本机缓存。"
                 courseNotices[queriedDay] = notice
             } else {
-                errorMessage = error.localizedDescription
+                courseNotices[queriedDay] = error.localizedDescription
+                if !scheduleMonitoringStarted { errorMessage = error.localizedDescription }
             }
         }
     }
@@ -553,6 +642,7 @@ final class AppModel: ObservableObject {
         refreshTasks.removeAll()
         refreshSequence = 0
         courseRefreshSequences.removeAll()
+        scheduleWriteSequences.removeAll()
         courseUpdates.removeAll()
         courseNotices.removeAll()
     }
@@ -560,24 +650,25 @@ final class AppModel: ObservableObject {
     func selectDate(_ date: Date) async {
         selectedDate = date
         if !isCached { notice = nil }
-        await refresh(on: date)
+        await openScheduleDate(date)
     }
 
     func sign(_ course: Course, accountGeneration expectedGeneration: UUID? = nil, automatically: Bool = false) async {
-        guard canSign(course, accountGeneration: expectedGeneration) else { return }
         let token = generation
+        await refreshCourseIdentityIfNeeded(for: [course])
+        guard token == generation, !Task.isCancelled, canSign(course, accountGeneration: expectedGeneration) else { return }
         let attempt = attemptKey(for: course)
         autoAttempts.insert(attempt)
         signingID = course.id
         defer { if token == generation { signingID = nil } }
         if isDemo {
             try? await Task.sleep(for: .milliseconds(550))
-            guard token == generation, !isSignInDisabled(for: course.courseId) else {
+            guard token == generation, !isSignInDisabled(for: course) else {
                 autoAttempts.remove(attempt)
                 return
             }
             markSigned(course)
-            records.insert(AttendanceRecord(courseId: course.courseId, courseName: course.name, date: .now,
+            records.insert(AttendanceRecord(courseId: preferenceID(for: course), courseName: course.name, date: .now,
                                             message: "演示签到成功", succeeded: true), at: 0)
             notice = "演示签到成功 · 未向学校提交"
             courseNotices[normalizedDay(course.day)] = notice
@@ -588,19 +679,19 @@ final class AppModel: ObservableObject {
         do {
             let result = try await service.sign(course: course, session: session) { [self] in
                 // School clock synchronization can suspend before the actual submission.
-                guard token == generation, !isSignInDisabled(for: course.courseId),
-                      !automatically || effectiveAutoSign(for: course.courseId) else {
+                guard token == generation, !isSignInDisabled(for: course),
+                      !automatically || effectiveAutoSign(for: course) else {
                     throw APIError(code: "SIGN_NOT_ALLOWED", message: "签到已取消")
                 }
             }
             guard token == generation else { return }
             let succeeded = result.outcome == .signed
-            records.insert(AttendanceRecord(courseId: course.courseId, courseName: course.name, date: .now,
+            records.insert(AttendanceRecord(courseId: preferenceID(for: course), courseName: course.name, date: .now,
                                             message: result.message, succeeded: succeeded), at: 0)
             saveRecords()
             if succeeded {
                 markSigned(course)
-                invalidateAttendance(for: course.courseId)
+                invalidateAttendance(for: preferenceID(for: course))
                 notice = result.message
                 courseNotices[normalizedDay(course.day)] = notice
                 publishWidget()
@@ -618,7 +709,7 @@ final class AppModel: ObservableObject {
             autoAttempts.remove(attempt)
         } catch {
             guard token == generation else { return }
-            invalidateAttendance(for: course.courseId)
+            invalidateAttendance(for: preferenceID(for: course))
             errorMessage = "未能确认签到结果：\(error.localizedDescription) 请先刷新课程状态，再决定是否重试。"
             if let error = error as? APIError, error.isSessionExpired {
                 if await recoverSession(session, accountToken: token) != nil, generation == token {
@@ -630,8 +721,10 @@ final class AppModel: ObservableObject {
     }
 
     func signManually(_ course: Course, accountGeneration expectedGeneration: UUID? = nil) async {
-        guard canSign(course, accountGeneration: expectedGeneration) else { return }
-        if effectiveConfirmation(for: course.courseId) {
+        let token = generation
+        await refreshCourseIdentityIfNeeded(for: [course])
+        guard token == generation, !Task.isCancelled, canSign(course, accountGeneration: expectedGeneration) else { return }
+        if effectiveConfirmation(for: course) {
             pendingSignConfirmation = PendingSignConfirmation(course: course, accountGeneration: expectedGeneration ?? generation)
             return
         }
@@ -652,19 +745,27 @@ final class AppModel: ObservableObject {
         let token = generation
         // Cache recovery must also work when automatic attendance is turned off.
         let today = Date()
-        if isCached(on: today) { await refresh(on: today) }
+        if isCached(on: today), dayRetryAfter[SchoolDate.key(today)].map({ $0 > Date() }) != true {
+            await refresh(on: today)
+        }
         guard !Task.isCancelled, generation == token, !showLogin, !automaticRefreshPaused else { return }
-        if SchoolDate.key(selectedDate) != SchoolDate.key(today), isCached { await refresh() }
+        if SchoolDate.key(selectedDate) != SchoolDate.key(today), isCached,
+           dayRetryAfter[SchoolDate.key(selectedDate)].map({ $0 > Date() }) != true {
+            await refresh()
+        }
         guard !Task.isCancelled, generation == token, !showLogin,
               todayIsFresh, !isLoading, signingID == nil else { return }
+        await refreshCourseIdentityIfNeeded(for: todayCourses)
+        guard generation == token, !Task.isCancelled, !showLogin, !automaticRefreshPaused,
+              todayIsFresh, !isLoading, signingID == nil else { return }
         let candidates = todayCourses.filter {
-            !$0.signed && effectiveAutoSign(for: $0.courseId) && !autoAttempts.contains(attemptKey(for: $0))
+            !$0.signed && effectiveAutoSign(for: $0) && !autoAttempts.contains(attemptKey(for: $0))
         }
         guard !candidates.isEmpty else { return }
         guard let schoolNow = try? await service.schoolNow(), !Task.isCancelled, generation == token,
               todayIsFresh, !isLoading, signingID == nil else { return }
         guard let course = candidates.first(where: {
-            effectiveAutoSign(for: $0.courseId) && CourseTime.isWithinSignWindow($0, now: schoolNow)
+            effectiveAutoSign(for: $0) && CourseTime.isWithinSignWindow($0, now: schoolNow)
         }) else { return }
         let key = attemptKey(for: course)
         guard autoAttempts.insert(key).inserted else { return }
@@ -756,6 +857,7 @@ final class AppModel: ObservableObject {
     func setCoursePreferences(_ preferences: CoursePreferences, for courseId: String) async -> Bool {
         var preferences = preferences
         guard !courseId.isEmpty else { return false }
+        let courseId = canonicalCourseID(for: courseId)
         let accountToken = generation
         let settingToken = UUID()
         reminderGeneration = settingToken
@@ -777,10 +879,11 @@ final class AppModel: ObservableObject {
         if let lead = preferences.reminderLeadMinutes,
            !AccountPreferences.validLeadTimes.contains(lead) { preferences.reminderLeadMinutes = nil }
         var updated = coursePreferences
+        for alias in updated.keys.filter({ canonicalCourseID(for: $0) == courseId }) { updated.removeValue(forKey: alias) }
         if preferences == CoursePreferences() { updated.removeValue(forKey: courseId) }
         else { updated[courseId] = preferences }
         guard savePreferences(courses: updated) else { return false }
-        if preferences.signInDisabled, pendingSignConfirmation?.course.courseId == courseId {
+        if preferences.signInDisabled, let pending = pendingSignConfirmation, preferenceID(for: pending.course) == courseId {
             pendingSignConfirmation = nil
         }
         if hasEnabledReminders { await scheduleReminders() }
@@ -843,11 +946,13 @@ final class AppModel: ObservableObject {
         let accountToken = generation
         let requestToken = UUID()
         reminderGeneration = requestToken
+        await refreshCourseIdentityIfNeeded(for: courses)
+        guard generation == accountToken, reminderGeneration == requestToken, !Task.isCancelled else { return }
         notifications.removeAll()
-        for course in courses.prefix(60) where !course.signed && !needsCourseRefresh(course) && effectiveReminders(for: course.courseId) {
+        for course in courses.prefix(60) where !course.signed && !needsCourseRefresh(course) && effectiveReminders(for: course) {
             guard generation == accountToken, reminderGeneration == requestToken, hasEnabledReminders else { return }
             guard let start = course.startDate else { continue }
-            let lead = effectiveReminderLead(for: course.courseId)
+            let lead = effectiveReminderLead(for: course)
             let reminder = start.addingTimeInterval(TimeInterval(-lead * 60))
             guard reminder > Date() else { continue }
             let content = UNMutableNotificationContent()
@@ -882,10 +987,11 @@ final class AppModel: ObservableObject {
             updated.remove(id: id)
             try commit(updated)
             for key in defaults.dictionaryRepresentation().keys
-                where key.hasPrefix("courses-\(id)-") || key.hasPrefix("catalog-\(id)") ||
+                where key.hasPrefix("courses-\(id)-") || key == "semester-schedules-\(id)" || key == "schedule-pending-\(id)" || key.hasPrefix("catalog-\(id)") ||
                       key.hasPrefix("attendance-\(id)-") || key == "records-\(id)" {
                 defaults.removeObject(forKey: key)
             }
+            checkedScheduleDays = checkedScheduleDays.filter { !$0.hasPrefix("\(id)|") }
             autoAttempts = autoAttempts.filter { !$0.hasPrefix("\(id)|") }
             recoveryAttempts = recoveryAttempts.filter { !$0.hasPrefix("\(id)|") }
             if activeAccountID == id {
@@ -906,7 +1012,14 @@ final class AppModel: ObservableObject {
     }
 
     private func markSigned(_ course: Course) {
-        if let index = courses.firstIndex(where: { $0.id == course.id && $0.day == course.day }) { courses[index].signed = true }
+        if let index = courses.firstIndex(where: { $0.id == course.id && $0.day == course.day }) {
+            courses[index].signed = true
+            refreshSequence += 1
+            courseRefreshSequences[normalizedDay(course.day)] = refreshSequence
+            scheduleWriteSequences[normalizedDay(course.day)] = refreshSequence
+            courseUpdates[normalizedDay(course.day)] = .now
+            if let session, let date = CourseTime.parse(day: course.day, time: "00:00") { saveCache(for: session, date: date) }
+        }
     }
     private func normalizedDay(_ value: String) -> String {
         String(value.filter(\.isNumber).prefix(8))
@@ -923,13 +1036,16 @@ final class AppModel: ObservableObject {
         widgets.save(WidgetSnapshot(courses: values, updatedAt: updatedAt))
     }
     private func saveCache(for session: SchoolSession, date: Date) {
-        let datedCourses = courses.filter { normalizedDay($0.day) == SchoolDate.key(date) }
+        let day = SchoolDate.key(date)
+        let datedCourses = courses.filter { normalizedDay($0.day) == day }
         guard let data = try? JSONEncoder().encode(CachedCourses(courses: datedCourses, updatedAt: lastUpdated(on: date) ?? .now)) else { return }
         defaults.set(data, forKey: "courses-\(session.studentNo)-\(SchoolDate.key(date))")
     }
     private func loadCache(for session: SchoolSession, date: Date) -> Bool {
         guard let data = defaults.data(forKey: "courses-\(session.studentNo)-\(SchoolDate.key(date))"),
               let cache = try? JSONDecoder().decode(CachedCourses.self, from: data) else { return false }
+        let day = SchoolDate.key(date)
+        if let existing = courseUpdates[day], existing >= cache.updatedAt { return true }
         mergeCourses(cache.courses, replacing: date); lastUpdated = cache.updatedAt
         courseUpdates[SchoolDate.key(date)] = cache.updatedAt
         return true
@@ -939,8 +1055,12 @@ final class AppModel: ObservableObject {
         mergeCourses(updated, replacingDays: days)
     }
     private func mergeCourses(_ updated: [Course], replacingDays days: Set<String>) {
-        courses.removeAll { days.contains(normalizedDay($0.day)) }
-        courses.append(contentsOf: updated)
+        let previous = Dictionary(courses.map { ("\(normalizedDay($0.day))|\($0.id)", $0) }, uniquingKeysWith: { first, _ in first })
+        let updated = updated.map { value in
+            value.preservingIdentity(from: previous["\(normalizedDay(value.day))|\(value.id)"])
+        }
+        let merged = courses.filter { !days.contains(normalizedDay($0.day)) } + updated
+        if courses != merged { courses = merged }
     }
     private func saveRecords() {
         guard let session, let data = try? JSONEncoder().encode(Array(records.prefix(100))) else { return }
@@ -952,6 +1072,40 @@ final class AppModel: ObservableObject {
         records = saved
     }
     private struct CachedCourses: Codable { let courses: [Course]; let updatedAt: Date }
+
+    private var identitySemesters: [SchoolSemester] { semesters + semesterSchedules.values.map(\.semester) }
+
+    private func matchedCatalogCourse(for scheduled: Course) -> CatalogCourse? {
+        let current = courses.first { $0.id == scheduled.id && normalizedDay($0.day) == normalizedDay(scheduled.day) } ?? scheduled
+        if isDemo { return catalogCourses.first { $0.id == current.courseId } }
+        return CourseIdentity.catalogCourse(for: current, catalog: catalogCourses, semesters: identitySemesters)
+    }
+
+    func canonicalCourseID(for id: String) -> String {
+        if catalogCourses.contains(where: { $0.id == id }) { return id }
+        let matches = Set(courses.filter { $0.courseId == id }.compactMap {
+            CourseIdentity.catalogCourse(for: $0, catalog: catalogCourses, semesters: identitySemesters)?.id
+        })
+        return matches.count == 1 ? matches.first! : id
+    }
+
+    private func preferenceID(for course: Course) -> String? {
+        matchedCatalogCourse(for: course)?.id ?? course.courseId.map { canonicalCourseID(for: $0) }
+    }
+
+    private func refreshCourseIdentityIfNeeded(for values: [Course]) async {
+        guard !isDemo, values.contains(where: { $0.courseNumber != nil && matchedCatalogCourse(for: $0) == nil }) else { return }
+        await refreshCatalog()
+    }
+
+    func catalogCourse(for scheduled: Course) -> CatalogCourse {
+        if let match = matchedCatalogCourse(for: scheduled) { return match }
+        let semester = CourseIdentity.semester(for: scheduled, semesters: identitySemesters)
+        // A scheduled meeting ID is not a course ID. Missing identities stay read-only.
+        return CatalogCourse(id: scheduled.courseId ?? "", number: scheduled.courseNumber ?? "", name: scheduled.name,
+                             teacher: scheduled.teacher, classroom: scheduled.classroom,
+                             semesterId: semester?.id ?? "", beginDate: "", endDate: "")
+    }
 
     func refreshCatalog(force: Bool = false) async {
         guard !Task.isCancelled else { return }
@@ -1041,9 +1195,10 @@ final class AppModel: ObservableObject {
 
     func refreshAttendance(for courseId: String, force: Bool = false) async {
         guard !courseId.isEmpty else { return }
+        let courseId = canonicalCourseID(for: courseId)
         if isDemo {
             if !force, let updated = attendanceUpdatedAt[courseId], Date().timeIntervalSince(updated) < 5 * 60 { return }
-            let matching = courses.filter { $0.courseId == courseId }
+            let matching = courses.filter { preferenceID(for: $0) == courseId }
             let records = matching.map {
                 CourseAttendance(id: $0.id, courseId: courseId, scheduledCourseId: $0.id,
                                  day: $0.day, beginTime: $0.beginTime, endTime: $0.endTime, signed: $0.signed)
@@ -1160,7 +1315,8 @@ final class AppModel: ObservableObject {
     }
 
     private func invalidateAttendance(for courseId: String?) {
-        guard let courseId else { return }
+        guard let id = courseId else { return }
+        let courseId = canonicalCourseID(for: id)
         attendanceUpdatedAt.removeValue(forKey: courseId)
         if let accountId = activeAccountID { defaults.removeObject(forKey: "attendance-\(accountId)-\(courseId)") }
     }
@@ -1179,4 +1335,353 @@ final class AppModel: ObservableObject {
         CatalogCourse(id: "demo-ai", number: "CS6002", name: "高级人工智能", teacher: "陈思远", classroom: "教学楼 B203", semesterId: "demo", beginDate: SchoolDate.key(.now), endDate: SchoolDate.key(.now), totalSessions: 16, completedSessions: 3),
         CatalogCourse(id: "demo-english", number: "ENG6003", name: "学术英语写作", teacher: "王雅文", classroom: nil, semesterId: "demo", beginDate: SchoolDate.key(.now), endDate: SchoolDate.key(.now), totalSessions: 12, completedSessions: 2)
     ]
+}
+
+// Schedule synchronization shares the existing per-day freshness and account-generation guards.
+extension AppModel {
+    var isScheduleRefreshing: Bool { isSemesterSyncing || isRefreshing(on: selectedDate) }
+
+    var weekSchedulePresentation: WeekSchedulePresentation {
+        let key = SchoolDate.key(SchoolDate.week(containing: selectedDate)[0])
+        if let cached = weekPresentations[key] { return cached }
+        let entries = ScheduleLayout.weekEntries(courses, containing: selectedDate,
+                                                semesters: identitySemesters,
+                                                includeOutsideWeek: showOutsideWeekCourses, catalog: catalogCourses)
+        let value = WeekSchedulePresentation(entries: entries)
+        if weekPresentations.count >= 8 { weekPresentations.removeAll() }
+        weekPresentations[key] = value
+        return value
+    }
+
+    func courses(on date: Date) -> [Course] {
+        let key = SchoolDate.key(date)
+        return courses.filter { normalizedDay($0.day) == key }
+            .sorted { ($0.startDate ?? .distantFuture) < ($1.startDate ?? .distantFuture) }
+    }
+
+    func scheduleUpdatedAt(on date: Date) -> Date? {
+        let day = SchoolDate.key(date)
+        return semesterSchedules.values.first {
+            $0.semester.beginDate <= day && day <= $0.semester.endDate
+        }?.updatedAt
+    }
+
+    func hasSchedule(on date: Date) -> Bool { courseUpdates[SchoolDate.key(date)] != nil }
+
+    func openScheduleDate(_ date: Date) async {
+        let token = generation
+        if let session, !hasSchedule(on: date) {
+            if loadCache(for: session, date: date) { courseFreshness[SchoolDate.key(date)] = false }
+        }
+        let key = "\(session?.studentNo ?? "demo")|\(SchoolDate.key(date))"
+        if !checkedScheduleDays.contains(key), dayRetryAfter[SchoolDate.key(date)].map({ $0 > Date() }) != true {
+            await refresh(on: date)
+        }
+        guard generation == token, !Task.isCancelled else { return }
+        await synchronizeSchedules()
+        guard generation == token, !Task.isCancelled, SchoolDate.key(date) == SchoolDate.key(selectedDate) else { return }
+        if scheduleMode == .week { await loadVisibleWeek(containing: date) }
+    }
+
+    private func loadVisibleWeek(containing date: Date, retryFailed: Bool = false) async {
+        let token = generation
+        for day in SchoolDate.week(containing: date) {
+            guard generation == token, !Task.isCancelled, scheduleMode == .week,
+                  SchoolDate.key(date) == SchoolDate.key(selectedDate) else { return }
+            let key = SchoolDate.key(day)
+            // Semester endpoints can fall midweek. Fill the visible boundary dates without
+            // pretending that those dates belong to the completed semester snapshot.
+            guard !hasSchedule(on: day) || scheduleDayErrors[key] != nil else { continue }
+            if isDemo { populateDemoSemester(containing: day); continue }
+            if !retryFailed, dayRetryAfter[key].map({ $0 > Date() }) == true { continue }
+            await refresh(on: day)
+        }
+    }
+
+    func refreshSchedule() async {
+        if scheduleMode == .week {
+            let token = generation
+            let date = selectedDate
+            await synchronizeSchedules(force: true)
+            guard generation == token else { return }
+            await loadVisibleWeek(containing: date, retryFailed: true)
+        } else {
+            let token = generation
+            await refresh(on: selectedDate)
+            guard generation == token else { return }
+            await synchronizeSchedules()
+        }
+    }
+
+    /// Called by the foreground lifecycle, not by a background scheduler.
+    func maintainScheduleCache() async {
+        scheduleMonitoringStarted = true
+        await synchronizeSchedules()
+    }
+
+    func synchronizeSchedules(force: Bool = false) async {
+        guard isConnected, !showLogin, !automaticRefreshPaused, !Task.isCancelled else { return }
+        if isDemo { populateDemoSemester(containing: selectedDate); return }
+        if let scheduleSyncTask {
+            let token = generation
+            await scheduleSyncTask.value
+            guard generation == token, !Task.isCancelled else { return }
+            // The user may have selected another semester while this batch was running.
+            await synchronizeSchedules()
+            return
+        }
+        if !force, scheduleRetryAfter.map({ $0 > Date() }) == true { return }
+        guard let session else { return }
+        let token = generation
+        let requestedDate = selectedDate
+        if force {
+            let day = SchoolDate.key(requestedDate)
+            for snapshot in semesterSchedules.values where snapshot.semester.beginDate <= day && day <= snapshot.semester.endDate {
+                pendingSemesterRefreshes.insert(snapshot.semester.id)
+            }
+            savePendingScheduleSync(for: session)
+        }
+        let task = Task { await self.performScheduleSync(session: session, date: requestedDate, force: force, token: token) }
+        scheduleSyncTask = task
+        await task.value
+        // A date check can detect a change while a batch is already running.
+        if generation == token, needsFullScheduleRefresh, scheduleRetryAfter == nil, !Task.isCancelled {
+            await synchronizeSchedules()
+        }
+    }
+
+    private func scheduleRead<T>(token: UUID, _ operation: (SchoolSession) async throws -> T) async throws -> T {
+        try Task.checkCancellation()
+        guard generation == token, let session, !showLogin, !automaticRefreshPaused else { throw CancellationError() }
+        let value: T
+        do { value = try await operation(session) }
+        catch let error as APIError where error.isSessionExpired {
+            guard let renewed = await recoverSession(session, accountToken: token) else {
+                if generation == token { markLoginRequired(for: session.studentNo); requestLogin(for: session.studentNo) }
+                throw error
+            }
+            do { value = try await operation(renewed) }
+            catch let error as APIError where error.isSessionExpired {
+                if generation == token { markLoginRequired(for: session.studentNo); requestLogin(for: session.studentNo) }
+                throw error
+            }
+        }
+        try Task.checkCancellation()
+        guard generation == token, !showLogin, !automaticRefreshPaused else { throw CancellationError() }
+        return value
+    }
+
+    private func performScheduleSync(session: SchoolSession, date: Date, force: Bool, token: UUID) async {
+        defer {
+            if generation == token { isSemesterSyncing = false; scheduleSyncProgress = ""; scheduleSyncTask = nil }
+        }
+        let selectedDay = SchoolDate.key(date)
+        let existing = semesterSchedules.values.first { $0.semester.beginDate <= selectedDay && selectedDay <= $0.semester.endDate }
+        let due = semesterSchedules.values.contains { $0.needsRefresh(at: .now) }
+        guard force || needsFullScheduleRefresh || !pendingSemesterRefreshes.isEmpty || !pendingScheduleWeeks.isEmpty || existing == nil || due else { return }
+        isSemesterSyncing = true
+        scheduleSyncError = nil
+        do {
+            let terms = try await scheduleRead(token: token) { try await self.service.semesters(session: $0) }
+            let matching = terms.filter { $0.beginDate <= selectedDay && selectedDay <= $0.endDate }
+            let allCached = needsFullScheduleRefresh
+            let legacyDates = defaults.dictionaryRepresentation().keys.compactMap { key -> String? in
+                let prefix = "courses-\(session.studentNo)-"
+                guard key.hasPrefix(prefix) else { return nil }
+                return CourseTime.normalizeDay(String(key.dropFirst(prefix.count)))
+            }
+            var targets = terms.filter { term in
+                let cache = semesterSchedules[term.id]
+                let coversCachedDay = legacyDates.contains { term.beginDate <= $0 && $0 <= term.endDate }
+                return matching.contains(where: { $0.id == term.id }) && (force || cache == nil || cache!.needsRefresh(at: .now))
+                    || pendingSemesterRefreshes.contains(term.id)
+                    || cache?.needsRefresh(at: .now) == true
+                    || allCached && (cache != nil || coversCachedDay)
+            }
+            // Keep historical cached terms even if the semester listing no longer includes them.
+            for cache in semesterSchedules.values where !terms.contains(where: { $0.id == cache.semester.id }) {
+                if allCached || pendingSemesterRefreshes.contains(cache.semester.id) || cache.needsRefresh(at: .now) { targets.append(cache.semester) }
+            }
+            targets.sort {
+                let lhs = $0.beginDate <= selectedDay && selectedDay <= $0.endDate
+                let rhs = $1.beginDate <= selectedDay && selectedDay <= $1.endDate
+                return lhs != rhs ? lhs : $0.beginDate > $1.beginDate
+            }
+            if matching.count > 1 { throw APIError(code: "SEMESTER_AMBIGUOUS", message: "无法确定所选日期的学期，已保留缓存课表。") }
+            pendingSemesterRefreshes.formIntersection(Set(terms.map(\.id)).union(semesterSchedules.keys))
+            pendingSemesterRefreshes.formUnion(targets.map(\.id))
+            if allCached {
+                for day in legacyDates where !terms.contains(where: { $0.beginDate <= day && day <= $0.endDate }) {
+                    if let value = CourseTime.parse(day: day, time: "00:00"), let start = SchoolDate.week(containing: value).first {
+                        pendingScheduleWeeks.insert(SchoolDate.key(start))
+                    }
+                }
+            }
+            needsFullScheduleRefresh = false
+            savePendingScheduleSync(for: session)
+            for term in targets {
+                try await synchronizeSemester(term, token: token)
+                guard generation == token, !Task.isCancelled else { throw CancellationError() }
+                pendingSemesterRefreshes.remove(term.id)
+                savePendingScheduleSync(for: session)
+            }
+            // Legacy weeks outside known semesters also retain failed work for retry.
+            for key in pendingScheduleWeeks.sorted() {
+                guard let start = CourseTime.parse(day: key, time: "00:00") else { continue }
+                try await synchronizeUnassignedWeek(containing: start, token: token)
+                pendingScheduleWeeks.remove(key)
+                savePendingScheduleSync(for: session)
+            }
+            if matching.isEmpty {
+                try await synchronizeUnassignedWeek(containing: date, token: token)
+                throw APIError(code: "SEMESTER_UNKNOWN", message: "无法确定所选日期的学期范围，已更新本周；尚未完成完整学期同步。")
+            }
+            scheduleRetryAfter = nil
+            scheduleFailureCount = 0
+        } catch {
+            guard generation == token, !(error is CancellationError) else { return }
+            scheduleSyncError = "\(scheduleSyncProgress.isEmpty ? "课表" : scheduleSyncProgress)同步未完成：\(error.localizedDescription)"
+            scheduleFailureCount += 1
+            scheduleRetryAfter = Date().addingTimeInterval([60.0, 120, 300][min(scheduleFailureCount - 1, 2)])
+            // Failed and not-yet-started semesters remain pending; successful ones need not repeat.
+        }
+    }
+
+    private func synchronizeSemester(_ term: SchoolSemester, token: UUID) async throws {
+        let days = ScheduleCalendar.days(in: term)
+        guard !days.isEmpty else { throw APIError(code: "SEMESTER_RANGE", message: "学期日期范围无效") }
+        refreshSequence += 1
+        let sequence = refreshSequence
+        let wanted = Set(days.map(SchoolDate.key))
+        var staged: [Course] = []
+        var visited = Set<String>()
+        for day in days {
+            let week = SchoolDate.week(containing: day)
+            let weekKey = SchoolDate.key(week[0])
+            guard visited.insert(weekKey).inserted else { continue }
+            let required = week.filter { wanted.contains(SchoolDate.key($0)) }
+            let rangeStart = SchoolDate.text(required.first!, "yyyy年M月d日")
+            let rangeEnd = SchoolDate.text(required.last!, "yyyy年M月d日")
+            scheduleSyncProgress = "\(term.name) · \(rangeStart) - \(rangeEnd)"
+            let result = try await scheduleRead(token: token) { try await self.service.weeklySchedule(session: $0, date: day) }
+            let requiredKeys = Set(required.map(SchoolDate.key))
+            staged += result.courses.filter { requiredKeys.contains(normalizedDay($0.day)) }
+            for missing in required where !result.coveredDays.contains(SchoolDate.key(missing)) {
+                let values = try await scheduleRead(token: token) { try await self.service.dailySchedule(session: $0, date: missing) }
+                staged += values
+            }
+        }
+        try Task.checkCancellation()
+        guard generation == token, let session else { throw CancellationError() }
+        let accepted = Set(wanted.filter { scheduleWriteSequences[$0, default: 0] <= sequence })
+        mergeCourses(staged.filter { accepted.contains(normalizedDay($0.day)) }, replacingDays: accepted)
+        let now = Date()
+        for day in accepted {
+            courseRefreshSequences[day] = max(courseRefreshSequences[day, default: 0], sequence)
+            scheduleWriteSequences[day] = sequence
+            courseFreshness[day] = true
+            courseUpdates[day] = now
+            courseNotices[day] = nil
+            scheduleDayErrors[day] = nil
+            dayRetryAfter[day] = nil
+            checkedScheduleDays.insert("\(session.studentNo)|\(day)")
+        }
+        // Include newer daily checks and local attendance writes in the committed snapshot.
+        let snapshot = SemesterScheduleCache(semester: term, courses: courses.filter { wanted.contains(normalizedDay($0.day)) }, updatedAt: now)
+        semesterSchedules[term.id] = snapshot
+        saveSemesterSchedules(for: session)
+        lastUpdated = now
+        publishWidget()
+        if hasEnabledReminders { await scheduleReminders() }
+    }
+
+    private func synchronizeUnassignedWeek(containing date: Date, token: UUID) async throws {
+        for day in SchoolDate.week(containing: date) {
+            refreshSequence += 1
+            let sequence = refreshSequence
+            let key = SchoolDate.key(day)
+            let values = try await scheduleRead(token: token) { try await self.service.dailySchedule(session: $0, date: day) }
+            guard courseRefreshSequences[key, default: 0] <= sequence, let session else { continue }
+            mergeCourses(values, replacingDays: [key])
+            courseRefreshSequences[key] = sequence
+            scheduleWriteSequences[key] = sequence
+            courseFreshness[key] = true
+            courseUpdates[key] = .now
+            scheduleDayErrors[key] = nil
+            checkedScheduleDays.insert("\(session.studentNo)|\(key)")
+            saveCache(for: session, date: day)
+        }
+    }
+
+    private func saveSemesterSchedules(for session: SchoolSession) {
+        guard let data = try? JSONEncoder().encode(Array(semesterSchedules.values)) else { return }
+        defaults.set(data, forKey: "semester-schedules-\(session.studentNo)")
+    }
+
+    private struct PendingScheduleSync: Codable {
+        let allCached: Bool
+        let semesters: Set<String>
+        let weeks: Set<String>
+    }
+
+    private func savePendingScheduleSync(for session: SchoolSession) {
+        let key = "schedule-pending-\(session.studentNo)"
+        if !needsFullScheduleRefresh && pendingSemesterRefreshes.isEmpty && pendingScheduleWeeks.isEmpty {
+            defaults.removeObject(forKey: key)
+        } else if let data = try? JSONEncoder().encode(PendingScheduleSync(allCached: needsFullScheduleRefresh,
+                                  semesters: pendingSemesterRefreshes, weeks: pendingScheduleWeeks)) {
+            defaults.set(data, forKey: key)
+        }
+    }
+
+    private func loadSemesterSchedules(for session: SchoolSession) {
+        if let data = defaults.data(forKey: "schedule-pending-\(session.studentNo)"),
+           let pending = try? JSONDecoder().decode(PendingScheduleSync.self, from: data) {
+            needsFullScheduleRefresh = pending.allCached
+            pendingSemesterRefreshes = pending.semesters
+            pendingScheduleWeeks = pending.weeks
+        }
+        if let data = defaults.data(forKey: "semester-schedules-\(session.studentNo)"),
+           let snapshots = try? JSONDecoder().decode([SemesterScheduleCache].self, from: data) {
+            for snapshot in snapshots {
+                let days = ScheduleCalendar.days(in: snapshot.semester)
+                guard !days.isEmpty else { continue }
+                semesterSchedules[snapshot.semester.id] = snapshot
+                mergeCourses(snapshot.courses, replacingDays: Set(days.map(SchoolDate.key)))
+                for date in days {
+                    let key = SchoolDate.key(date)
+                    courseUpdates[key] = snapshot.updatedAt
+                    courseFreshness[key] = false
+                }
+            }
+        }
+        // Newer per-day overlays survive restarts without changing the full-sync timestamp.
+        for key in defaults.dictionaryRepresentation().keys {
+            let prefix = "courses-\(session.studentNo)-"
+            guard key.hasPrefix(prefix), let date = CourseTime.parse(day: String(key.dropFirst(prefix.count)), time: "00:00") else { continue }
+            if loadCache(for: session, date: date) { courseFreshness[SchoolDate.key(date)] = false }
+        }
+    }
+
+    private func populateDemoSemester(containing date: Date) {
+        let calendar = SchoolDate.calendar
+        let year = calendar.component(.year, from: date)
+        let autumn = calendar.component(.month, from: date) >= 7
+        let begin = String(format: "%04d%02d01", year, autumn ? 7 : 1)
+        let end = String(format: "%04d%02d%02d", year, autumn ? 12 : 6, autumn ? 31 : 30)
+        let term = SchoolSemester(id: "demo-\(begin)", name: "演示学期", beginDate: begin, endDate: end, isCurrent: true)
+        guard semesterSchedules[term.id] == nil else { return }
+        let days = ScheduleCalendar.days(in: term)
+        for day in days {
+            let key = SchoolDate.key(day)
+            if !hasSchedule(on: day) {
+                mergeCourses(Self.demoCourses(on: day), replacingDays: [key])
+                courseUpdates[key] = .now
+            }
+            checkedScheduleDays.insert("demo|\(key)")
+        }
+        semesterSchedules[term.id] = SemesterScheduleCache(semester: term, courses: courses.filter {
+            term.beginDate <= normalizedDay($0.day) && normalizedDay($0.day) <= term.endDate
+        }, updatedAt: .now)
+    }
 }

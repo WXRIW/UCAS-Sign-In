@@ -401,9 +401,10 @@ final class UCASSignInMacUITests: XCTestCase {
     }
 
     @MainActor
-    private func launchAccounts(reset: Bool = true, expectedCourse: String = "账户一课程") -> XCUIApplication {
+    private func launchAccounts(reset: Bool = true, expectedCourse: String = "账户一课程", extraArguments: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--account-fixtures", "--fixture-persist", "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
+        app.launchArguments += extraArguments
         if reset { app.launchArguments.append("--fixture-reset") }
         app.launch()
         app.activate()
@@ -413,9 +414,115 @@ final class UCASSignInMacUITests: XCTestCase {
     }
 
     @MainActor
+    func testCoTeachersShareOneWeekCardAndOpenCatalogCourse() {
+        let app = launchAccounts(extraArguments: ["--co-teacher-fixture"])
+        selectSidebar("schedule", in: app)
+        app.radioGroups["schedule.mode"].radioButtons["周"].click()
+        let cards = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@",
+                                                     "schedule.weekCourse.", "联合课程"))
+        XCTAssertTrue(cards.firstMatch.waitForExistence(timeout: 15))
+        XCTAssertEqual(cards.count, 1)
+        XCTAssertTrue(cards.firstMatch.label.contains("教师三"))
+        capture(app, name: "周课表-多教师合并-Mac")
+        cards.firstMatch.click()
+        XCTAssertTrue(app.scrollViews["catalogCourseDetail.scroll"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.sheets.count, 0)
+        XCTAssertTrue(app.staticTexts["CS6001"].exists)
+        XCTAssertTrue(app.staticTexts["教师一,教师二,教师三"].exists)
+        capture(app, name: "联合课程详情-Mac")
+    }
+
+    @MainActor
+    func testWeeklyScheduleSwitchNavigationAndRefresh() {
+        let app = launchDemo()
+        selectSidebar("schedule", in: app)
+        let mode = app.radioGroups["schedule.mode"]
+        XCTAssertTrue(mode.waitForExistence(timeout: 5))
+        mode.radioButtons["周"].click()
+        let course = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "schedule.weekCourse.")).firstMatch
+        XCTAssertTrue(course.waitForExistence(timeout: 5))
+        capture(app, name: "周课表-Mac")
+        course.click()
+        XCTAssertTrue(app.scrollViews["catalogCourseDetail.scroll"].waitForExistence(timeout: 5))
+        returnToParent(content: "schedule.scroll", in: app)
+        XCTAssertTrue(course.waitForExistence(timeout: 5))
+        app.buttons["下一周"].click()
+        app.typeKey("r", modifierFlags: .command)
+        XCTAssertTrue(course.waitForExistence(timeout: 5))
+        mode.radioButtons["日"].click()
+        XCTAssertTrue(app.staticTexts["3 门课程"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["schedule.updatedAt"].exists)
+        capture(app, name: "日周切换-Mac")
+        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "矩阵分析")).firstMatch.click()
+        XCTAssertTrue(app.scrollViews["courseDetail.scroll"].waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    func testWeekRefreshProgressAppearsAboveDatesWithYear() {
+        let app = launchAccounts(extraArguments: ["--slow-schedule-fixture"])
+        selectSidebar("schedule", in: app)
+        app.radioGroups["schedule.mode"].radioButtons["周"].click()
+        let progress = app.staticTexts["schedule.syncDetail"]
+        XCTAssertTrue(progress.waitForExistence(timeout: 5))
+        XCTAssertTrue(progress.isHittable)
+        let date = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "schedule.weekDate.")).firstMatch
+        XCTAssertLessThan(progress.frame.maxY, date.frame.minY)
+        var calendar = schoolCalendar
+        calendar.firstWeekday = 2
+        let weekStart = calendar.dateInterval(of: .weekOfYear, for: Date())!.start
+        capture(app, name: "周课表-顶部刷新进度-Mac")
+        let detailText = (progress.value as? String) ?? progress.label
+        let weekEnd = calendar.date(byAdding: .day, value: 6, to: weekStart)!
+        let range = "\(formattedDate(weekStart, format: "yyyy年M月d日")) - \(formattedDate(weekEnd, format: "yyyy年M月d日"))"
+        XCTAssertTrue(detailText.contains(range), detailText)
+        let finished = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: progress)
+        XCTAssertEqual(XCTWaiter.wait(for: [finished], timeout: 20), .completed)
+        XCTAssertTrue(date.isHittable)
+    }
+
+    @MainActor
+    func testWeekDateHeaderRemainsPinnedWhileScrolling() {
+        let app = launchDemo()
+        selectSidebar("schedule", in: app)
+        let mode = app.radioGroups["schedule.mode"]
+        mode.radioButtons["周"].click()
+        let date = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "schedule.weekDate.")).firstMatch
+        XCTAssertTrue(date.waitForExistence(timeout: 5))
+        let scroll = app.scrollViews["schedule.scroll"]
+        scroll.scroll(byDeltaX: 0, deltaY: -400)
+        XCTAssertTrue(date.isHittable)
+        let pinnedY = date.frame.minY
+        XCTAssertGreaterThanOrEqual(pinnedY, mode.frame.maxY - 1)
+        scroll.scroll(byDeltaX: 0, deltaY: -200)
+        XCTAssertTrue(date.isHittable)
+        XCTAssertEqual(date.frame.minY, pinnedY, accuracy: 2)
+        date.click()
+        capture(app, name: "周课表-固定日期栏-Mac")
+    }
+
+    @MainActor
+    func testOutsideWeekSettingAndCourseDetails() {
+        let app = launchAccounts(extraArguments: ["--outside-week-fixture"])
+        selectSidebar("profile", in: app)
+        app.buttons["profile.settings"].click()
+        let toggle = app.descendants(matching: .any).matching(identifier: "settings.showOutsideWeekCourses").firstMatch
+        XCTAssertTrue(toggle.waitForExistence(timeout: 5))
+        toggle.click()
+        capture(app, name: "设置-非本周课程-Mac")
+        selectSidebar("schedule", in: app)
+        app.radioGroups["schedule.mode"].radioButtons["周"].click()
+        let preview = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "schedule.outsideWeekCourse.")).firstMatch
+        XCTAssertTrue(preview.waitForExistence(timeout: 15))
+        capture(app, name: "周课表-非本周课程-Mac")
+        preview.click()
+        XCTAssertTrue(app.scrollViews["catalogCourseDetail.scroll"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["非本周示例课程"].exists)
+    }
+
+    @MainActor
     private func launchDemo() -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments = ["--demo", "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
+        app.launchArguments = ["--demo", "-scheduleViewMode", "day", "-appearanceMode", "light", "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
         app.launch()
         app.activate()
         // XCTest can spawn a single-Window app without the Launch Services

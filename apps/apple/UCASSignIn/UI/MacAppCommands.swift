@@ -20,10 +20,10 @@ struct MacAppCommands: Commands {
             Divider()
             Button("刷新课程") {
                 Task {
-                    if selection == 1 { await model.refresh() }
-                    else if selection == 2, let courseId = model.visibleCatalogCourseId {
+                    if (selection == 1 || selection == 2), let courseId = model.visibleCatalogCourseId {
                         await model.refreshAttendance(for: courseId, force: true)
                     }
+                    else if selection == 1 { await model.refreshSchedule() }
                     else if selection == 2 { await model.refreshCatalog(force: true) }
                     else { await model.refresh(on: .now) }
                 }
@@ -31,7 +31,7 @@ struct MacAppCommands: Commands {
             .keyboardShortcut("r")
             .disabled(!model.isConnected || model.isCatalogRefreshing ||
                       model.visibleCatalogCourseId.map { model.attendanceRefreshing.contains($0) } == true ||
-                      model.isRefreshing(on: selection == 1 ? model.selectedDate : .now) || model.showLogin)
+                      (selection == 1 ? model.isScheduleRefreshing : model.isRefreshing(on: .now)) || model.showLogin)
             Divider()
             Button("添加学校账户…") {
                 openWindow(id: "main")

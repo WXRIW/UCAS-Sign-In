@@ -2,6 +2,17 @@ import Foundation
 
 /// School schedules always use China Standard Time, independently of the device's zone.
 public enum CourseTime {
+    // Parsing is deterministic in the school's time zone. Bound the shared, thread-safe
+    // caches so drawing a timetable never recompiles/parses the same dates per cell.
+    private final class DayValue { let value: String?; init(_ value: String?) { self.value = value } }
+    private final class TimeValue { let value: Date?; init(_ value: Date?) { self.value = value } }
+    private static let dayCache: NSCache<NSString, DayValue> = {
+        let cache = NSCache<NSString, DayValue>(); cache.countLimit = 2048; return cache
+    }()
+    private static let timeCache: NSCache<NSString, TimeValue> = {
+        let cache = NSCache<NSString, TimeValue>(); cache.countLimit = 16384; return cache
+    }()
+    private static let regexCache = NSCache<NSString, NSRegularExpression>()
     public static let timeZone = TimeZone(identifier: "Asia/Shanghai")!
     public static let signWindowLead: TimeInterval = 25 * 60
 
@@ -17,6 +28,13 @@ public enum CourseTime {
     }
 
     public static func normalizeDay(_ raw: String) -> String? {
+        if let cached = dayCache.object(forKey: raw as NSString) { return cached.value }
+        let result = normalizeUncachedDay(raw)
+        dayCache.setObject(DayValue(result), forKey: raw as NSString)
+        return result
+    }
+
+    private static func normalizeUncachedDay(_ raw: String) -> String? {
         let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         let pattern = "^(\\d{4})[-/]?(\\d{2})[-/]?(\\d{2})(?:[T ].*)?$"
         guard let parts = captures(pattern, value), let year = Int(parts[0]), let month = Int(parts[1]), let day = Int(parts[2]),
@@ -25,6 +43,14 @@ public enum CourseTime {
     }
 
     public static func parse(day: String, time: String) -> Date? {
+        let key = "\(day.utf8.count):\(day)\(time)" as NSString
+        if let cached = timeCache.object(forKey: key) { return cached.value }
+        let result = parseUncached(day: day, time: time)
+        timeCache.setObject(TimeValue(result), forKey: key)
+        return result
+    }
+
+    private static func parseUncached(day: String, time: String) -> Date? {
         let raw = time.trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "：", with: ":").replacingOccurrences(of: "．", with: ".")
         guard !raw.isEmpty else { return nil }
@@ -110,7 +136,14 @@ public enum CourseTime {
     }
 
     private static func captures(_ pattern: String, _ value: String) -> [String]? {
-        guard let regex = try? NSRegularExpression(pattern: pattern), let match = regex.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)) else { return nil }
+        let regex: NSRegularExpression
+        if let cached = regexCache.object(forKey: pattern as NSString) { regex = cached }
+        else {
+            guard let compiled = try? NSRegularExpression(pattern: pattern) else { return nil }
+            regexCache.setObject(compiled, forKey: pattern as NSString)
+            regex = compiled
+        }
+        guard let match = regex.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)) else { return nil }
         return (1..<match.numberOfRanges).map { index in
             guard let range = Range(match.range(at: index), in: value) else { return "" }
             return String(value[range])

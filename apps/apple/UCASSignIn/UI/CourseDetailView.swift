@@ -26,7 +26,7 @@ struct CourseDetailView: View {
     private var currentCourse: Course { latestCourse ?? course }
     private var courseWasRemoved: Bool { latestCourse == nil && !model.needsCourseRefresh(course) }
 
-    private var signInDisabled: Bool { model.isSignInDisabled(for: currentCourse.courseId) }
+    private var signInDisabled: Bool { model.isSignInDisabled(for: currentCourse) }
     private var canRefreshQR: Bool {
         belongsToCurrentAccount && isVisible && isActive && scenePhase == .active && !model.showLogin && !model.showAccountManagement
     }

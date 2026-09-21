@@ -16,8 +16,10 @@ public struct SchoolSession: Codable, Hashable, Sendable {
 
 public struct Course: Identifiable, Codable, Hashable, Sendable {
     public let id: String
-    /// Stable course identifier shared by all scheduled meetings of a course.
+    /// School teaching-record ID; co-teachers may have different IDs for one catalog course.
     public let courseId: String?
+    public let courseNumber: String?
+    public let teacherId: String?
     public let uuid: String
     public let name: String
     public let teacher: String
@@ -27,9 +29,11 @@ public struct Course: Identifiable, Codable, Hashable, Sendable {
     public let day: String
     public var signed: Bool
 
-    public init(id: String, courseId: String? = nil, uuid: String = "", name: String, teacher: String = "", classroom: String? = nil, beginTime: String, endTime: String, day: String, signed: Bool = false) {
+    public init(id: String, courseId: String? = nil, courseNumber: String? = nil, teacherId: String? = nil, uuid: String = "", name: String, teacher: String = "", classroom: String? = nil, beginTime: String, endTime: String, day: String, signed: Bool = false) {
         self.id = id
         self.courseId = courseId?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        self.courseNumber = courseNumber?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        self.teacherId = teacherId?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         self.uuid = uuid
         self.name = name
         self.teacher = teacher
@@ -45,6 +49,14 @@ public struct Course: Identifiable, Codable, Hashable, Sendable {
     public var endDate: Date? { CourseTime.parse(day: day, time: endTime) }
     public var timeRange: String { "\(CourseTime.display(beginTime))–\(CourseTime.display(endTime))" }
     public var qrIdentifier: String { id.range(of: "^[0-9]{7}$", options: .regularExpression) != nil ? id : uuid }
+
+    public func preservingIdentity(from previous: Course?) -> Course {
+        guard let previous, previous.id == id,
+              CourseTime.normalizeDay(previous.day) == CourseTime.normalizeDay(day) else { return self }
+        return Course(id: id, courseId: courseId ?? previous.courseId, courseNumber: courseNumber ?? previous.courseNumber,
+                      teacherId: teacherId ?? previous.teacherId, uuid: uuid, name: name, teacher: teacher,
+                      classroom: classroom, beginTime: beginTime, endTime: endTime, day: day, signed: signed)
+    }
 }
 
 private extension String {

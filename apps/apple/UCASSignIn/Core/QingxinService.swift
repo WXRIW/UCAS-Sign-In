@@ -100,6 +100,31 @@ public actor QingxinService {
         return try ResponseParser.week(weekly, day: day)
     }
 
+    public func weeklySchedule(session: SchoolSession, date: Date) async throws -> WeeklySchedule {
+        let json = try await execute(path: "course/get_stu_course_sched_week.action", session: session,
+                                     fields: [("id", session.userId), ("dateStr", CourseTime.dayKey(date))])
+        return try ResponseParser.weeklySchedule(json)
+    }
+
+    /// Unlike the legacy fallback, this never infers an empty day from an omitted weekly entry.
+    public func dailySchedule(session: SchoolSession, date: Date) async throws -> [Course] {
+        let day = CourseTime.dayKey(date)
+        let json = try await execute(path: "course/get_stu_course_sched.action", session: session,
+                                     fields: [("id", session.userId), ("dateStr", day)])
+        try ResponseParser.rejectSessionError(json)
+        if ResponseParser.scalar(json["STATUS"]) == "0",
+           let entries = json["result"] as? [[String: Any]],
+           ["", "0"].contains(ResponseParser.scalar(json["ERRCODE"])),
+           ResponseParser.scalar(json["ERRMSG"]).isEmpty {
+            return try ResponseParser.scheduledCourses(entries, day: day)
+        }
+        let week = try await weeklySchedule(session: session, date: date)
+        guard week.coveredDays.contains(day) else {
+            throw APIError(code: "SCHEDULE_INCOMPLETE", message: "学校未返回 \(day) 的课程，请重试")
+        }
+        return week.courses.filter { CourseTime.normalizeDay($0.day) == day }
+    }
+
     public func semesters(session: SchoolSession) async throws -> [SchoolSemester] {
         let json = try await execute(path: "course/get_base_school_year.action", session: session,
                                      fields: [("userId", session.userId), ("type", "2")])
@@ -380,7 +405,8 @@ enum ResponseParser {
             if !seen.insert(id).inserted { continue }
             let name = scalar(entry["courseName"])
             let classroom = entry["classroomName"] as? String
-            result.append(Course(id: id, courseId: scalar(entry["courseId"]), uuid: uuid,
+            result.append(Course(id: id, courseId: scalar(entry["courseId"]),
+                                 courseNumber: scalar(entry["courseNum"]), teacherId: scalar(entry["teacherId"]), uuid: uuid,
                                  name: name.isEmpty ? "未命名课程" : name,
                                  teacher: scalar(entry["teacherName"]), classroom: classroom,
                                  beginTime: scalar(entry["classBeginTime"]), endTime: scalar(entry["classEndTime"]),
@@ -390,6 +416,14 @@ enum ResponseParser {
     }
 
     static func week(_ json: [String: Any], day: String) throws -> CourseQueryResult {
+        let all = try weeklySchedule(json).courses
+        let today = all.filter { $0.day == day }
+        if !today.isEmpty { return CourseQueryResult(courses: today, message: "已从周课表更新当天课程") }
+        if !all.isEmpty { return CourseQueryResult(courses: all, fromWeeklyFallback: true, message: "当天没有课程，已显示本周课程") }
+        return CourseQueryResult(courses: [], message: "当天及本周暂无课程")
+    }
+
+    static func weeklySchedule(_ json: [String: Any]) throws -> WeeklySchedule {
         try rejectSessionError(json)
         let status = scalar(json["STATUS"]), error = scalar(json["ERRCODE"])
         // Upstream's weekly STATUS branch differs from its daily endpoint and has no server fixture.
@@ -404,16 +438,17 @@ enum ResponseParser {
             }
         }
         var all: [Course] = []
+        var coveredDays = Set<String>()
         for entry in days {
             guard let date = CourseTime.normalizeDay(scalar(entry["dateStr"])), let entries = entry["schedData"] as? [[String: Any]] else {
                 throw APIError(code: "SCHEDULE_BAD_RESPONSE", message: "学校周课表数据不完整，请重新查询")
             }
             all += try scheduledCourses(entries, day: date)
+            guard coveredDays.insert(date).inserted else {
+                throw APIError(code: "SCHEDULE_BAD_RESPONSE", message: "学校周课表包含重复日期，请重新查询")
+            }
         }
-        let today = all.filter { $0.day == day }
-        if !today.isEmpty { return CourseQueryResult(courses: today, message: "已从周课表更新当天课程") }
-        if !all.isEmpty { return CourseQueryResult(courses: all.sorted { ($0.startDate ?? .distantFuture) < ($1.startDate ?? .distantFuture) }, fromWeeklyFallback: true, message: "当天没有课程，已显示本周课程") }
-        return CourseQueryResult(courses: [], message: "当天及本周暂无课程")
+        return WeeklySchedule(courses: all.sorted { ($0.startDate ?? .distantFuture) < ($1.startDate ?? .distantFuture) }, coveredDays: coveredDays)
     }
 
     static func sign(_ json: [String: Any]) -> SignResult {

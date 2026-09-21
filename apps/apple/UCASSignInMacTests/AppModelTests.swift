@@ -637,6 +637,454 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(cachedCatalogRequests, 1)
     }
 
+    func testSemesterSyncCommitsEmptyDaysAndColdStartReusesCache() async throws {
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("课程"))],
+            "semesters:session-a": [.init(scheduleSemesterResponse())],
+            "weekly:session-a": [.init(scheduleWeekResponse())]
+        ])
+        let store = MemoryAccountStore(accounts: [accountA], active: accountA.id)
+        let model = makeModel(store, transport)
+        await model.restore()
+        await model.synchronizeSchedules()
+        let updated = try XCTUnwrap(model.scheduleUpdatedAt(on: .now))
+        XCTAssertEqual(model.semesterSchedules.count, 1)
+        for date in SchoolDate.week(containing: .now) { XCTAssertTrue(model.hasSchedule(on: date)) }
+        await model.openScheduleDate(.now)
+        await model.maintainScheduleCache()
+        let requests = await transport.requests
+        XCTAssertEqual(requests.count, 3, "Full sync satisfies checks for every covered date")
+        XCTAssertEqual(model.scheduleUpdatedAt(on: .now), updated)
+
+        let restartedTransport = PlannedTransport(["courses:session-a": [.init(courseResponse("课程"))]])
+        let restarted = makeModel(store, restartedTransport)
+        await restarted.restore()
+        await restarted.openScheduleDate(.now)
+        XCTAssertEqual(restarted.scheduleUpdatedAt(on: .now), updated)
+        let restartedRequests = await restartedTransport.requests
+        XCTAssertEqual(restartedRequests.count, 1)
+    }
+
+    func testWeekPresentationReusesLayoutAndUnchangedDailyCheckDoesNotInvalidateIt() async throws {
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("课程")), .init(courseResponse("课程"))],
+            "semesters:session-a": [.init(scheduleSemesterResponse())],
+            "weekly:session-a": [.init(scheduleWeekResponse())]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), transport)
+        await model.restore()
+        await model.synchronizeSchedules()
+        let first = model.weekSchedulePresentation
+        let date = model.selectedDate
+        model.notice = "进度或其他状态变更"
+        XCTAssertTrue(first === model.weekSchedulePresentation)
+        let otherDay = SchoolDate.week(containing: date).first!
+        model.selectedDate = otherDay
+        XCTAssertTrue(first === model.weekSchedulePresentation)
+        model.selectedDate = SchoolDate.calendar.date(byAdding: .day, value: 7, to: date)!
+        XCTAssertFalse(first === model.weekSchedulePresentation)
+        model.selectedDate = date
+        XCTAssertTrue(first === model.weekSchedulePresentation)
+        await model.refresh(on: date)
+        XCTAssertTrue(first === model.weekSchedulePresentation, "An unchanged date check must not rebuild the semester layout")
+        model.showOutsideWeekCourses.toggle()
+        XCTAssertFalse(first === model.weekSchedulePresentation)
+        let previous = model.weekSchedulePresentation
+        model.courses.append(Course(id: "new", name: "新课程", beginTime: "19:00", endTime: "20:00", day: SchoolDate.key(date)))
+        XCTAssertFalse(previous === model.weekSchedulePresentation)
+        XCTAssertTrue(model.weekSchedulePresentation.entries.contains { $0.course.id == "new" })
+        model.removeAccount(id: accountA.id)
+        XCTAssertTrue(model.weekSchedulePresentation.entries.isEmpty)
+    }
+
+    func testAttendanceOnlyChangeDoesNotTriggerSemesterRefresh() async throws {
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("课程")), .init(courseResponse("课程").replacingOccurrences(of: "\"signStatus\":\"0\"", with: "\"signStatus\":\"1\""))],
+            "semesters:session-a": [.init(scheduleSemesterResponse())],
+            "weekly:session-a": [.init(scheduleWeekResponse())]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), transport)
+        await model.restore()
+        await model.synchronizeSchedules()
+        let updated = model.scheduleUpdatedAt(on: .now)
+        await model.refreshSchedule()
+        XCTAssertTrue(try XCTUnwrap(model.todayCourses.first).signed)
+        XCTAssertEqual(model.scheduleUpdatedAt(on: .now), updated)
+        let weekRequests = await transport.count("weekly:session-a")
+        XCTAssertEqual(weekRequests, 1)
+    }
+
+    func testArrangementChangeRefreshesCachedSemesterAndKeepsDailyResult() async throws {
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("课程")), .init(courseResponse("调整后课程"))],
+            "semesters:session-a": [.init(scheduleSemesterResponse()), .init(scheduleSemesterResponse())],
+            "weekly:session-a": [.init(scheduleWeekResponse()), .init(scheduleWeekResponse(name: "调整后课程"))]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), transport)
+        await model.restore()
+        await model.synchronizeSchedules()
+        let updated = try XCTUnwrap(model.scheduleUpdatedAt(on: .now))
+        await model.refreshSchedule()
+        XCTAssertEqual(model.todayCourses.first?.name, "调整后课程")
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(model.scheduleUpdatedAt(on: .now)), updated)
+        let weekRequests = await transport.count("weekly:session-a")
+        XCTAssertEqual(weekRequests, 2)
+    }
+
+    func testIncompleteSemesterDoesNotAdvanceTimestampAndBacksOff() async throws {
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("课程"))],
+            "semesters:session-a": [.init(scheduleSemesterResponse()), .init(scheduleSemesterResponse())],
+            "weekly:session-a": [.init(scheduleWeekResponse()), .init(#"{"STATUS":"0","result":[]}"#)]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), transport)
+        await model.restore()
+        await model.synchronizeSchedules()
+        let updated = model.scheduleUpdatedAt(on: .now)
+        await model.synchronizeSchedules(force: true)
+        XCTAssertNotNil(model.scheduleSyncError)
+        XCTAssertEqual(model.scheduleUpdatedAt(on: .now), updated)
+        XCTAssertEqual(model.todayCourses.first?.name, "课程")
+        let before = await transport.requests.count
+        await model.synchronizeSchedules()
+        let after = await transport.requests.count
+        XCTAssertEqual(before, after)
+        let retryTransport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("课程"))],
+            "semesters:session-a": [.init(scheduleSemesterResponse())],
+            "weekly:session-a": [.init(scheduleWeekResponse())]
+        ])
+        let restarted = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), retryTransport)
+        await restarted.restore()
+        await restarted.openScheduleDate(.now)
+        XCTAssertNil(restarted.scheduleSyncError)
+        XCTAssertNil(defaults.data(forKey: "schedule-pending-\(accountA.id)"))
+        let retriedWeeks = await retryTransport.count("weekly:session-a")
+        XCTAssertEqual(retriedWeeks, 1, "An interrupted force refresh must resume even when the old snapshot is under seven days old")
+    }
+
+    func testSparseWeekQueriesMissingDaysIncludingEmptyDays() async throws {
+        let daily = [PlannedTransport.Response(courseResponse("课程"))] +
+            Array(repeating: PlannedTransport.Response(#"{"STATUS":"0","result":[]}"#), count: 7)
+        let transport = PlannedTransport([
+            "courses:session-a": daily,
+            "semesters:session-a": [.init(scheduleSemesterResponse())],
+            "weekly:session-a": [.init(#"{"STATUS":"0","result":[]}"#)]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), transport)
+        await model.restore()
+        await model.synchronizeSchedules()
+        XCTAssertNotNil(model.scheduleUpdatedAt(on: .now))
+        XCTAssertTrue(model.todayCourses.isEmpty, "Successful empty response removes a cancelled course")
+        let dailyRequests = await transport.count("courses:session-a")
+        XCTAssertEqual(dailyRequests, 8)
+    }
+
+    func testNewerDailyCheckWinsAgainstInFlightSemesterBatch() async throws {
+        let gate = ResponseGate()
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("课程")), .init(courseResponse("新课程"))],
+            "semesters:session-a": [.init(scheduleSemesterResponse()), .init(scheduleSemesterResponse())],
+            "weekly:session-a": [.init(scheduleWeekResponse(), gate: gate), .init(scheduleWeekResponse(name: "新课程"))]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), transport)
+        await model.restore()
+        let batch = Task { await model.synchronizeSchedules() }
+        await assertEventually { await transport.count("weekly:session-a") == 1 }
+        await model.refresh(on: .now)
+        await gate.open()
+        await batch.value
+        XCTAssertEqual(model.todayCourses.first?.name, "新课程")
+        XCTAssertEqual(model.semesterSchedules.values.first?.courses.first?.name, "新课程")
+    }
+
+    func testAccountSwitchRejectsLateFullSemesterResult() async {
+        let gate = ResponseGate()
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("甲课程"))],
+            "courses:session-b": [.init(courseResponse("乙课程"))],
+            "semesters:session-a": [.init(scheduleSemesterResponse())],
+            "weekly:session-a": [.init(scheduleWeekResponse(name: "迟到甲课程"), gate: gate)]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [accountA, accountB], active: accountA.id), transport)
+        await model.restore()
+        let batch = Task { await model.synchronizeSchedules() }
+        await assertEventually { await transport.count("weekly:session-a") == 1 }
+        await model.switchAccount(id: accountB.id)
+        await gate.open()
+        await batch.value
+        XCTAssertEqual(model.todayCourses.first?.name, "乙课程")
+        XCTAssertTrue(model.semesterSchedules.isEmpty)
+        XCTAssertNil(defaults.data(forKey: "semester-schedules-\(accountA.id)"))
+    }
+
+    func testChangeRefreshesEveryCachedSemester() async throws {
+        let week = SchoolDate.week(containing: .now)
+        let previousWeek = SchoolDate.week(containing: week[0].addingTimeInterval(-7 * 86400))
+        let current = SchoolSemester(id: "schedule-term", name: "当前学期", beginDate: SchoolDate.key(week[0]), endDate: SchoolDate.key(week[6]), isCurrent: true)
+        let previous = SchoolSemester(id: "previous-term", name: "历史学期", beginDate: SchoolDate.key(previousWeek[0]), endDate: SchoolDate.key(previousWeek[6]), isCurrent: false)
+        let course = Course(id: "1234567", courseId: "stable-course", name: "课程", teacher: "教师", beginTime: "08:00", endTime: "09:40", day: SchoolDate.key(.now))
+        let snapshots = [SemesterScheduleCache(semester: current, courses: [course], updatedAt: .now),
+                         SemesterScheduleCache(semester: previous, courses: [], updatedAt: .now)]
+        defaults.set(try JSONEncoder().encode(snapshots), forKey: "semester-schedules-\(accountA.id)")
+        let terms = [current, previous].map { ["code": $0.id, "name": $0.name, "beginDate": $0.beginDate, "endDate": $0.endDate, "yearStatus": $0.isCurrent ? "1" : "0"] }
+        let semesters = String(data: try JSONSerialization.data(withJSONObject: ["STATUS": "0", "result": terms]), encoding: .utf8)!
+        let oldWeek = String(data: try JSONSerialization.data(withJSONObject: ["STATUS": "0", "result": previousWeek.map {
+            ["dateStr": SchoolDate.key($0), "schedData": []] as [String: Any]
+        }]), encoding: .utf8)!
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("课程")), .init(courseResponse("调整后课程"))],
+            "semesters:session-a": [.init(semesters)],
+            "weekly:session-a": [.init(scheduleWeekResponse(name: "调整后课程")), .init(oldWeek)]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), transport)
+        await model.restore()
+        await model.refreshSchedule()
+        let weeks = await transport.count("weekly:session-a")
+        XCTAssertEqual(weeks, 2)
+        XCTAssertEqual(model.semesterSchedules.count, 2)
+        XCTAssertEqual(model.todayCourses.first?.name, "调整后课程")
+        XCTAssertGreaterThan(try XCTUnwrap(model.semesterSchedules[previous.id]?.updatedAt), snapshots[1].updatedAt)
+    }
+
+    func testLocalAttendanceWinsAgainstInFlightSemesterBatch() async throws {
+        let gate = ResponseGate()
+        let now = CourseTime.parse(day: SchoolDate.key(.now), time: "08:30")!
+        let signed = courseResponse("课程").replacingOccurrences(of: "\"signStatus\":\"0\"", with: "\"signStatus\":\"1\"")
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("课程")), .init(signed)],
+            "semesters:session-a": [.init(scheduleSemesterResponse())],
+            "weekly:session-a": [.init(scheduleWeekResponse(), gate: gate)],
+            "clock": [.init("{\"STATUS\":\"0\",\"timestamp\":\(Int64(now.timeIntervalSince1970 * 1000))}")],
+            "sign": [.init(#"{"STATUS":"0","ERRCODE":"0","result":{"stuSignStatus":"1","stuSignId":"record"}}"#)]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), transport)
+        await model.restore()
+        let course = try XCTUnwrap(model.todayCourses.first)
+        let batch = Task { await model.synchronizeSchedules() }
+        await assertEventually { await transport.count("weekly:session-a") == 1 }
+        await model.sign(course)
+        await gate.open()
+        await batch.value
+        XCTAssertTrue(try XCTUnwrap(model.todayCourses.first).signed)
+        XCTAssertTrue(try XCTUnwrap(model.semesterSchedules.values.first?.courses.first).signed)
+    }
+
+    func testWeekViewLoadsDatesOutsideSemesterBoundary() async throws {
+        let day = SchoolDate.key(.now)
+        let term = SchoolSemester(id: "one-day", name: "学期边界", beginDate: day, endDate: day, isCurrent: true)
+        let initial = Course(id: "1234567", courseId: "stable-course", name: "课程", teacher: "教师", beginTime: "08:00", endTime: "09:40", day: day)
+        defaults.set(try JSONEncoder().encode([SemesterScheduleCache(semester: term, courses: [initial], updatedAt: .now)]),
+                     forKey: "semester-schedules-\(accountA.id)")
+        let daily = [PlannedTransport.Response(courseResponse("课程"))] +
+            Array(repeating: PlannedTransport.Response(#"{"STATUS":"0","result":[]}"#), count: 6)
+        let transport = PlannedTransport(["courses:session-a": daily])
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), transport)
+        await model.restore()
+        let updated = model.scheduleUpdatedAt(on: .now)
+        model.scheduleMode = .week
+        await model.openScheduleDate(model.selectedDate)
+        for date in SchoolDate.week(containing: .now) { XCTAssertTrue(model.hasSchedule(on: date)) }
+        XCTAssertEqual(model.scheduleUpdatedAt(on: .now), updated)
+        await model.openScheduleDate(model.selectedDate)
+        let requests = await transport.requests
+        XCTAssertEqual(requests.count, 7)
+    }
+
+    func testWaitingForSyncLoadsNewlySelectedSemester() async throws {
+        let gate = ResponseGate()
+        let week = SchoolDate.week(containing: .now)
+        let next = SchoolDate.week(containing: week[0].addingTimeInterval(7 * 86400))
+        let terms: [[String: String]] = [
+            ["code": "first", "name": "学期一", "beginDate": SchoolDate.key(week[0]), "endDate": SchoolDate.key(week[6]), "yearStatus": "1"],
+            ["code": "next", "name": "学期二", "beginDate": SchoolDate.key(next[0]), "endDate": SchoolDate.key(next[6]), "yearStatus": "0"]
+        ]
+        let semesters = String(data: try JSONSerialization.data(withJSONObject: ["STATUS": "0", "result": terms]), encoding: .utf8)!
+        let nextWeek = String(data: try JSONSerialization.data(withJSONObject: ["STATUS": "0", "result": next.map {
+            ["dateStr": SchoolDate.key($0), "schedData": []] as [String: Any]
+        }]), encoding: .utf8)!
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("课程"))],
+            "semesters:session-a": [.init(semesters), .init(semesters)],
+            "weekly:session-a": [.init(scheduleWeekResponse(), gate: gate), .init(nextWeek)]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), transport)
+        await model.restore()
+        let first = Task { await model.synchronizeSchedules() }
+        await assertEventually { await transport.count("weekly:session-a") == 1 }
+        model.selectedDate = next[0]
+        let second = Task { await model.synchronizeSchedules() }
+        for _ in 0..<10 { await Task.yield() }
+        await gate.open()
+        await first.value
+        await second.value
+        XCTAssertNotNil(model.semesterSchedules["first"])
+        XCTAssertNotNil(model.semesterSchedules["next"])
+        XCTAssertNil(model.scheduleSyncError)
+    }
+
+    func testScheduleModePersistsInInjectedDefaults() {
+        let store = MemoryAccountStore(accounts: [], active: nil)
+        let model = makeModel(store, PlannedTransport([:]))
+        XCTAssertEqual(model.scheduleMode, .day)
+        model.scheduleMode = .week
+        XCTAssertEqual(makeModel(store, PlannedTransport([:])).scheduleMode, .week)
+    }
+
+    func testOutsideWeekPreferencePersistsAndDoesNotModifyDailySchedule() async throws {
+        let model = makeModel(MemoryAccountStore(accounts: [], active: nil), PlannedTransport([:]))
+        XCTAssertFalse(model.showOutsideWeekCourses)
+        model.showOutsideWeekCourses = true
+        XCTAssertTrue(makeModel(MemoryAccountStore(accounts: [], active: nil), PlannedTransport([:])).showOutsideWeekCourses)
+        model.showOutsideWeekCourses = false
+        XCTAssertFalse(makeModel(MemoryAccountStore(accounts: [], active: nil), PlannedTransport([:])).showOutsideWeekCourses)
+
+        let now = SchoolDate.calendar.startOfDay(for: .now)
+        let previous = SchoolDate.calendar.date(byAdding: .day, value: -7, to: now)!
+        let next = SchoolDate.calendar.date(byAdding: .day, value: 7, to: now)!
+        let term = SchoolSemester(id: "preview-term", name: "测试学期", beginDate: SchoolDate.key(previous),
+                                  endDate: SchoolDate.key(next), isCurrent: true)
+        let other = Course(id: "preview", courseId: "preview-course", name: "非本周课程", beginTime: "08:00", endTime: "09:00", day: SchoolDate.key(previous))
+        defaults.set(try JSONEncoder().encode([SemesterScheduleCache(semester: term, courses: [other], updatedAt: .now)]),
+                     forKey: "semester-schedules-\(accountA.id)")
+        let transport = PlannedTransport(["courses:session-a": [.init(courseResponse("本周课程"))],
+                                          "courses:session-b": [.init(courseResponse("乙课程"))]])
+        let restored = makeModel(MemoryAccountStore(accounts: [accountA, accountB], active: accountA.id), transport)
+        await restored.restore()
+        let daily = restored.selectedCourses
+        let cached = restored.courses
+        restored.showOutsideWeekCourses = true
+        XCTAssertEqual(restored.weekSchedulePresentation.entries.filter(\.isOutsideWeek).map(\.course), [other])
+        XCTAssertEqual(restored.selectedCourses, daily)
+        XCTAssertEqual(restored.courses, cached)
+        await restored.switchAccount(id: accountB.id)
+        XCTAssertTrue(restored.weekSchedulePresentation.entries.filter(\.isOutsideWeek).isEmpty)
+    }
+
+    func testScheduleCourseNavigationResolvesCourseIdentityInsteadOfMeetingID() {
+        let model = makeModel(MemoryAccountStore(accounts: [], active: nil), PlannedTransport([:]))
+        model.enterDemo()
+        let scheduled = AppModel.demoCourses(on: .now)[0]
+        XCTAssertEqual(model.catalogCourse(for: scheduled), AppModel.demoCatalogCourses[0])
+        XCTAssertNotEqual(model.catalogCourse(for: scheduled).id, scheduled.id)
+
+        let missingID = Course(id: "7654321", name: scheduled.name, teacher: scheduled.teacher,
+                               beginTime: "08:00", endTime: "09:00", day: scheduled.day)
+        XCTAssertEqual(model.catalogCourse(for: missingID).id, "", "没有课程编号或内部 ID 时不通过课程名称猜测关联")
+        let unknown = Course(id: "7654321", name: "未匹配课程", beginTime: "08:00", endTime: "09:00", day: scheduled.day)
+        XCTAssertEqual(model.catalogCourse(for: unknown).id, "")
+        XCTAssertEqual(model.catalogCourse(for: unknown).name, "未匹配课程")
+        let uncataloged = Course(id: "7654321", courseId: "real-course", name: scheduled.name,
+                                beginTime: "08:00", endTime: "09:00", day: scheduled.day)
+        XCTAssertEqual(model.catalogCourse(for: uncataloged).id, "real-course")
+    }
+
+    func testCoTeacherSettingsUseOneCatalogIdentityIncludingMissingTeachingID() async throws {
+        let store = MemoryAccountStore(accounts: [accountA, accountB], active: accountA.id)
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(coTeacherResponse(missingThirdID: true))],
+            "semesters:session-a": [.init(linkedSemesterResponse)], "catalog:session-a": [.init(linkedCatalogResponse)],
+            "courses:session-b": [.init(courseResponse("其他账户"))]
+        ])
+        let model = makeModel(store, transport)
+        await model.restore()
+        await model.refreshCatalog()
+        let meetings = model.todayCourses
+        XCTAssertEqual(meetings.count, 3)
+        XCTAssertTrue(meetings.allSatisfy { model.catalogCourse(for: $0).id == "stable-course" })
+        let saved = await model.setCoursePreferences(CoursePreferences(confirmation: .enabled, autoSign: .disabled,
+            reminders: .disabled, signInDisabled: true), for: "teaching-2")
+        XCTAssertTrue(saved)
+        XCTAssertEqual(Set(store.vault.accounts[0].preferences.courses.keys), ["stable-course"])
+        for course in meetings {
+            XCTAssertTrue(model.isSignInDisabled(for: course))
+            XCTAssertFalse(model.canSign(course))
+            XCTAssertFalse(model.effectiveAutoSign(for: course))
+            XCTAssertFalse(model.effectiveReminders(for: course))
+        }
+        _ = await model.setCoursePreferences(CoursePreferences(confirmation: .enabled), for: "stable-course")
+        XCTAssertTrue(meetings.allSatisfy { model.effectiveConfirmation(for: $0) })
+        await model.signManually(meetings[1])
+        XCTAssertEqual(model.pendingSignConfirmation?.course.id, meetings[1].id)
+        _ = await model.setCoursePreferences(CoursePreferences(signInDisabled: true), for: "stable-course")
+        XCTAssertNil(model.pendingSignConfirmation)
+        let signCount = await transport.count("sign")
+        XCTAssertEqual(signCount, 0)
+        await model.switchAccount(id: accountB.id)
+        XCTAssertEqual(model.canonicalCourseID(for: "teaching-2"), "teaching-2")
+        XCTAssertFalse(model.isSignInDisabled(for: "stable-course"))
+    }
+
+    func testLegacyTeacherSettingsArePreservedUntilUnifiedSettingIsSaved() async {
+        var account = accountA
+        account.preferences.courses = ["teaching-2": CoursePreferences(autoSign: .disabled, signInDisabled: true),
+                                      "teaching-3": CoursePreferences(confirmation: .enabled, autoSign: .enabled)]
+        let store = MemoryAccountStore(accounts: [account], active: account.id)
+        let transport = PlannedTransport(["courses:session-a": [.init(coTeacherResponse())],
+            "semesters:session-a": [.init(linkedSemesterResponse)], "catalog:session-a": [.init(linkedCatalogResponse)]])
+        let model = makeModel(store, transport)
+        await model.restore(); await model.refreshCatalog()
+        XCTAssertTrue(model.todayCourses.allSatisfy { model.isSignInDisabled(for: $0) })
+        _ = await model.setCoursePreferences(CoursePreferences(confirmation: .enabled, autoSign: .disabled), for: "stable-course")
+        XCTAssertEqual(Set(store.vault.accounts[0].preferences.courses.keys), ["stable-course"])
+        XCTAssertTrue(model.todayCourses.allSatisfy { !model.isSignInDisabled(for: $0) && model.effectiveConfirmation(for: $0) })
+    }
+
+    func testCoTeacherAttendanceRequestsAreCanonicalAndCoalesced() async throws {
+        let gate = ResponseGate()
+        let transport = PlannedTransport(["courses:session-a": [.init(coTeacherResponse())],
+            "semesters:session-a": [.init(linkedSemesterResponse)], "catalog:session-a": [.init(linkedCatalogResponse)],
+            "attendance:session-a": [.init(linkedAttendanceResponse, gate: gate)]])
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), transport)
+        await model.restore(); await model.refreshCatalog()
+        let first = Task { await model.refreshAttendance(for: "teaching-2") }
+        await assertEventually { await transport.count("attendance:session-a") == 1 }
+        let second = Task { await model.refreshAttendance(for: "teaching-3") }
+        await gate.open(); await first.value; await second.value
+        let requests = await transport.requests
+        let reads = requests.filter { $0.url?.path.hasSuffix("get_my_course_sign_detail.action") == true }
+        XCTAssertEqual(reads.count, 1)
+        XCTAssertTrue(String(data: try XCTUnwrap(reads.first?.httpBody), encoding: .utf8)?.contains("courseId=stable-course") == true)
+        XCTAssertEqual(model.attendanceByCourse["stable-course"]?.records.count, 1)
+        XCTAssertEqual(model.attendanceByCourse["stable-course"]?.signedCount, 1)
+        XCTAssertNil(model.attendanceByCourse["teaching-2"])
+        XCTAssertNil(model.attendanceErrors["stable-course"])
+    }
+
+    func testCoTeacherSignSubmitsOriginalMeetingAndUpdatesOnlyThatMeeting() async throws {
+        let transport = PlannedTransport(["courses:session-a": [.init(coTeacherResponse()), .init(coTeacherResponse(signedTeacher: 2))],
+            "semesters:session-a": [.init(linkedSemesterResponse)], "catalog:session-a": [.init(linkedCatalogResponse)],
+            "clock": [.init(clockResponse)], "sign": [.init(#"{"STATUS":"0","result":{"stuSignStatus":"1"}}"#)]])
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), transport)
+        await model.restore(); await model.refreshCatalog()
+        let course = try XCTUnwrap(model.todayCourses.first { $0.courseId == "teaching-2" })
+        await model.sign(course)
+        let requests = await transport.requests
+        let submission = try XCTUnwrap(requests.first { $0.url?.path.hasSuffix("stu_scan_sign.action") == true })
+        let fields = URLComponents(url: submission.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        XCTAssertEqual(fields.first { $0.name == "courseSchedId" }?.value, "1234562")
+        XCTAssertEqual(model.todayCourses.filter(\.signed).map(\.id), ["1234562"])
+        XCTAssertEqual(model.records.first?.courseId, "stable-course")
+        XCTAssertEqual(model.todayCourses.count, 3)
+    }
+
+    private func scheduleSemesterResponse() -> String {
+        let week = SchoolDate.week(containing: .now)
+        return #"{"STATUS":"0","result":[{"code":"schedule-term","name":"测试学期","beginDate":"\#(SchoolDate.key(week[0]))","endDate":"\#(SchoolDate.key(week[6]))","yearStatus":"1"}]}"#
+    }
+
+    private func scheduleWeekResponse(name: String = "课程") -> String {
+        let today = SchoolDate.key(.now)
+        let result: [[String: Any]] = SchoolDate.week(containing: .now).map { date in
+            let entries: [[String: Any]] = SchoolDate.key(date) == today ? [[
+                "id": "1234567", "courseId": "stable-course", "courseName": name, "teacherName": "教师",
+                "classBeginTime": "08:00", "classEndTime": "09:40", "signStatus": "0"
+            ]] : []
+            return ["dateStr": SchoolDate.key(date), "schedData": entries]
+        }
+        return String(data: try! JSONSerialization.data(withJSONObject: ["STATUS": "0", "result": result]), encoding: .utf8)!
+    }
+
     private func makeModel(_ store: MemoryAccountStore, _ transport: PlannedTransport,
                            notifications: TestNotifications? = nil, widgets: TestWidgets? = nil) -> AppModel {
         AppModel(service: QingxinService(transport: transport), accountStore: store, defaults: defaults,
@@ -660,6 +1108,26 @@ private let expiredResponse = #"{"STATUS":"1","ERRMSG":"登录已过期，请重
 private var clockResponse: String { "{\"STATUS\":\"0\",\"timestamp\":\(Int64(Date().timeIntervalSince1970 * 1_000))}" }
 private let semesterResponse = #"{"STATUS":"0","result":[{"code":"2026202701","name":"2026-2027秋季学期","beginDate":"2026-08-31","endDate":"2027-01-31","yearStatus":"1"}]}"#
 private let catalogResponse = #"{"STATUS":"0","result":[{"course_id":"stable-course","courseNum":"CS6001","course_name":"高级人工智能","teacher_name":"陈老师","course_address":"教学楼 A101","semesterId":"2026202701","course_beignDate":"2026-08-31","course_endDate":"2027-01-31","jc_num":"16","jc_num_studyed":"3"}]}"#
+
+private var linkedSemesterResponse: String {
+    let week = SchoolDate.week(containing: .now)
+    return #"{"STATUS":"0","result":[{"code":"linked-term","name":"关联测试学期","beginDate":"\#(SchoolDate.key(week[0]))","endDate":"\#(SchoolDate.key(week[6]))","yearStatus":"1"}]}"#
+}
+private let linkedCatalogResponse = #"{"STATUS":"0","result":[{"course_id":"stable-course","courseNum":"CS6001","course_name":"联合课程","teacher_name":"教师1,教师2,教师3","course_address":"B203","semesterId":"linked-term"}]}"#
+private var linkedAttendanceResponse: String {
+    #"{"STATUS":"0","mySignNum":"1","myNoSignNum":"0","result":[{"id":"attendance-1","courseId":"stable-course","courseSchedId":"1234561","teachTime":"\#(SchoolDate.key(.now))","classBeginTime":"08:00","classEndTime":"09:40","signStatus":"1"}]}"#
+}
+private func coTeacherResponse(missingThirdID: Bool = false, signedTeacher: Int? = nil) -> String {
+    let values: [[String: Any]] = (1...3).map { index in
+        var value: [String: Any] = ["id": "123456\(index)", "courseId": index == 1 ? "stable-course" : "teaching-\(index)",
+            "courseNum": "CS6001", "semesterId": "incorrect-old-term", "teacherId": "teacher-\(index)",
+            "teacherName": "教师\(index)", "courseName": "联合课程", "classroomName": "B203",
+            "classBeginTime": "08:00", "classEndTime": "09:40", "signStatus": signedTeacher == index ? "1" : "0"]
+        if missingThirdID && index == 3 { value.removeValue(forKey: "courseId") }
+        return value
+    }
+    return String(data: try! JSONSerialization.data(withJSONObject: ["STATUS": "0", "result": values]), encoding: .utf8)!
+}
 
 private func courseResponse(_ name: String) -> String {
     #"{"STATUS":"0","result":[{"id":"1234567","courseId":"stable-course","courseName":"\#(name)","teacherName":"教师","classBeginTime":"08:00","classEndTime":"09:40","signStatus":"0"}]}"#
@@ -763,6 +1231,7 @@ private actor PlannedTransport: HTTPTransport {
         if path.hasSuffix("login.action") { return "login" }
         if path.hasSuffix("get_timestamp.do") { return "clock" }
         if path.hasSuffix("stu_scan_sign.action") { return "sign" }
+        if path.hasSuffix("get_stu_course_sched_week.action") { return "weekly:\(request.value(forHTTPHeaderField: "sessionId") ?? "")" }
         if path.hasSuffix("get_base_school_year.action") { return "semesters:\(request.value(forHTTPHeaderField: "sessionId") ?? "")" }
         if path.hasSuffix("get_myall_course.action") { return "catalog:\(request.value(forHTTPHeaderField: "sessionId") ?? "")" }
         if path.hasSuffix("get_my_course_sign_detail.action") { return "attendance:\(request.value(forHTTPHeaderField: "sessionId") ?? "")" }

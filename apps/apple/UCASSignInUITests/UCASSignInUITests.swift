@@ -648,9 +648,10 @@ final class UCASSignInUITests: XCTestCase {
     }
 
     @MainActor
-    private func launchAccounts(reset: Bool = true, expectedCourse: String = "账户一课程") -> XCUIApplication {
+    private func launchAccounts(reset: Bool = true, expectedCourse: String = "账户一课程", extraArguments: [String] = []) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--account-fixtures", "--fixture-persist", "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
+        app.launchArguments += extraArguments
         if reset { app.launchArguments.append("--fixture-reset") }
         app.launch()
 
@@ -659,9 +660,161 @@ final class UCASSignInUITests: XCTestCase {
     }
 
     @MainActor
+    func testCoTeachersShareOneWeekCardAndOpenCatalogCourse() {
+        let app = launchAccounts(extraArguments: ["--co-teacher-fixture"])
+        selectTab("课表", in: app)
+        app.segmentedControls["schedule.mode"].buttons["周"].tap()
+        let cards = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@",
+                                                     "schedule.weekCourse.", "联合课程"))
+        XCTAssertTrue(cards.firstMatch.waitForExistence(timeout: 15))
+        XCTAssertEqual(cards.count, 1)
+        XCTAssertTrue(cards.firstMatch.label.contains("教师三"))
+        capture(app, name: "周课表-多教师合并")
+        cards.firstMatch.tap()
+        XCTAssertTrue(app.scrollViews["catalogCourseDetail.scroll"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.sheets.count, 0)
+        XCTAssertTrue(app.staticTexts["CS6001"].exists)
+        XCTAssertTrue(app.staticTexts["教师一,教师二,教师三"].exists)
+        capture(app, name: "联合课程详情")
+    }
+
+    @MainActor
+    func testWeeklyScheduleSwitchNavigationAndRefresh() {
+        let app = launchDemo()
+        selectTab("课表", in: app)
+        let mode = app.segmentedControls["schedule.mode"]
+        XCTAssertTrue(mode.waitForExistence(timeout: 5))
+        mode.buttons["周"].tap()
+        let course = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "schedule.weekCourse.")).firstMatch
+        XCTAssertTrue(course.waitForExistence(timeout: 5))
+        capture(app, name: "周课表")
+        course.tap()
+        XCTAssertTrue(app.scrollViews["catalogCourseDetail.scroll"].waitForExistence(timeout: 5))
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(course.waitForExistence(timeout: 5))
+        app.buttons["下一周"].tap()
+        app.scrollViews["schedule.scroll"].swipeDown()
+        XCTAssertTrue(course.waitForExistence(timeout: 5))
+        mode.buttons["日"].tap()
+        XCTAssertTrue(app.staticTexts["3 门课程"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["schedule.updatedAt"].exists)
+        capture(app, name: "日周切换")
+        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "矩阵分析")).firstMatch.tap()
+        XCTAssertTrue(app.scrollViews["courseDetail.scroll"].waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    func testWeekRefreshProgressAppearsAboveDates() {
+        let app = launchAccounts(extraArguments: ["--slow-schedule-fixture"])
+        selectTab("课表", in: app)
+        app.segmentedControls["schedule.mode"].buttons["周"].tap()
+        let progress = app.staticTexts["schedule.syncDetail"]
+        // Inspect initial synchronization: XCTest waits for a native pull-to-refresh
+        // animation to end before returning from its gesture, hiding transient progress.
+        XCTAssertTrue(progress.waitForExistence(timeout: 5))
+        XCTAssertTrue(progress.isHittable)
+        let date = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "schedule.weekDate.")).firstMatch
+        XCTAssertLessThan(progress.frame.maxY, date.frame.minY)
+        capture(app, name: "周课表-顶部刷新进度")
+        let finished = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: progress)
+        XCTAssertEqual(XCTWaiter.wait(for: [finished], timeout: 20), .completed)
+        XCTAssertTrue(date.isHittable)
+    }
+
+    @MainActor
+    func testWeekRefreshFailureRetryAppearsAboveDates() {
+        let app = launchAccounts(extraArguments: ["--failed-schedule-fixture"])
+        selectTab("课表", in: app)
+        app.segmentedControls["schedule.mode"].buttons["周"].tap()
+        let retry = app.buttons["重试完整同步"]
+        XCTAssertTrue(retry.waitForExistence(timeout: 5))
+        XCTAssertTrue(retry.isHittable)
+        let date = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "schedule.weekDate.")).firstMatch
+        XCTAssertLessThan(retry.frame.maxY, date.frame.minY)
+        capture(app, name: "周课表-顶部失败重试")
+    }
+
+    @MainActor
+    func testWeekDateHeaderScrollingBehavior() {
+        let app = launchDemo()
+        selectTab("课表", in: app)
+        let mode = app.segmentedControls["schedule.mode"]
+        mode.buttons["周"].tap()
+        let date = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "schedule.weekDate.")).firstMatch
+        XCTAssertTrue(date.waitForExistence(timeout: 5))
+        let firstHour = app.staticTexts["schedule.hour.8"]
+        XCTAssertTrue(firstHour.exists)
+        XCTAssertGreaterThanOrEqual(firstHour.frame.minY, date.frame.maxY,
+                                    "The first time label must fit entirely below the date header")
+        capture(app, name: "周课表-首个时间刻度")
+        let scroll = app.scrollViews["schedule.scroll"]
+        scroll.swipeUp()
+        #if compiler(>=6.2)
+            XCTAssertFalse(date.isHittable, "With the iOS 26 SDK, dates scroll with the page")
+        #else
+            XCTAssertTrue(date.isHittable, "Dates stay visible below the pinned month controls")
+            let pinnedY = date.frame.minY
+            XCTAssertGreaterThanOrEqual(pinnedY, mode.frame.maxY - 1)
+            scroll.swipeUp()
+            XCTAssertTrue(date.isHittable)
+            XCTAssertEqual(date.frame.minY, pinnedY, accuracy: 2)
+            date.tap()
+        #endif
+        capture(app, name: "周课表-日期栏滚动")
+    }
+
+    @MainActor
+    func testWeeklyScheduleDarkAndAccessibilityLayout() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--demo", "-scheduleViewMode", "week", "-appearanceMode", "dark",
+                               "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityM",
+                               "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
+        app.launch()
+        selectTab("课表", in: app)
+        let course = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "schedule.weekCourse.")).firstMatch
+        XCTAssertTrue(course.waitForExistence(timeout: 5))
+        capture(app, name: "周课表-深色大字号")
+        course.tap()
+        XCTAssertTrue(app.scrollViews["catalogCourseDetail.scroll"].waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    func testOutsideWeekSettingPersistsAndShowsOriginalCourseDetails() {
+        let app = launchAccounts(extraArguments: ["--outside-week-fixture"])
+        selectTab("账户", in: app)
+        tapAfterScrolling(app.buttons["profile.settings"], in: app)
+        let toggle = app.switches["settings.showOutsideWeekCourses"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 5))
+        XCTAssertEqual(toggle.value as? String, "0")
+        toggle.tap()
+        XCTAssertEqual(toggle.value as? String, "1")
+        capture(app, name: "设置-非本周课程")
+        selectTab("课表", in: app)
+        app.segmentedControls["schedule.mode"].buttons["周"].tap()
+        let preview = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "schedule.outsideWeekCourse.")).firstMatch
+        XCTAssertTrue(preview.waitForExistence(timeout: 15))
+        XCTAssertTrue(preview.label.contains("非本周示例课程"))
+        capture(app, name: "周课表-非本周课程")
+        preview.tap()
+        XCTAssertTrue(app.scrollViews["catalogCourseDetail.scroll"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["非本周示例课程"].exists)
+        app.terminate()
+        let relaunched = launchAccounts(reset: false, extraArguments: ["--outside-week-fixture"])
+        selectTab("账户", in: relaunched)
+        tapAfterScrolling(relaunched.buttons["profile.settings"], in: relaunched)
+        let restored = relaunched.switches["settings.showOutsideWeekCourses"]
+        XCTAssertTrue(restored.waitForExistence(timeout: 5))
+        XCTAssertEqual(restored.value as? String, "1")
+        restored.tap()
+        selectTab("课表", in: relaunched)
+        XCTAssertTrue(relaunched.segmentedControls["schedule.mode"].waitForExistence(timeout: 5))
+        XCTAssertFalse(relaunched.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "schedule.outsideWeekCourse.")).firstMatch.exists)
+    }
+
+    @MainActor
     private func launchDemo() -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments = ["--demo", "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
+        app.launchArguments = ["--demo", "-scheduleViewMode", "day", "-appearanceMode", "light", "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
         app.launch()
         XCTAssertTrue(app.staticTexts["演示模式"].waitForExistence(timeout: 10))
         return app

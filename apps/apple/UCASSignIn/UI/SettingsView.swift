@@ -56,6 +56,17 @@ struct SettingsView: View {
                         .accessibilityValue(appearance.title)
                     }.padding(.vertical, 18)
                 }
+                settingsSection("课表") {
+                    Toggle(isOn: $model.showOutsideWeekCourses) {
+                        settingsLabel("显示非本周课程", subtitle: "在周课表中显示非本周课程。", symbol: "calendar")
+                    }
+                    .toggleStyle(.switch)
+                    .tint(Palette.green)
+                    .accessibilityIdentifier("settings.showOutsideWeekCourses")
+                    .accessibilityLabel("显示非本周课程")
+                    .accessibilityHint("在周课表中显示非本周课程。")
+                    .padding(.vertical, 18)
+                }
                 settingsSection("课堂偏好", footer: model.isConnected ? autoSignExplanation : disconnectedClassroomPreferences) {
                     VStack(spacing: 0) {
                         Toggle(isOn: Binding(get: { model.remindersEnabled }, set: { enabled in Task { await model.setReminders(enabled) } })) {

@@ -239,9 +239,14 @@ struct CatalogCourseDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 courseSection("课程信息") { identityContent }
-                courseSection("通知") { notificationSettingsContent }
-                courseSection("签到") { signInSettingsContent }
-                courseSection("学校考勤", footer: attendanceFooter) { attendanceContent }
+                if course.id.isEmpty {
+                    Label("学校暂未提供完整课程信息，课程设置与考勤暂不可用。", systemImage: "info.circle")
+                        .font(.callout).foregroundStyle(.secondary)
+                } else {
+                    courseSection("通知") { notificationSettingsContent }
+                    courseSection("签到") { signInSettingsContent }
+                    courseSection("学校考勤", footer: attendanceFooter) { attendanceContent }
+                }
                 courseSection("本机操作记录", footer: "这些记录来自本机操作，不代表学校最终考勤状态。") {
                     localRecordsContent
                 }
@@ -255,7 +260,7 @@ struct CatalogCourseDetailView: View {
         .navigationTitle(course.name).appNavigationStyle(inline: true)
         .onAppear {
             #if os(macOS)
-            model.visibleCatalogCourseId = course.id
+            model.visibleCatalogCourseId = course.id.isEmpty ? nil : course.id
             #endif
         }
         .onDisappear {
@@ -264,7 +269,7 @@ struct CatalogCourseDetailView: View {
             #endif
         }
         .onChange(of: preferences) { value in
-            guard preferencesLoaded else { return }
+            guard preferencesLoaded, !course.id.isEmpty else { return }
             Task {
                 if !(await model.setCoursePreferences(value, for: course.id)), preferences == value {
                     preferencesLoaded = false
@@ -309,7 +314,8 @@ struct CatalogCourseDetailView: View {
             detailRow("课程编号", course.number.isEmpty ? "暂未提供" : course.number, symbol: "number")
             detailRow("教师", course.teacher.isEmpty ? "暂未提供" : course.teacher, symbol: "person")
             detailRow("教室", course.classroom ?? "暂未提供", symbol: "location")
-            detailRow("学期", model.selectedSemester?.name ?? "当前学期", symbol: "calendar")
+            detailRow("学期", (model.semesters + model.semesterSchedules.values.map(\.semester))
+                .first { $0.id == course.semesterId }?.name ?? "暂未提供", symbol: "calendar")
             detailRow("课程日期", dateRange, symbol: "calendar.badge.clock")
         }
         .padding(.vertical, 18)
@@ -456,7 +462,7 @@ struct CatalogCourseDetailView: View {
 
     private var localRecordsContent: some View {
         let records = model.records.filter {
-            $0.courseId.map { $0 == course.id } ?? ($0.courseName == course.name)
+            $0.courseId.map { model.canonicalCourseID(for: $0) == course.id } ?? ($0.courseName == course.name)
         }.prefix(20)
         return VStack(spacing: 0) {
             if records.isEmpty {

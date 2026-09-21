@@ -149,10 +149,9 @@ enum SchoolDate {
         formatter.dateFormat = format
         return formatter.string(from: date)
     }
-    static func key(_ date: Date) -> String { text(date, "yyyyMMdd") }
+    static func key(_ date: Date) -> String { CourseTime.dayKey(date) }
     static func week(containing date: Date) -> [Date] {
-        let start = calendar.dateInterval(of: .weekOfYear, for: date)!.start
-        return (0..<7).compactMap { calendar.date(byAdding: .day, value: $0, to: start) }
+        ScheduleCalendar.week(containing: date)
     }
 }
 

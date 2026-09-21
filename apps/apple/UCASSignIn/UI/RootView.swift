@@ -12,7 +12,7 @@ struct RootView: View {
     @Binding var selection: Int
     @State private var refreshTodayOnSelection = false
     @State private var todayPath: [Course] = []
-    @State private var schedulePath: [Course] = []
+    @State private var schedulePath: [ScheduleDestination] = []
     @State private var coursesPath: [CatalogCourse] = []
     @State private var profilePath: [ProfileDestination] = []
     @State private var deferLoginPresentation = false
@@ -68,14 +68,16 @@ struct RootView: View {
             todayPath.removeAll()
             selectTab(0, refreshToday: true)
         }
+        .task(id: model.accountGeneration) { await model.maintainScheduleCache() }
         .task(id: scenePhase) {
-            #if os(iOS)
             guard scenePhase == .active else { return }
             while !Task.isCancelled {
+                #if os(iOS)
                 await model.foregroundTick()
+                #endif
+                await model.maintainScheduleCache()
                 do { try await Task.sleep(for: .seconds(30)) } catch { break }
             }
-            #endif
         }
     }
 
@@ -495,7 +497,7 @@ struct FeaturedCourseCard: View {
                     HStack(spacing: 7) {
                         if model.signingID == course.id { ProgressView().tint(Palette.hero) }
                         else { Image(systemName: course.signed ? "checkmark.circle.fill" : "checkmark.circle").font(.system(size: 17)) }
-                        Text(model.isSignInDisabled(for: course.courseId) ? "已禁用签到" : course.signed ? "已完成签到" : "一键签到").font(.system(size: 14, weight: .semibold))
+                        Text(model.isSignInDisabled(for: course) ? "已禁用签到" : course.signed ? "已完成签到" : "一键签到").font(.system(size: 14, weight: .semibold))
                     }.foregroundStyle(Palette.hero).frame(maxWidth: .infinity).padding(.vertical, 14)
                         .background(Palette.accent, in: RoundedRectangle(cornerRadius: 13))
                 }.buttonStyle(.plain).disabled(!model.canSign(course, accountGeneration: accountGeneration))
