@@ -493,8 +493,8 @@ final class UCASSignInUITests: XCTestCase {
         let datePickerButton = navigationBar.buttons["选择日期"]
         XCTAssertTrue(datePickerButton.isHittable)
         datePickerButton.tap()
-        XCTAssertTrue(app.navigationBars["选择日期"].waitForExistence(timeout: 5))
-        app.navigationBars["选择日期"].buttons["完成"].tap()
+        XCTAssertTrue(app.buttons["schedule.datePicker.done"].waitForExistence(timeout: 5))
+        app.buttons["schedule.datePicker.done"].tap()
         XCTAssertTrue(navigationBar.waitForExistence(timeout: 5))
 
         selectTab("今日", in: app)
@@ -716,6 +716,7 @@ final class UCASSignInUITests: XCTestCase {
         weekButton.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15)).tap()
         let wheel = app.pickerWheels.firstMatch
         XCTAssertTrue(wheel.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.sheets.firstMatch.exists)
         wheel.adjust(toPickerWheelValue: "第 1 周")
         app.buttons["取消"].tap()
         XCTAssertEqual(weekButton.value as? String, original)
@@ -727,9 +728,10 @@ final class UCASSignInUITests: XCTestCase {
         XCTAssertFalse(app.buttons["上一周"].isEnabled)
         XCTAssertTrue(app.buttons["下一周"].isEnabled)
         app.buttons["schedule.datePicker"].tap()
-        XCTAssertTrue(app.navigationBars["选择日期"].waitForExistence(timeout: 5))
-        capture(app, name: "学期日期范围")
-        app.navigationBars["选择日期"].buttons["完成"].tap()
+        XCTAssertTrue(app.buttons["schedule.datePicker.done"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.sheets.firstMatch.exists)
+        capture(app, name: "学期日期范围-Popover")
+        app.buttons["schedule.datePicker.done"].tap()
         app.segmentedControls["schedule.mode"].buttons["周"].tap()
         XCTAssertEqual(weekButton.value as? String, "第 1 周")
         weekButton.tap()
@@ -740,6 +742,15 @@ final class UCASSignInUITests: XCTestCase {
         semesterMenu.tap()
         app.buttons["演示学期"].tap()
         XCTAssertEqual(weekButton.value as? String, "第 2 周")
+        weekButton.tap()
+        wheel.adjust(toPickerWheelValue: "第 1 周")
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)).tap()
+        XCTAssertFalse(wheel.exists)
+        XCTAssertEqual(weekButton.value as? String, "第 2 周")
+        app.buttons["schedule.datePicker"].tap()
+        XCTAssertTrue(app.buttons["schedule.datePicker.done"].waitForExistence(timeout: 5))
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)).tap()
+        XCTAssertFalse(app.buttons["schedule.datePicker.done"].exists)
     }
 
     @MainActor

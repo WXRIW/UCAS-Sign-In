@@ -141,10 +141,10 @@ final class UCASSignInMacUITests: XCTestCase {
         assertScheduleSelectionAndCourses(nextWeek, in: app)
         capture(app, name: "Mac-独立子页面与课表日期")
 
-        // The date picker remains a sheet with its own completion action.
+        // The date picker opens a popover with its own completion action.
         app.buttons.matching(identifier: "schedule.datePicker").firstMatch.click()
-        XCTAssertTrue(app.sheets.firstMatch.waitForExistence(timeout: 5))
-        app.sheets.buttons["完成"].click()
+        XCTAssertTrue(app.popovers.firstMatch.waitForExistence(timeout: 5))
+        app.buttons["schedule.datePicker.done"].click()
         XCTAssertTrue(app.scrollViews["schedule.scroll"].waitForExistence(timeout: 5))
     }
 
@@ -496,20 +496,24 @@ final class UCASSignInMacUITests: XCTestCase {
         XCTAssertTrue(semesterMenu.exists)
         XCTAssertLessThan(semesterMenu.frame.maxX, app.buttons.matching(identifier: "schedule.datePicker").firstMatch.frame.midX)
         weekButton.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15)).click()
-        XCTAssertTrue(app.sheets.firstMatch.waitForExistence(timeout: 5))
-        app.sheets.buttons["取消"].click()
+        XCTAssertTrue(app.popovers.firstMatch.waitForExistence(timeout: 5))
+        app.buttons["取消"].click()
         XCTAssertEqual(weekButton.value as? String, original)
         weekButton.click()
         let list = app.descendants(matching: .any).matching(identifier: "schedule.weekPicker.list").firstMatch
         XCTAssertTrue(list.waitForExistence(timeout: 5))
         list.scroll(byDeltaX: 0, deltaY: 1500)
-        app.sheets.staticTexts["第 1 周"].click()
+        list.staticTexts["第 1 周"].click()
         capture(app, name: "周次选择-Mac")
         app.buttons["schedule.weekPicker.confirm"].click()
         let jumped = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "第 1 周"), object: weekButton)
         XCTAssertEqual(XCTWaiter.wait(for: [jumped], timeout: 5), .completed)
         XCTAssertFalse(app.buttons["上一周"].isEnabled)
         XCTAssertTrue(app.buttons["下一周"].isEnabled)
+        app.buttons.matching(identifier: "schedule.datePicker").firstMatch.click()
+        XCTAssertTrue(app.popovers.firstMatch.waitForExistence(timeout: 5))
+        capture(app, name: "学期日期范围-Popover-Mac")
+        app.buttons["schedule.datePicker.done"].click()
         semesterMenu.click()
         app.menuItems["演示学期"].click()
         let returned = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "第 1 周"), object: weekButton)

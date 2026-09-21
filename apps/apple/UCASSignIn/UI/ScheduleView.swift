@@ -62,6 +62,9 @@ struct ScheduleView: View {
                     .accessibilityLabel("选择日期")
                     .accessibilityIdentifier("schedule.datePicker")
                     .disabled(model.viewedScheduleSemester == nil)
+                    .popover(isPresented: $showDatePicker, arrowEdge: .top) {
+                        datePickerContent.schedulePickerPresentation()
+                    }
                 }
                 #if os(macOS)
                 ToolbarItem(placement: .primaryAction) {
@@ -84,40 +87,32 @@ struct ScheduleView: View {
                 await model.selectDate(model.selectedDate)
             }
         }
-        .sheet(isPresented: $showDatePicker) {
-            NavigationStack {
-                DatePicker("查询日期", selection: Binding(get: { model.selectedDate }, set: { date in
-                    guard datePickerGeneration == model.accountGeneration, model.canSelectVisibleScheduleDate(date) else { return }
-                    selectDate(date)
-                }), in: datePickerRange, displayedComponents: .date)
-                .datePickerStyle(.graphical).environment(\.timeZone, SchoolDate.calendar.timeZone).padding()
-                .navigationTitle("选择日期").appNavigationStyle(inline: true)
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { showDatePicker = false } } }
-            }
-            #if os(iOS)
-            .presentationDetents([.medium, .large])
-            #endif
-            .appSheetSize(width: 420, height: 390)
-        }
-        .sheet(isPresented: $showWeekPicker) {
-            if let semester = model.viewedScheduleSemester {
-                ScheduleWeekPicker(semester: semester, selectedDate: model.selectedDate) { date in
-                    guard weekPickerGeneration == model.accountGeneration else { return }
-                    selectDate(date)
-                }
-                #if os(iOS)
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-                #endif
-                .appSheetSize(width: 420, height: 390)
-            }
-        }
         .onChange(of: model.accountGeneration) { _ in
             showDatePicker = false
             datePickerGeneration = nil
             showWeekPicker = false
             weekPickerGeneration = nil
         }
+    }
+
+    private var datePickerContent: some View {
+        VStack(spacing: 12) {
+            HStack {
+                Text("选择日期").font(.headline).accessibilityAddTraits(.isHeader)
+                Spacer()
+                Button("完成") { showDatePicker = false }
+                    .keyboardShortcut(.defaultAction)
+                    .accessibilityIdentifier("schedule.datePicker.done")
+            }
+            DatePicker("查询日期", selection: Binding(get: { model.selectedDate }, set: { date in
+                guard datePickerGeneration == model.accountGeneration, model.canSelectVisibleScheduleDate(date) else { return }
+                selectDate(date)
+            }), in: datePickerRange, displayedComponents: .date)
+            .datePickerStyle(.graphical)
+            .labelsHidden()
+            .environment(\.timeZone, SchoolDate.calendar.timeZone)
+        }
+        .padding()
     }
 
     private var semesterMenu: some View {
@@ -199,6 +194,15 @@ struct ScheduleView: View {
             .accessibilityHint("选择周次")
             .accessibilityIdentifier("schedule.weekNumber")
             .disabled(model.scheduleWeekNumber == nil)
+            .popover(isPresented: $showWeekPicker, arrowEdge: .top) {
+                if let semester = model.viewedScheduleSemester {
+                    ScheduleWeekPicker(semester: semester, selectedDate: model.selectedDate) { date in
+                        guard weekPickerGeneration == model.accountGeneration else { return }
+                        selectDate(date)
+                    }
+                    .schedulePickerPresentation()
+                }
+            }
             Spacer(minLength: 0)
             Button { shiftWeek(1) } label: {
                 Image(systemName: "chevron.right").frame(width: 36, height: 36)
@@ -378,6 +382,28 @@ private struct ScheduleDateControlsHeight: PreferenceKey {
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 
+private extension View {
+    @ViewBuilder
+    func schedulePickerPresentation() -> some View {
+        let content = frame(idealWidth: 340, maxWidth: 340)
+        #if os(iOS)
+        if #available(iOS 16.4, *) {
+            if #available(iOS 26.0, *) {
+                // Preserve the system's Liquid Glass presentation on the new SDK.
+                content.presentationCompactAdaptation(horizontal: .popover, vertical: .sheet)
+            } else {
+                content.presentationCompactAdaptation(horizontal: .popover, vertical: .sheet)
+                    .presentationBackground(.regularMaterial)
+            }
+        } else {
+            content.presentationDetents([.medium, .large])
+        }
+        #else
+        content
+        #endif
+    }
+}
+
 private struct ScheduleWeekPicker: View {
     @Environment(\.dismiss) private var dismiss
     let semester: SchoolSemester
@@ -399,48 +425,60 @@ private struct ScheduleWeekPicker: View {
 
     var body: some View {
         let weeks = self.weeks
-        NavigationStack {
-            VStack(spacing: 12) {
-                #if os(iOS)
-                Picker("周次", selection: $week) {
-                    ForEach(weeks.indices, id: \.self) { index in Text("第 \(index + 1) 周").tag(index + 1) }
+        VStack(spacing: 12) {
+            ViewThatFits(in: .horizontal) {
+                HStack {
+                    Text("跳转到周").font(.headline).accessibilityAddTraits(.isHeader)
+                    Spacer(minLength: 16)
+                    actions
                 }
-                .pickerStyle(.wheel)
-                .labelsHidden()
-                .accessibilityIdentifier("schedule.weekPicker.wheel")
-                #else
-                ScrollViewReader { proxy in
-                    List(selection: Binding<Int?>(get: { week }, set: { if let value = $0 { week = value } })) {
-                        ForEach(weeks.indices, id: \.self) { index in
-                            Text("第 \(index + 1) 周").tag(index + 1).id(index + 1)
-                        }
-                    }
-                    .listStyle(.inset)
-                    .accessibilityLabel("周次")
-                    .accessibilityIdentifier("schedule.weekPicker.list")
-                    .onAppear { proxy.scrollTo(week, anchor: .center) }
-                }
-                #endif
-                if weeks.indices.contains(week - 1) {
-                    let range = weeks[week - 1]
-                    Text("\(SchoolDate.text(range.lowerBound, "yyyy年M月d日")) - \(SchoolDate.text(range.upperBound, "yyyy年M月d日"))")
-                        .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                        .accessibilityIdentifier("schedule.weekPicker.range")
+                VStack(spacing: 12) {
+                    Text("跳转到周").font(.headline).accessibilityAddTraits(.isHeader)
+                    HStack { Spacer(); actions }
                 }
             }
-            .padding()
-            .navigationTitle("跳转到周").appNavigationStyle(inline: true)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("跳转") {
-                        if let date = targetDate { select(date) }
-                        dismiss()
-                    }
-                    .disabled(targetDate == nil)
-                    .accessibilityIdentifier("schedule.weekPicker.confirm")
-                }
+            #if os(iOS)
+            Picker("周次", selection: $week) {
+                ForEach(weeks.indices, id: \.self) { index in Text("第 \(index + 1) 周").tag(index + 1) }
             }
+            .pickerStyle(.wheel)
+            .labelsHidden()
+            .accessibilityIdentifier("schedule.weekPicker.wheel")
+            #else
+            ScrollViewReader { proxy in
+                List(selection: Binding<Int?>(get: { week }, set: { if let value = $0 { week = value } })) {
+                    ForEach(weeks.indices, id: \.self) { index in
+                        Text("第 \(index + 1) 周").tag(index + 1).id(index + 1)
+                    }
+                }
+                .listStyle(.inset)
+                .scrollContentBackground(.hidden)
+                .accessibilityLabel("周次")
+                .accessibilityIdentifier("schedule.weekPicker.list")
+                .onAppear { proxy.scrollTo(week, anchor: .center) }
+            }
+            .frame(height: 240)
+            #endif
+            if weeks.indices.contains(week - 1) {
+                let range = weeks[week - 1]
+                Text("\(SchoolDate.text(range.lowerBound, "yyyy年M月d日")) - \(SchoolDate.text(range.upperBound, "yyyy年M月d日"))")
+                    .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    .accessibilityIdentifier("schedule.weekPicker.range")
+            }
+        }
+        .padding()
+    }
+
+    private var actions: some View {
+        HStack(spacing: 16) {
+            Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
+            Button("跳转") {
+                if let date = targetDate { select(date) }
+                dismiss()
+            }
+            .keyboardShortcut(.defaultAction)
+            .disabled(targetDate == nil)
+            .accessibilityIdentifier("schedule.weekPicker.confirm")
         }
     }
 }
