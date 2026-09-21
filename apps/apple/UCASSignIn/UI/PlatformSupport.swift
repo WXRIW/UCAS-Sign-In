@@ -6,7 +6,7 @@ import UIKit
 enum PageLayout {
     static let phoneMargin: CGFloat = 16
 
-    static func horizontalMargin(default value: CGFloat = 24) -> CGFloat {
+    @MainActor static func horizontalMargin(default value: CGFloat = 24) -> CGFloat {
         #if os(iOS)
         if UIDevice.current.userInterfaceIdiom == .phone { return phoneMargin }
         #endif

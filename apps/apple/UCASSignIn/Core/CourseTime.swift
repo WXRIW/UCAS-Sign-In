@@ -4,15 +4,22 @@ import Foundation
 public enum CourseTime {
     // Parsing is deterministic in the school's time zone. Bound the shared, thread-safe
     // caches so drawing a timetable never recompiles/parses the same dates per cell.
-    private final class DayValue { let value: String?; init(_ value: String?) { self.value = value } }
-    private final class TimeValue { let value: Date?; init(_ value: Date?) { self.value = value } }
-    private static let dayCache: NSCache<NSString, DayValue> = {
-        let cache = NSCache<NSString, DayValue>(); cache.countLimit = 2048; return cache
-    }()
-    private static let timeCache: NSCache<NSString, TimeValue> = {
-        let cache = NSCache<NSString, TimeValue>(); cache.countLimit = 16384; return cache
-    }()
-    private static let regexCache = NSCache<NSString, NSRegularExpression>()
+    private final class DayValue: Sendable { let value: String?; init(_ value: String?) { self.value = value } }
+    private final class TimeValue: Sendable { let value: Date?; init(_ value: Date?) { self.value = value } }
+
+    // NSCache synchronizes lookup/insertion internally. Its configuration is fixed
+    // before sharing, and only immutable Sendable values cross concurrency domains.
+    private final class ParsingCache<Value: AnyObject & Sendable>: @unchecked Sendable {
+        private let storage = NSCache<NSString, Value>()
+
+        init(countLimit: Int) { storage.countLimit = countLimit }
+        func object(forKey key: NSString) -> Value? { storage.object(forKey: key) }
+        func setObject(_ value: Value, forKey key: NSString) { storage.setObject(value, forKey: key) }
+    }
+
+    private static let dayCache = ParsingCache<DayValue>(countLimit: 2048)
+    private static let timeCache = ParsingCache<TimeValue>(countLimit: 16384)
+    private static let regexCache = ParsingCache<NSRegularExpression>(countLimit: 32)
     public static let timeZone = TimeZone(identifier: "Asia/Shanghai")!
     public static let signWindowLead: TimeInterval = 25 * 60
 

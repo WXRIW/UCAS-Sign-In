@@ -72,6 +72,15 @@ jobs:
           UCAS_RUNNER_LABEL: ${{ needs.resolve-xcode-runner.outputs.label }}
         run: bash scripts/publish/latest-apple-sdk.sh
 
+      - name: Upload failed build logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: UCAS-SignIn-Latest-SDK-Failure-Logs
+          path: artifacts/publish/*/logs/*-latest-sdk.log
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Read release version
         id: release
         shell: bash

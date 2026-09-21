@@ -13,13 +13,24 @@ protocol NotificationClient {
 
 struct LiveNotificationClient: NotificationClient {
     func authorizationStatus() async -> UNAuthorizationStatus {
-        await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
+        // Pass only the status across the actor boundary; older SDKs do not
+        // declare UNNotificationSettings as Sendable.
+        await withCheckedContinuation { continuation in
+            UNUserNotificationCenter.current().getNotificationSettings { settings in
+                continuation.resume(returning: settings.authorizationStatus)
+            }
+        }
     }
     func requestAuthorization() async throws -> Bool {
         try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
     }
     func add(_ request: UNNotificationRequest) async throws {
-        try await UNUserNotificationCenter.current().add(request)
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            UNUserNotificationCenter.current().add(request) { error in
+                if let error { continuation.resume(throwing: error) }
+                else { continuation.resume() }
+            }
+        }
     }
     func removeAll() { UNUserNotificationCenter.current().removeAllPendingNotificationRequests() }
     func remove(ids: [String]) { UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ids) }

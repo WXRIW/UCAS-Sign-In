@@ -2,6 +2,30 @@ import XCTest
 @testable import UCASCore
 
 final class CourseTimeTests: XCTestCase {
+    func testParsingCachesSupportConcurrentReadersAndWriters() async {
+        let valid = await withTaskGroup(of: Bool.self, returning: Bool.self) { group in
+            for _ in 0..<32 {
+                group.addTask {
+                    for day in 1...28 {
+                        let raw = String(format: "2028-02-%02d", day)
+                        let expected = String(format: "202802%02d", day)
+                        guard CourseTime.normalizeDay(raw) == expected,
+                              let parsed = CourseTime.parse(day: raw, time: "08:30"),
+                              CourseTime.dayKey(parsed) == expected,
+                              CourseTime.parse(day: raw, time: "2028-02-\(String(format: "%02d", day))T00:30:00Z") == parsed,
+                              CourseTime.parse(day: raw, time: "invalid") == nil,
+                              CourseTime.normalizeDay("2028-02-30") == nil else { return false }
+                    }
+                    return true
+                }
+            }
+            var valid = true
+            for await result in group { valid = valid && result }
+            return valid
+        }
+        XCTAssertTrue(valid)
+    }
+
     func testSchoolTimeFormatsAndExplicitTimeZones() throws {
         let expected = try XCTUnwrap(CourseTime.parse(day: "20260915", time: "08:00"))
         for value in ["8:00", "08:00:00", "08：00", "800", "0800", "080000", "2026-09-15 08:00:00", "2026-09-15T08:00:00.123", "2026-09-15T08:00:00+08:00", "2026-09-15T00:00:00Z"] {

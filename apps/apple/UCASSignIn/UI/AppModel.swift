@@ -1450,7 +1450,7 @@ extension AppModel {
         }
     }
 
-    private func scheduleRead<T>(token: UUID, _ operation: (SchoolSession) async throws -> T) async throws -> T {
+    private func scheduleRead<T: Sendable>(token: UUID, _ operation: (SchoolSession) async throws -> T) async throws -> T {
         try Task.checkCancellation()
         guard generation == token, let session, !showLogin, !automaticRefreshPaused else { throw CancellationError() }
         let value: T
