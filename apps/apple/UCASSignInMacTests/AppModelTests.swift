@@ -476,12 +476,43 @@ final class AppModelTests: XCTestCase {
         await model.restore()
         model.setConfirmation(true)
         await model.signManually(try XCTUnwrap(model.todayCourses.first))
-        XCTAssertNotNil(model.pendingSignConfirmation)
+        let request = try XCTUnwrap(model.pendingSignConfirmation)
         let beforeConfirmation = await transport.count("sign")
         XCTAssertEqual(beforeConfirmation, 0)
-        await model.confirmPendingSign()
+        // SwiftUI dismisses the alert before its asynchronous button action runs.
+        model.pendingSignConfirmation = nil
+        await model.confirmPendingSign(request)
         let afterConfirmation = await transport.count("sign")
         XCTAssertEqual(afterConfirmation, 1)
+    }
+
+    func testCancelledManualSignConfirmationDoesNotSubmit() async throws {
+        let transport = PlannedTransport(["courses:session-a": [.init(courseResponse("甲课程"))]])
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), transport)
+        await model.restore()
+        model.setConfirmation(true)
+        await model.signManually(try XCTUnwrap(model.todayCourses.first))
+        XCTAssertNotNil(model.pendingSignConfirmation)
+        model.pendingSignConfirmation = nil
+        await Task.yield()
+        let signCount = await transport.count("sign")
+        XCTAssertEqual(signCount, 0)
+    }
+
+    func testCapturedSignConfirmationCannotSubmitAfterAccountSwitch() async throws {
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("甲课程"))],
+            "courses:session-b": [.init(courseResponse("乙课程"))]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [accountA, accountB], active: accountA.id), transport)
+        await model.restore()
+        model.setConfirmation(true)
+        await model.signManually(try XCTUnwrap(model.todayCourses.first))
+        let request = try XCTUnwrap(model.pendingSignConfirmation)
+        await model.switchAccount(id: accountB.id)
+        await model.confirmPendingSign(request)
+        let signCount = await transport.count("sign")
+        XCTAssertEqual(signCount, 0)
     }
 
     func testCourseOverrideCanEnableAutoSignWhenGlobalDefaultIsOff() async throws {
@@ -543,7 +574,7 @@ final class AppModelTests: XCTestCase {
         model.setConfirmation(true)
         let course = try XCTUnwrap(model.todayCourses.first)
         await model.signManually(course)
-        XCTAssertNotNil(model.pendingSignConfirmation)
+        let request = try XCTUnwrap(model.pendingSignConfirmation)
         store.failWrites = true
         let failed = await model.setCoursePreferences(CoursePreferences(signInDisabled: true), for: "stable-course")
         XCTAssertFalse(failed)
@@ -553,7 +584,7 @@ final class AppModelTests: XCTestCase {
         let saved = await model.setCoursePreferences(CoursePreferences(signInDisabled: true), for: "stable-course")
         XCTAssertTrue(saved)
         XCTAssertNil(model.pendingSignConfirmation)
-        await model.confirmPendingSign()
+        await model.confirmPendingSign(request)
         let signCount = await transport.count("sign")
         XCTAssertEqual(signCount, 0)
     }

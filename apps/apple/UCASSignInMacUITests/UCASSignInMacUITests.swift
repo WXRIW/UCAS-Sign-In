@@ -83,6 +83,34 @@ final class UCASSignInMacUITests: XCTestCase {
     }
 
     @MainActor
+    func testManualSignConfirmationCancelThenConfirm() {
+        let app = launchDemo()
+        selectSidebar("profile", in: app)
+        clickAfterScrolling(app.buttons["profile.settings"], in: app.scrollViews["profile.scroll"])
+        XCTAssertTrue(app.scrollViews["settings.scroll"].waitForExistence(timeout: 5))
+        let confirmation = app.descendants(matching: .any).matching(identifier: "settings.confirmation").firstMatch
+        clickAfterScrolling(confirmation, in: app.scrollViews["settings.scroll"])
+        selectSidebar("schedule", in: app)
+        let course = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "高级人工智能")).firstMatch
+        clickAfterScrolling(course, in: app.scrollViews["schedule.scroll"])
+        let sign = app.buttons["为本节课程签到"]
+        clickAfterScrolling(sign, in: app.scrollViews["courseDetail.scroll"])
+        let cancel = app.sheets.buttons["取消"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 5))
+        cancel.click()
+        XCTAssertTrue(sign.waitForExistence(timeout: 5))
+        XCTAssertTrue(sign.isEnabled)
+        sign.click()
+        let confirm = app.sheets.buttons["确认签到"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        confirm.click()
+        let completed = app.buttons["已完成签到"]
+        XCTAssertTrue(completed.waitForExistence(timeout: 5))
+        XCTAssertFalse(completed.isEnabled)
+        XCTAssertTrue(app.staticTexts["演示签到成功 · 未向学校提交"].exists)
+    }
+
+    @MainActor
     func testCourseEntrypointsAndCommandsRestoreIndependentNavigationPaths() {
         let app = launchDemo()
         clickAfterScrolling(app.buttons["查看课程和签到二维码"], in: app.scrollViews["today.scroll"])

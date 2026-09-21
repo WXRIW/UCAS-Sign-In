@@ -112,16 +112,15 @@ struct RootView: View {
 
     private var signConfirmationHost: some View {
         Color.clear.frame(width: 0, height: 0)
-            .alert("确认签到？", isPresented: Binding(
-                get: { model.pendingSignConfirmation != nil },
-                set: { if !$0 { model.pendingSignConfirmation = nil } }
-            )) {
-                Button("取消", role: .cancel) { model.pendingSignConfirmation = nil }
-                Button("确认签到") { Task { await model.confirmPendingSign() } }
-            } message: {
-                if let request = model.pendingSignConfirmation {
-                    Text("\(request.course.name)\n\(request.course.day) · \(request.course.timeRange)")
-                }
+            .alert(item: $model.pendingSignConfirmation) { request in
+                // Dismissal clears the binding before the asynchronous action may run.
+                // Capture the presented request instead of reading that binding again.
+                Alert(title: Text("确认签到？"),
+                      message: Text("\(request.course.name)\n\(request.course.day) · \(request.course.timeRange)"),
+                      primaryButton: .default(Text("确认签到")) {
+                          Task { await model.confirmPendingSign(request) }
+                      },
+                      secondaryButton: .cancel(Text("取消")))
             }
     }
 

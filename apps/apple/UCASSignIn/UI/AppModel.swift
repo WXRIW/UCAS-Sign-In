@@ -731,9 +731,8 @@ final class AppModel: ObservableObject {
         await sign(course, accountGeneration: expectedGeneration)
     }
 
-    func confirmPendingSign() async {
-        guard let request = pendingSignConfirmation else { return }
-        pendingSignConfirmation = nil
+    func confirmPendingSign(_ request: PendingSignConfirmation) async {
+        if pendingSignConfirmation?.id == request.id { pendingSignConfirmation = nil }
         guard request.accountGeneration == generation,
               canSign(request.course, accountGeneration: request.accountGeneration) else { return }
         await sign(request.course, accountGeneration: request.accountGeneration)
