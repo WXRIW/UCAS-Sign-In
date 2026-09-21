@@ -169,6 +169,31 @@ final class ScheduleCacheTests: XCTestCase {
         XCTAssertFalse(ScheduleCalendar.sameArrangements([a], [moved]))
     }
 
+    func testSemesterWeekNumbersUseMondayIncludingPartialAndCrossYearWeeks() {
+        let semester = SchoolSemester(id: "partial", name: "跨年学期", beginDate: "20261230", endDate: "20270112", isCurrent: true)
+        XCTAssertNil(ScheduleCalendar.weekNumber(on: date("20261229"), in: semester))
+        XCTAssertEqual(ScheduleCalendar.weekNumber(on: date("20261230"), in: semester), 1)
+        XCTAssertEqual(ScheduleCalendar.weekNumber(on: date("20270103", "23:59"), in: semester), 1)
+        XCTAssertEqual(ScheduleCalendar.weekNumber(on: date("20270104"), in: semester), 2)
+        XCTAssertEqual(ScheduleCalendar.weekNumber(on: date("20270112", "23:59"), in: semester), 3)
+        XCTAssertNil(ScheduleCalendar.weekNumber(on: date("20270113"), in: semester))
+        let invalid = SchoolSemester(id: "invalid", name: "无效", beginDate: "20270112", endDate: "20261230", isCurrent: false)
+        XCTAssertNil(ScheduleCalendar.dateRange(in: invalid))
+        XCTAssertNil(ScheduleCalendar.weekNumber(on: date("20270101"), in: invalid))
+    }
+
+    func testWeekPickerPreservesWeekdayAndClampsPartialWeeks() {
+        let semester = SchoolSemester(id: "partial", name: "跨年学期", beginDate: "20261230", endDate: "20270112", isCurrent: true)
+        XCTAssertEqual(ScheduleCalendar.weeks(in: semester), [
+            date("20261230")...date("20270103"), date("20270104")...date("20270110"), date("20270111")...date("20270112")
+        ])
+        XCTAssertEqual(ScheduleCalendar.date(inWeek: 1, of: semester, keepingWeekdayOf: date("20270104")), date("20261230"))
+        XCTAssertEqual(ScheduleCalendar.date(inWeek: 2, of: semester, keepingWeekdayOf: date("20270101")), date("20270108"))
+        XCTAssertEqual(ScheduleCalendar.date(inWeek: 3, of: semester, keepingWeekdayOf: date("20270110")), date("20270112"))
+        XCTAssertNil(ScheduleCalendar.date(inWeek: 0, of: semester, keepingWeekdayOf: date("20270101")))
+        XCTAssertNil(ScheduleCalendar.date(inWeek: 4, of: semester, keepingWeekdayOf: date("20270101")))
+    }
+
     func testOverlapsAreTransitiveButTouchingCoursesRemainSeparate() {
         let courses = [sampleCourse(id: "1", begin: "08:00", end: "09:00"),
                        sampleCourse(id: "2", begin: "08:30", end: "10:00"),

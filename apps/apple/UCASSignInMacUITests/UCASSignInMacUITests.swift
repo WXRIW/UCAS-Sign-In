@@ -486,6 +486,37 @@ final class UCASSignInMacUITests: XCTestCase {
     }
 
     @MainActor
+    func testWeekPickerJumpAndCancel() {
+        let app = launchDemo()
+        selectSidebar("schedule", in: app)
+        let weekButton = app.buttons["schedule.weekNumber"]
+        XCTAssertTrue(weekButton.waitForExistence(timeout: 5))
+        let original = weekButton.value as? String
+        let semesterMenu = app.descendants(matching: .any).matching(identifier: "schedule.semesterPicker").firstMatch
+        XCTAssertTrue(semesterMenu.exists)
+        XCTAssertLessThan(semesterMenu.frame.maxX, app.buttons.matching(identifier: "schedule.datePicker").firstMatch.frame.midX)
+        weekButton.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15)).click()
+        XCTAssertTrue(app.sheets.firstMatch.waitForExistence(timeout: 5))
+        app.sheets.buttons["取消"].click()
+        XCTAssertEqual(weekButton.value as? String, original)
+        weekButton.click()
+        let list = app.descendants(matching: .any).matching(identifier: "schedule.weekPicker.list").firstMatch
+        XCTAssertTrue(list.waitForExistence(timeout: 5))
+        list.scroll(byDeltaX: 0, deltaY: 1500)
+        app.sheets.staticTexts["第 1 周"].click()
+        capture(app, name: "周次选择-Mac")
+        app.buttons["schedule.weekPicker.confirm"].click()
+        let jumped = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "第 1 周"), object: weekButton)
+        XCTAssertEqual(XCTWaiter.wait(for: [jumped], timeout: 5), .completed)
+        XCTAssertFalse(app.buttons["上一周"].isEnabled)
+        XCTAssertTrue(app.buttons["下一周"].isEnabled)
+        semesterMenu.click()
+        app.menuItems["演示学期"].click()
+        let returned = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "第 1 周"), object: weekButton)
+        XCTAssertEqual(XCTWaiter.wait(for: [returned], timeout: 5), .completed)
+    }
+
+    @MainActor
     func testWeekRefreshProgressAppearsAboveDatesWithYear() {
         let app = launchAccounts(extraArguments: ["--slow-schedule-fixture"])
         selectSidebar("schedule", in: app)
@@ -510,6 +541,14 @@ final class UCASSignInMacUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [finished], timeout: 20), .completed)
         XCTAssertTrue(date.waitForExistence(timeout: 5))
         XCTAssertTrue(date.isHittable)
+        let weekNumber = app.buttons["schedule.weekNumber"]
+        XCTAssertEqual(weekNumber.value as? String, "第 1 周")
+        XCTAssertFalse(app.buttons["上一周"].isEnabled)
+        XCTAssertFalse(app.buttons["下一周"].isEnabled)
+        app.radioGroups["schedule.mode"].radioButtons["日"].click()
+        XCTAssertEqual(weekNumber.value as? String, "第 1 周")
+        XCTAssertFalse(app.buttons["上一周"].isEnabled)
+        XCTAssertFalse(app.buttons["下一周"].isEnabled)
     }
 
     @MainActor

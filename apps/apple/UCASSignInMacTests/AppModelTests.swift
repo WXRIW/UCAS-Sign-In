@@ -928,25 +928,87 @@ final class AppModelTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(model.semesterSchedules.values.first?.courses.first).signed)
     }
 
-    func testWeekViewLoadsDatesOutsideSemesterBoundary() async throws {
+    func testWeekViewDoesNotRequestDatesOutsideKnownSemesterRange() async throws {
         let day = SchoolDate.key(.now)
         let term = SchoolSemester(id: "one-day", name: "学期边界", beginDate: day, endDate: day, isCurrent: true)
         let initial = Course(id: "1234567", courseId: "stable-course", name: "课程", teacher: "教师", beginTime: "08:00", endTime: "09:40", day: day)
         defaults.set(try JSONEncoder().encode([SemesterScheduleCache(semester: term, courses: [initial], updatedAt: .now)]),
                      forKey: "semester-schedules-\(accountA.id)")
-        let daily = [PlannedTransport.Response(courseResponse("课程"))] +
-            Array(repeating: PlannedTransport.Response(#"{"STATUS":"0","result":[]}"#), count: 6)
-        let transport = PlannedTransport(["courses:session-a": daily])
+        let transport = PlannedTransport(["courses:session-a": [.init(courseResponse("课程"))]])
         let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), transport)
         await model.restore()
         let updated = model.scheduleUpdatedAt(on: .now)
         model.scheduleMode = .week
         await model.openScheduleDate(model.selectedDate)
-        for date in SchoolDate.week(containing: .now) { XCTAssertTrue(model.hasSchedule(on: date)) }
+        for date in SchoolDate.week(containing: .now) {
+            XCTAssertEqual(model.hasSchedule(on: date), SchoolDate.key(date) == day)
+            XCTAssertEqual(model.canSelectScheduleDate(date), SchoolDate.key(date) == day)
+        }
+        XCTAssertNil(model.adjacentScheduleWeek(-1))
+        XCTAssertNil(model.adjacentScheduleWeek(1))
+        XCTAssertEqual(model.scheduleWeekNumber, 1)
+        await model.selectDate(SchoolDate.calendar.date(byAdding: .day, value: 30, to: .now)!)
+        XCTAssertEqual(SchoolDate.key(model.selectedDate), day)
         XCTAssertEqual(model.scheduleUpdatedAt(on: .now), updated)
         await model.openScheduleDate(model.selectedDate)
         let requests = await transport.requests
-        XCTAssertEqual(requests.count, 7)
+        XCTAssertEqual(requests.count, 1)
+
+        let outside = try XCTUnwrap(SchoolDate.week(containing: .now).first { SchoolDate.key($0) != day })
+        await model.refresh(on: outside)
+        XCTAssertNotNil(model.scheduleDayErrors[SchoolDate.key(outside)])
+        XCTAssertFalse(model.hasVisibleScheduleErrors, "An error outside this semester must not appear on the visible week")
+        await model.refresh(on: .now)
+        XCTAssertTrue(model.hasVisibleScheduleErrors)
+    }
+
+    func testScheduleNavigationIncludesHistoricalTermsAndClampsPartialBoundaryWeeks() async throws {
+        func date(_ day: String) -> Date { CourseTime.parse(day: day, time: "00:00")! }
+        let terms = [
+            SchoolSemester(id: "old", name: "历史学期", beginDate: "20260107", endDate: "20260120", isCurrent: false),
+            SchoolSemester(id: "short", name: "短学期", beginDate: "20260202", endDate: "20260215", isCurrent: false),
+            SchoolSemester(id: "new", name: "当前学期", beginDate: "20261230", endDate: "20270112", isCurrent: true)
+        ]
+        defaults.set(try JSONEncoder().encode(terms.map { SemesterScheduleCache(semester: $0, courses: [], updatedAt: .now) }),
+                     forKey: "semester-schedules-\(accountA.id)")
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id),
+                              PlannedTransport(["courses:session-a": [.init(courseResponse("课程"))]]))
+        await model.restore()
+        XCTAssertEqual(model.scheduleDateRange, date("20260107")...date("20270112"))
+        model.selectedDate = date("20250101")
+        XCTAssertFalse(model.hasWeekSchedule, "An out-of-range week has no usable cache")
+        model.selectedDate = date("20260112")
+        XCTAssertEqual(model.scheduleWeekNumber, 2)
+        XCTAssertEqual(model.adjacentScheduleWeek(-1), date("20260107"))
+        model.selectedDate = model.boundedScheduleDate(date("20260101"))
+        XCTAssertEqual(model.selectedDate, date("20260107"))
+        XCTAssertNil(model.adjacentScheduleWeek(-1))
+        model.selectedDate = date("20270110")
+        XCTAssertEqual(model.adjacentScheduleWeek(1), date("20270112"))
+        model.selectedDate = model.boundedScheduleDate(date("20270201"))
+        XCTAssertEqual(model.selectedDate, date("20270112"))
+        XCTAssertEqual(model.scheduleWeekNumber, 3)
+        XCTAssertNil(model.adjacentScheduleWeek(1))
+        XCTAssertEqual(model.scheduleDate(selectingSemester: "short"), date("20260210"), "Week 3 clamps to week 2 while retaining Tuesday")
+        XCTAssertEqual(model.scheduleDate(selectingSemester: "new"), model.selectedDate)
+        model.selectedDate = date("20270106")
+        XCTAssertEqual(model.scheduleDate(selectingSemester: "old"), date("20260114"), "Retain week 2 and Wednesday")
+        XCTAssertNil(model.scheduleDate(selectingSemester: "missing"))
+        XCTAssertTrue(model.canSelectScheduleDate(date("20270112").addingTimeInterval(86399)))
+        model.selectedDate = date("20261230")
+        XCTAssertEqual(model.scheduleDate(selectingSemester: "short"), date("20260204"))
+        XCTAssertNil(model.adjacentScheduleWeek(-1), "Previous must stop at this semester even when historical semesters exist")
+        XCTAssertEqual(model.adjacentScheduleWeek(1), date("20270106"))
+        XCTAssertFalse(model.canSelectVisibleScheduleDate(date("20261229")))
+        XCTAssertTrue(model.canSelectScheduleDate(date("20260107")), "Explicit date/semester selection can still open history")
+        model.selectedDate = date("20260120")
+        XCTAssertNil(model.adjacentScheduleWeek(1), "Historical semester navigation must also stop at its own end")
+        XCTAssertFalse(model.canSelectVisibleScheduleDate(date("20260121")))
+        model.selectedDate = date("20260801")
+        XCTAssertNil(model.scheduleWeekNumber, "Holidays must not inherit another semester's week number")
+        let unknown = makeModel(MemoryAccountStore(accounts: [], active: nil), PlannedTransport([:]))
+        XCTAssertNil(unknown.scheduleDateRange)
+        XCTAssertTrue(unknown.canSelectScheduleDate(date("20270201")))
     }
 
     func testWaitingForSyncLoadsNewlySelectedSemester() async throws {

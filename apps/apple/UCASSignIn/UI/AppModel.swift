@@ -428,7 +428,7 @@ final class AppModel: ObservableObject {
         resetAccountState()
         isDemo = true
         courses = Self.demoCourses(on: selectedDate)
-        semesters = [SchoolSemester(id: "demo", name: "演示学期", beginDate: SchoolDate.key(.now), endDate: SchoolDate.key(.now), isCurrent: true)]
+        semesters = [Self.demoSemester(containing: selectedDate)]
         selectedSemester = semesters.first
         catalogCourses = Self.demoCatalogCourses
         catalogUpdatedAt = .now
@@ -650,6 +650,7 @@ final class AppModel: ObservableObject {
     }
 
     func selectDate(_ date: Date) async {
+        let date = boundedScheduleDate(date)
         selectedDate = date
         if !isCached { notice = nil }
         await openScheduleDate(date)
@@ -1342,12 +1343,72 @@ final class AppModel: ObservableObject {
 extension AppModel {
     var isScheduleRefreshing: Bool { isSemesterSyncing || isRefreshing(on: selectedDate) }
 
+    private var scheduleSemesters: [SchoolSemester] {
+        semesters.isEmpty ? semesterSchedules.values.map(\.semester) : semesters
+    }
+
+    var scheduleAvailableSemesters: [SchoolSemester] {
+        scheduleSemesters.filter { ScheduleCalendar.dateRange(in: $0) != nil }.sorted { $0.beginDate > $1.beginDate }
+    }
+
+    var viewedScheduleSemester: SchoolSemester? {
+        let day = SchoolDate.calendar.startOfDay(for: selectedDate)
+        let matches = scheduleSemesters.filter { ScheduleCalendar.dateRange(in: $0)?.contains(day) == true }
+        return matches.count == 1 ? matches.first : nil
+    }
+
+    private var scheduleNavigationRange: ClosedRange<Date>? {
+        viewedScheduleSemester.flatMap { ScheduleCalendar.dateRange(in: $0) } ?? scheduleDateRange
+    }
+
+    var scheduleDateRange: ClosedRange<Date>? {
+        let ranges = scheduleSemesters.compactMap { ScheduleCalendar.dateRange(in: $0) }
+        guard let start = ranges.map(\.lowerBound).min(), let end = ranges.map(\.upperBound).max() else { return nil }
+        return start...end
+    }
+
+    var scheduleWeekNumber: Int? {
+        viewedScheduleSemester.flatMap { ScheduleCalendar.weekNumber(on: selectedDate, in: $0) }
+    }
+
+    func scheduleDate(selectingSemester id: String) -> Date? {
+        guard let semester = scheduleAvailableSemesters.first(where: { $0.id == id }) else { return nil }
+        let count = ScheduleCalendar.weeks(in: semester).count
+        let week = min(scheduleWeekNumber ?? 1, count)
+        return ScheduleCalendar.date(inWeek: week, of: semester, keepingWeekdayOf: selectedDate)
+    }
+
+    func canSelectScheduleDate(_ date: Date) -> Bool {
+        scheduleDateRange?.contains(SchoolDate.calendar.startOfDay(for: date)) ?? true
+    }
+
+    func canSelectVisibleScheduleDate(_ date: Date) -> Bool {
+        scheduleNavigationRange?.contains(SchoolDate.calendar.startOfDay(for: date)) ?? true
+    }
+
+    func boundedScheduleDate(_ date: Date) -> Date {
+        guard let range = scheduleDateRange else { return date }
+        let day = SchoolDate.calendar.startOfDay(for: date)
+        return min(max(day, range.lowerBound), range.upperBound)
+    }
+
+    func adjacentScheduleWeek(_ direction: Int) -> Date? {
+        guard let date = SchoolDate.calendar.date(byAdding: .day, value: direction * 7, to: selectedDate) else { return nil }
+        let bounded = scheduleNavigationRange.map { min(max(date, $0.lowerBound), $0.upperBound) } ?? date
+        return SchoolDate.week(containing: bounded)[0] == SchoolDate.week(containing: selectedDate)[0] ? nil : bounded
+    }
+
     var weekSchedulePresentation: WeekSchedulePresentation {
-        let key = SchoolDate.key(SchoolDate.week(containing: selectedDate)[0])
+        let key = "\(SchoolDate.key(SchoolDate.week(containing: selectedDate)[0]))|\(viewedScheduleSemester?.id ?? "unassigned")"
         if let cached = weekPresentations[key] { return cached }
+        let bounds = scheduleNavigationRange.map { (SchoolDate.key($0.lowerBound), SchoolDate.key($0.upperBound)) }
         let entries = ScheduleLayout.weekEntries(courses, containing: selectedDate,
                                                 semesters: identitySemesters,
                                                 includeOutsideWeek: showOutsideWeekCourses, catalog: catalogCourses)
+            .filter { entry in
+                guard let bounds else { return true }
+                return bounds.0 <= entry.displayDay && entry.displayDay <= bounds.1
+            }
         let day = SchoolDate.key(selectedDate)
         let term = identitySemesters.first { $0.beginDate <= day && day <= $0.endDate }
         let colorKey = term?.id ?? "unassigned"
@@ -1380,13 +1441,19 @@ extension AppModel {
     func hasSchedule(on date: Date) -> Bool { courseUpdates[SchoolDate.key(date)] != nil }
 
     var hasWeekSchedule: Bool {
-        isDemo || scheduleUpdatedAt(on: selectedDate) != nil || SchoolDate.week(containing: selectedDate).allSatisfy { hasSchedule(on: $0) }
+        if isDemo || scheduleUpdatedAt(on: selectedDate) != nil { return true }
+        let days = SchoolDate.week(containing: selectedDate).filter { canSelectVisibleScheduleDate($0) }
+        return !days.isEmpty && days.allSatisfy { hasSchedule(on: $0) }
+    }
+
+    var hasVisibleScheduleErrors: Bool {
+        SchoolDate.week(containing: selectedDate).contains {
+            canSelectVisibleScheduleDate($0) && scheduleDayErrors[SchoolDate.key($0)] != nil
+        }
     }
 
     var isInitialWeekLoading: Bool {
-        !hasWeekSchedule && scheduleSyncError == nil && !SchoolDate.week(containing: selectedDate).contains {
-            scheduleDayErrors[SchoolDate.key($0)] != nil
-        }
+        !hasWeekSchedule && scheduleSyncError == nil && !hasVisibleScheduleErrors
     }
 
     func openScheduleDate(_ date: Date) async {
@@ -1414,8 +1481,7 @@ extension AppModel {
             guard generation == token, !Task.isCancelled, scheduleMode == .week,
                   SchoolDate.key(date) == SchoolDate.key(selectedDate) else { return }
             let key = SchoolDate.key(day)
-            // Semester endpoints can fall midweek. Fill the visible boundary dates without
-            // pretending that those dates belong to the completed semester snapshot.
+            guard canSelectVisibleScheduleDate(day) else { continue }
             guard !hasSchedule(on: day) || scheduleDayErrors[key] != nil else { continue }
             if isDemo { populateDemoSemester(containing: day); continue }
             if !retryFailed, dayRetryAfter[key].map({ $0 > Date() }) == true { continue }
@@ -1508,6 +1574,11 @@ extension AppModel {
         scheduleSyncError = nil
         do {
             let terms = try await scheduleRead(token: token) { try await self.service.semesters(session: $0) }
+            semesters = terms
+            semestersUpdatedAt = .now
+            let date = boundedScheduleDate(date)
+            if SchoolDate.key(selectedDate) == selectedDay { selectedDate = date }
+            let selectedDay = SchoolDate.key(date)
             let matching = terms.filter { $0.beginDate <= selectedDay && selectedDay <= $0.endDate }
             let allCached = needsFullScheduleRefresh
             let legacyDates = defaults.dictionaryRepresentation().keys.compactMap { key -> String? in
@@ -1688,13 +1759,17 @@ extension AppModel {
         }
     }
 
-    private func populateDemoSemester(containing date: Date) {
+    private static func demoSemester(containing date: Date) -> SchoolSemester {
         let calendar = SchoolDate.calendar
         let year = calendar.component(.year, from: date)
         let autumn = calendar.component(.month, from: date) >= 7
         let begin = String(format: "%04d%02d01", year, autumn ? 7 : 1)
         let end = String(format: "%04d%02d%02d", year, autumn ? 12 : 6, autumn ? 31 : 30)
-        let term = SchoolSemester(id: "demo-\(begin)", name: "演示学期", beginDate: begin, endDate: end, isCurrent: true)
+        return SchoolSemester(id: "demo-\(begin)", name: "演示学期", beginDate: begin, endDate: end, isCurrent: true)
+    }
+
+    private func populateDemoSemester(containing date: Date) {
+        let term = Self.demoSemester(containing: date)
         guard semesterSchedules[term.id] == nil else { return }
         let days = ScheduleCalendar.days(in: term)
         for day in days {

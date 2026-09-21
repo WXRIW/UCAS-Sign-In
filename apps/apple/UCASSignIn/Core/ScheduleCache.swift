@@ -95,12 +95,45 @@ public enum ScheduleCalendar {
         return (0..<7).compactMap { calendar.date(byAdding: .day, value: $0, to: start) }
     }
 
-    public static func days(in semester: SchoolSemester) -> [Date] {
+    public static func dateRange(in semester: SchoolSemester) -> ClosedRange<Date>? {
         guard let start = CourseTime.parse(day: semester.beginDate, time: "00:00"),
-              let end = CourseTime.parse(day: semester.endDate, time: "00:00"), start <= end else { return [] }
+              let end = CourseTime.parse(day: semester.endDate, time: "00:00"), start <= end else { return nil }
         let count = CourseTime.calendar.dateComponents([.day], from: start, to: end).day ?? -1
-        guard count >= 0, count <= 366 else { return [] }
-        return (0...count).compactMap { CourseTime.calendar.date(byAdding: .day, value: $0, to: start) }
+        guard count >= 0, count <= 366 else { return nil }
+        return start...end
+    }
+
+    public static func days(in semester: SchoolSemester) -> [Date] {
+        guard let range = dateRange(in: semester) else { return [] }
+        let count = CourseTime.calendar.dateComponents([.day], from: range.lowerBound, to: range.upperBound).day ?? 0
+        return (0...count).compactMap { CourseTime.calendar.date(byAdding: .day, value: $0, to: range.lowerBound) }
+    }
+
+    /// The week containing the semester's first day is week 1, with Monday starting each week.
+    public static func weekNumber(on date: Date, in semester: SchoolSemester) -> Int? {
+        guard let range = dateRange(in: semester), range.contains(CourseTime.calendar.startOfDay(for: date)) else { return nil }
+        let days = CourseTime.calendar.dateComponents([.day], from: week(containing: range.lowerBound)[0],
+                                                      to: week(containing: date)[0]).day ?? 0
+        return days / 7 + 1
+    }
+
+    public static func weeks(in semester: SchoolSemester) -> [ClosedRange<Date>] {
+        guard let range = dateRange(in: semester), let count = weekNumber(on: range.upperBound, in: semester) else { return [] }
+        let firstMonday = week(containing: range.lowerBound)[0]
+        return (0..<count).compactMap { index in
+            guard let start = CourseTime.calendar.date(byAdding: .day, value: index * 7, to: firstMonday),
+                  let end = CourseTime.calendar.date(byAdding: .day, value: 6, to: start) else { return nil }
+            return max(start, range.lowerBound)...min(end, range.upperBound)
+        }
+    }
+
+    public static func date(inWeek number: Int, of semester: SchoolSemester, keepingWeekdayOf date: Date) -> Date? {
+        let ranges = weeks(in: semester)
+        guard number > 0, number <= ranges.count else { return nil }
+        let range = ranges[number - 1]
+        let offset = (CourseTime.calendar.component(.weekday, from: date) + 5) % 7
+        guard let target = CourseTime.calendar.date(byAdding: .day, value: offset, to: week(containing: range.lowerBound)[0]) else { return nil }
+        return min(max(target, range.lowerBound), range.upperBound)
     }
 
     /// Compare arrangements, excluding attendance state and transport ordering.

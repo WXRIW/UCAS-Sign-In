@@ -124,6 +124,7 @@ struct WeekScheduleView: View {
     private func dateHeader(_ date: Date) -> some View {
         let selected = SchoolDate.key(date) == SchoolDate.key(model.selectedDate)
         let today = SchoolDate.key(date) == SchoolDate.key(.now)
+        let enabled = model.canSelectVisibleScheduleDate(date)
         return Button { selectDate(date) } label: {
             VStack(spacing: 5) {
                 Text(SchoolDate.text(date, "EEEEE")).font(.caption2)
@@ -135,6 +136,8 @@ struct WeekScheduleView: View {
             }.frame(maxWidth: .infinity, maxHeight: .infinity).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.35)
         .accessibilityLabel(SchoolDate.text(date, "M月d日 EEEE"))
         .accessibilityIdentifier("schedule.weekDate.\(SchoolDate.key(date))")
         .accessibilityAddTraits(selected ? .isSelected : [])
@@ -170,7 +173,7 @@ struct WeekScheduleView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 6))
                     .offset(x: 2, y: startHours * hourHeight + 1)
             }
-            if blocks.isEmpty {
+            if blocks.isEmpty, model.canSelectVisibleScheduleDate(date) {
                 if let error = model.scheduleDayErrors[SchoolDate.key(date)] {
                     Image(systemName: "exclamationmark.icloud").font(.caption)
                         .foregroundStyle(.secondary).padding(.top, 16).frame(width: width)

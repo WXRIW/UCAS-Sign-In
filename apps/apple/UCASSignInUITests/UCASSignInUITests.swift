@@ -704,6 +704,45 @@ final class UCASSignInUITests: XCTestCase {
     }
 
     @MainActor
+    func testWeekPickerJumpAndCancel() {
+        let app = launchDemo()
+        selectTab("课表", in: app)
+        let weekButton = app.buttons["schedule.weekNumber"]
+        XCTAssertTrue(weekButton.waitForExistence(timeout: 5))
+        let original = weekButton.value as? String
+        let semesterMenu = app.buttons["schedule.semesterPicker"]
+        XCTAssertTrue(semesterMenu.exists)
+        XCTAssertLessThan(semesterMenu.frame.maxX, app.buttons["schedule.datePicker"].frame.midX)
+        weekButton.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15)).tap()
+        let wheel = app.pickerWheels.firstMatch
+        XCTAssertTrue(wheel.waitForExistence(timeout: 5))
+        wheel.adjust(toPickerWheelValue: "第 1 周")
+        app.buttons["取消"].tap()
+        XCTAssertEqual(weekButton.value as? String, original)
+        weekButton.tap()
+        wheel.adjust(toPickerWheelValue: "第 1 周")
+        capture(app, name: "周次滚轮")
+        app.buttons["schedule.weekPicker.confirm"].tap()
+        XCTAssertEqual(weekButton.value as? String, "第 1 周")
+        XCTAssertFalse(app.buttons["上一周"].isEnabled)
+        XCTAssertTrue(app.buttons["下一周"].isEnabled)
+        app.buttons["schedule.datePicker"].tap()
+        XCTAssertTrue(app.navigationBars["选择日期"].waitForExistence(timeout: 5))
+        capture(app, name: "学期日期范围")
+        app.navigationBars["选择日期"].buttons["完成"].tap()
+        app.segmentedControls["schedule.mode"].buttons["周"].tap()
+        XCTAssertEqual(weekButton.value as? String, "第 1 周")
+        weekButton.tap()
+        wheel.adjust(toPickerWheelValue: "第 2 周")
+        app.buttons["schedule.weekPicker.confirm"].tap()
+        XCTAssertEqual(weekButton.value as? String, "第 2 周")
+        XCTAssertTrue(app.buttons["上一周"].isEnabled)
+        semesterMenu.tap()
+        app.buttons["演示学期"].tap()
+        XCTAssertEqual(weekButton.value as? String, "第 2 周")
+    }
+
+    @MainActor
     func testWeekRefreshProgressAppearsAboveDates() {
         let app = launchAccounts(extraArguments: ["--slow-schedule-fixture"])
         selectTab("课表", in: app)
@@ -723,6 +762,13 @@ final class UCASSignInUITests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [finished], timeout: 20), .completed)
         XCTAssertTrue(date.waitForExistence(timeout: 5))
         XCTAssertTrue(date.isHittable)
+        XCTAssertEqual(app.buttons["schedule.weekNumber"].value as? String, "第 1 周")
+        XCTAssertFalse(app.buttons["上一周"].isEnabled)
+        XCTAssertFalse(app.buttons["下一周"].isEnabled)
+        app.segmentedControls["schedule.mode"].buttons["日"].tap()
+        XCTAssertEqual(app.buttons["schedule.weekNumber"].value as? String, "第 1 周")
+        XCTAssertFalse(app.buttons["上一周"].isEnabled)
+        XCTAssertFalse(app.buttons["下一周"].isEnabled)
     }
 
     @MainActor

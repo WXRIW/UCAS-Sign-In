@@ -448,11 +448,13 @@ struct TodayView: View {
 
 struct WeekStrip: View {
     let selectedDate: Date
+    var canSelect: (Date) -> Bool
     var select: (Date) -> Void
     var body: some View {
         HStack(spacing: 5) {
             ForEach(SchoolDate.week(containing: selectedDate), id: \.self) { date in
                 let selected = SchoolDate.calendar.isDate(date, inSameDayAs: selectedDate)
+                let enabled = canSelect(date)
                 Button { select(date) } label: {
                     VStack(spacing: 10) {
                         Text(SchoolDate.text(date, "EEEEE")).font(.system(size: 10, weight: .medium))
@@ -463,6 +465,8 @@ struct WeekStrip: View {
                         .background(selected ? Palette.hero : .clear, in: RoundedRectangle(cornerRadius: 17))
                         .contentShape(Rectangle())
                 }.buttonStyle(.plain).accessibilityLabel(SchoolDate.text(date, "M月d日 EEEE"))
+                    .disabled(!enabled)
+                    .opacity(enabled ? 1 : 0.35)
                     .accessibilityAddTraits(selected ? .isSelected : [])
             }
         }
