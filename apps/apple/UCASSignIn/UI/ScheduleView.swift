@@ -58,6 +58,7 @@ struct ScheduleView: View {
                         showDatePicker = true
                     } label: {
                         Image(systemName: "calendar.badge.clock")
+                            .foregroundStyle(Palette.green)
                     }
                     .accessibilityLabel("选择日期")
                     .accessibilityIdentifier("schedule.datePicker")
