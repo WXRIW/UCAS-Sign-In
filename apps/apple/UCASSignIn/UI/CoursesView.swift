@@ -239,6 +239,7 @@ struct CatalogCourseDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 courseSection("课程信息") { identityContent }
+                CourseScheduleSection(course: course)
                 if course.id.isEmpty {
                     Label("学校暂未提供完整课程信息，课程设置与考勤暂不可用。", systemImage: "info.circle")
                         .font(.callout).foregroundStyle(.secondary)

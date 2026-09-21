@@ -1205,6 +1205,146 @@ final class AppModelTests: XCTestCase {
         return String(data: try! JSONSerialization.data(withJSONObject: ["STATUS": "0", "result": result]), encoding: .utf8)!
     }
 
+    func testCourseScheduleReadsHistoricalCacheWithoutMovingEitherSelection() async throws {
+        let day = "20260107"
+        let term = SchoolSemester(id: "history", name: "历史学期", beginDate: day, endDate: day, isCurrent: false)
+        let meeting = Course(id: "old", courseId: "teacher-old", courseNumber: "CS1", name: "历史课程", teacher: "甲", classroom: "B203", beginTime: "08:00", endTime: "10:00", day: day)
+        defaults.set(try JSONEncoder().encode([SemesterScheduleCache(semester: term, courses: [meeting], updatedAt: .now)]), forKey: "semester-schedules-\(accountA.id)")
+        let directory = #"{"STATUS":"0","result":[{"course_id":"old-catalog","courseNum":"CS1","course_name":"历史课程","semesterId":"history"}]}"#
+        let transport = PlannedTransport(["courses:session-a": [.init(courseResponse("今日"))], "catalog:session-a": [.init(directory)]])
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), transport)
+        await model.restore()
+        let selectedDate = model.selectedDate
+        let selectedSemester = model.selectedSemester
+        let course = CatalogCourse(id: "old-catalog", number: "CS1", name: "历史课程", teacher: "", classroom: nil, semesterId: term.id, beginDate: "", endDate: "")
+        await model.loadCourseSchedule(for: course)
+        await model.loadCourseSchedule(for: course)
+        XCTAssertEqual(model.selectedDate, selectedDate)
+        XCTAssertEqual(model.selectedSemester, selectedSemester)
+        XCTAssertEqual(model.courseSchedulePresentation(for: course)?.meetings.count, 1)
+        XCTAssertNil(model.courseScheduleErrors[term.id])
+        let requests = await transport.requests
+        XCTAssertEqual(requests.count, 2, "A fresh historical semester needs only its directory, then reuses both caches")
+    }
+
+    func testCourseScheduleEmptyCompleteAndIncompleteAreDistinguishable() async throws {
+        let term = SchoolSemester(id: "history", name: "历史学期", beginDate: "20260107", endDate: "20260107", isCurrent: false)
+        defaults.set(try JSONEncoder().encode([SemesterScheduleCache(semester: term, courses: [], updatedAt: .now)]), forKey: "semester-schedules-\(accountA.id)")
+        let directory = #"{"STATUS":"0","result":[{"course_id":"old-catalog","courseNum":"CS1","course_name":"历史课程","semesterId":"history"}]}"#
+        let transport = PlannedTransport(["courses:session-a": [.init(courseResponse("今日"))], "catalog:session-a": [.init(directory)]])
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), transport)
+        await model.restore()
+        let course = CatalogCourse(id: "old-catalog", number: "CS1", name: "历史课程", teacher: "", classroom: nil, semesterId: term.id, beginDate: "", endDate: "")
+        await model.loadCourseSchedule(for: course)
+        XCTAssertTrue(try XCTUnwrap(model.courseSchedulePresentation(for: course)).meetings.isEmpty)
+        XCTAssertNotNil(model.semesterSchedules[term.id])
+        let unknown = CatalogCourse(id: "missing", number: "CS2", name: "未知", teacher: "", classroom: nil, semesterId: "unknown", beginDate: "", endDate: "")
+        await model.loadCourseSchedule(for: unknown)
+        XCTAssertNil(model.courseSchedulePresentation(for: unknown))
+        XCTAssertNotNil(model.courseScheduleErrors[unknown.semesterId])
+    }
+
+    func testCourseScheduleLoadJoinsWeekSyncAndPreservesNewerDailyResult() async throws {
+        let term = SchoolSemester(id: "schedule-term", name: "测试学期", beginDate: SchoolDate.key(.now), endDate: SchoolDate.key(.now), isCurrent: true)
+        let gate = ResponseGate()
+        let directory = #"{"STATUS":"0","result":[{"course_id":"stable-course","courseNum":"CS1","course_name":"课程","semesterId":"schedule-term"}]}"#
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("课程")), .init(courseResponse("新安排"))],
+            "semesters:session-a": [.init(scheduleSemesterResponse())],
+            "weekly:session-a": [.init(scheduleWeekResponse(), gate: gate)],
+            "catalog:session-a": [.init(directory)]
+        ])
+        defaults.set(try JSONEncoder().encode([SemesterScheduleCache(semester: term, courses: [], updatedAt: Date().addingTimeInterval(-8 * 24 * 60 * 60))]), forKey: "semester-schedules-\(accountA.id)")
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), transport)
+        await model.restore()
+        let course = CatalogCourse(id: "stable-course", number: "CS1", name: "课程", teacher: "", classroom: nil, semesterId: term.id, beginDate: "", endDate: "")
+        let sync = Task { await model.synchronizeSchedules(force: true) }
+        await assertEventually { await transport.count("weekly:session-a") == 1 }
+        let detail = Task { await model.loadCourseSchedule(for: course) }
+        await assertEventually { await transport.count("catalog:session-a") == 1 }
+        await model.refresh(on: .now)
+        await gate.open()
+        await sync.value
+        await detail.value
+        XCTAssertEqual(model.courseSchedulePresentation(for: course)?.meetings.first?.courses.first?.name, "新安排")
+        let count = await transport.count("weekly:session-a")
+        XCTAssertEqual(count, 1)
+    }
+
+    func testCourseScheduleFailureRetainsSnapshotAndBacksOff() async throws {
+        let term = SchoolSemester(id: "history", name: "历史学期", beginDate: "20260107", endDate: "20260107", isCurrent: false)
+        let updated = Date().addingTimeInterval(-8 * 24 * 60 * 60)
+        let meeting = Course(id: "old", courseId: "catalog", name: "课程", beginTime: "08:00", endTime: "10:00", day: term.beginDate)
+        defaults.set(try JSONEncoder().encode([SemesterScheduleCache(semester: term, courses: [meeting], updatedAt: updated)]), forKey: "semester-schedules-\(accountA.id)")
+        let directory = #"{"STATUS":"0","result":[{"course_id":"catalog","courseNum":"CS1","course_name":"历史课程","semesterId":"history"}]}"#
+        let terms = #"{"STATUS":"0","result":[{"code":"history","name":"历史学期","beginDate":"20260107","endDate":"20260107","yearStatus":"0"}]}"#
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("今日"))], "catalog:session-a": [.init(directory)],
+            "semesters:session-a": [.init(#"{"STATUS":"9","ERRMSG":"测试失败"}"#), .init(terms)],
+            "weekly:session-a": [.init(#"{"STATUS":"0","result":[{"dateStr":"20260107","schedData":[]}]}"#)]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), transport)
+        await model.restore()
+        let course = CatalogCourse(id: "catalog", number: "CS1", name: "历史课程", teacher: "", classroom: nil, semesterId: term.id, beginDate: "", endDate: "")
+        await model.loadCourseSchedule(for: course)
+        XCTAssertNotNil(model.courseScheduleErrors[term.id])
+        XCTAssertEqual(model.semesterSchedules[term.id]?.updatedAt, updated)
+        XCTAssertEqual(model.courseSchedulePresentation(for: course)?.meetings.count, 1)
+        let before = await transport.requests.count
+        await model.loadCourseSchedule(for: course)
+        let after = await transport.requests.count
+        XCTAssertEqual(before, after)
+
+        // A successful refresh on the timetable clears this page's stale failure, even during backoff.
+        await model.synchronizeSchedules(force: true, semester: term)
+        let refreshed = await transport.requests.count
+        await model.loadCourseSchedule(for: course)
+        XCTAssertNil(model.courseScheduleErrors[term.id])
+        let reused = await transport.requests.count
+        XCTAssertEqual(refreshed, reused)
+    }
+
+    func testCourseScheduleLateResponseIsRejectedAfterAccountSwitch() async throws {
+        let term = SchoolSemester(id: "history", name: "历史学期", beginDate: "20260107", endDate: "20260107", isCurrent: false)
+        defaults.set(try JSONEncoder().encode([SemesterScheduleCache(semester: term, courses: [], updatedAt: .now)]), forKey: "semester-schedules-\(accountA.id)")
+        let gate = ResponseGate()
+        let directory = #"{"STATUS":"0","result":[{"course_id":"catalog","courseNum":"CS1","course_name":"历史课程","semesterId":"history"}]}"#
+        let transport = PlannedTransport(["courses:session-a": [.init(courseResponse("甲"))], "courses:session-b": [.init(courseResponse("乙"))], "catalog:session-a": [.init(directory, gate: gate)]])
+        let model = makeModel(MemoryAccountStore(accounts: [accountA, accountB], active: accountA.id), transport)
+        await model.restore()
+        let course = CatalogCourse(id: "catalog", number: "CS1", name: "历史课程", teacher: "", classroom: nil, semesterId: term.id, beginDate: "", endDate: "")
+        let task = Task { await model.loadCourseSchedule(for: course) }
+        await assertEventually { await transport.count("catalog:session-a") == 1 }
+        await model.switchAccount(id: accountB.id)
+        await gate.open()
+        await task.value
+        XCTAssertNil(model.courseSchedulePresentation(for: course))
+        XCTAssertTrue(model.courseScheduleLoading.isEmpty)
+        XCTAssertTrue(model.courseScheduleErrors.isEmpty)
+    }
+
+    func testCourseScheduleLoadsUncachedHistoricalSemesterWithoutChangingDate() async throws {
+        let old = SchoolSemester(id: "history", name: "历史学期", beginDate: "20260107", endDate: "20260107", isCurrent: false)
+        let terms = #"{"STATUS":"0","result":[{"code":"history","name":"历史学期","beginDate":"20260107","endDate":"20260107","yearStatus":"0"}]}"#
+        let directory = #"{"STATUS":"0","result":[{"course_id":"catalog","courseNum":"CS1","course_name":"历史课程","semesterId":"history"}]}"#
+        let week = #"{"STATUS":"0","result":[{"dateStr":"20260107","schedData":[{"id":"old","courseId":"catalog","courseName":"历史课程","classBeginTime":"08:00","classEndTime":"10:00"}]}]}"#
+        let transport = PlannedTransport(["courses:session-a": [.init(courseResponse("今日"))],
+                                          "catalog:session-a": [.init(directory)], "semesters:session-a": [.init(terms), .init(terms)],
+                                          "weekly:session-a": [.init(week)]])
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), transport)
+        await model.restore()
+        let date = model.selectedDate
+        let course = CatalogCourse(id: "catalog", number: "CS1", name: "历史课程", teacher: "", classroom: nil, semesterId: old.id, beginDate: "", endDate: "")
+        await model.loadCourseSchedule(for: course)
+        XCTAssertEqual(model.selectedDate, date)
+        XCTAssertNil(model.selectedSemester)
+        XCTAssertNotNil(model.semesterSchedules[old.id])
+        XCTAssertNil(model.courseScheduleErrors[old.id])
+        XCTAssertEqual(model.courseSchedulePresentation(for: course)?.meetings.count, 1)
+        let weeks = await transport.count("weekly:session-a")
+        XCTAssertEqual(weeks, 1)
+    }
+
     private func makeModel(_ store: MemoryAccountStore, _ transport: PlannedTransport,
                            notifications: TestNotifications? = nil, widgets: TestWidgets? = nil) -> AppModel {
         AppModel(service: QingxinService(transport: transport), accountStore: store, defaults: defaults,

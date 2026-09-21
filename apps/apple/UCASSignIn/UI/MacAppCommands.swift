@@ -30,6 +30,7 @@ struct MacAppCommands: Commands {
             }
             .keyboardShortcut("r")
             .disabled(!model.isConnected || model.isCatalogRefreshing ||
+                      ((selection == 1 || selection == 2) && model.visibleCourseSchedule != nil) ||
                       model.visibleCatalogCourseId.map { model.attendanceRefreshing.contains($0) } == true ||
                       (selection == 1 ? model.isScheduleRefreshing : model.isRefreshing(on: .now)) || model.showLogin)
             Divider()

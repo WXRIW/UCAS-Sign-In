@@ -595,9 +595,78 @@ final class UCASSignInMacUITests: XCTestCase {
     }
 
     @MainActor
-    private func launchDemo() -> XCUIApplication {
+    func testCourseSemesterScheduleFromCatalogAndWeeklyView() {
+        let app = launchDemo()
+        selectSidebar("courses", in: app)
+        let course = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "矩阵分析")).firstMatch
+        XCTAssertTrue(course.waitForExistence(timeout: 10))
+        course.click()
+        let showAll = app.buttons["courseSchedule.showAll"]
+        clickAfterScrolling(showAll, in: app.scrollViews["catalogCourseDetail.scroll"])
+        let list = app.descendants(matching: .any).matching(identifier: "courseSchedule.list").firstMatch
+        XCTAssertTrue(list.waitForExistence(timeout: 10))
+        let meetings = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "courseSchedule.meeting."))
+        XCTAssertTrue(meetings.firstMatch.waitForExistence(timeout: 10))
+        capture(app, name: "课程整学期排课-Mac")
+        app.activate()
+        returnToParent(content: "catalogCourseDetail.scroll", in: app)
+        capture(app, name: "课程排课摘要-Mac")
+        selectSidebar("schedule", in: app)
+        app.radioGroups["schedule.mode"].radioButtons["周"].click()
+        let card = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "schedule.weekCourse.")).firstMatch
+        XCTAssertTrue(card.waitForExistence(timeout: 10))
+        card.click()
+        clickAfterScrolling(showAll, in: app.scrollViews["catalogCourseDetail.scroll"])
+        XCTAssertTrue(list.waitForExistence(timeout: 10))
+        XCTAssertTrue(meetings.firstMatch.exists)
+        returnToParent(content: "catalogCourseDetail.scroll", in: app)
+        returnToParent(content: "schedule.scroll", in: app)
+    }
+
+    @MainActor
+    func testCourseSemesterScheduleFailureKeepsPartialContent() {
+        let app = launchAccounts(extraArguments: ["--co-teacher-fixture", "--failed-schedule-fixture", "-scheduleViewMode", "day"])
+        // Seed the fixture's Monday lessons through a successful daily read before the weekly failure.
+        var calendar = schoolCalendar
+        calendar.firstWeekday = 2
+        let monday = calendar.dateInterval(of: .weekOfYear, for: Date())!.start
+        selectSidebar("schedule", in: app)
+        let day = app.buttons[dateButtonLabel(monday)]
+        XCTAssertTrue(day.waitForExistence(timeout: 5))
+        day.click()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "联合课程：")).firstMatch.waitForExistence(timeout: 10))
+        selectSidebar("courses", in: app)
+        let card = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "联合课程")).firstMatch
+        XCTAssertTrue(card.waitForExistence(timeout: 10))
+        card.click()
+        let summary = app.buttons["courseSchedule.showAll"]
+        XCTAssertTrue(summary.waitForExistence(timeout: 10))
+        assertEventually("摘要卡片应显示同步失败并保留已有排课") {
+            summary.label.contains("测试同步失败") && !summary.label.contains("本学期暂无排课")
+        }
+        clickAfterScrolling(summary, in: app.scrollViews["catalogCourseDetail.scroll"])
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "courseSchedule.list").firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["courseSchedule.error"].exists)
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "courseSchedule.meeting.")).firstMatch.exists)
+        capture(app, name: "课程排课-部分同步失败-Mac")
+    }
+
+    @MainActor
+    func testCourseSemesterScheduleDarkAppearance() {
+        let app = launchDemo(appearance: "dark")
+        selectSidebar("courses", in: app)
+        let course = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "矩阵分析")).firstMatch
+        XCTAssertTrue(course.waitForExistence(timeout: 10))
+        course.click()
+        clickAfterScrolling(app.buttons["courseSchedule.showAll"], in: app.scrollViews["catalogCourseDetail.scroll"])
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "courseSchedule.list").firstMatch.waitForExistence(timeout: 10))
+        capture(app, name: "课程整学期排课-深色-Mac")
+    }
+
+    @MainActor
+    private func launchDemo(appearance: String = "light") -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments = ["--demo", "-scheduleViewMode", "day", "-appearanceMode", "light", "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
+        app.launchArguments = ["--demo", "-scheduleViewMode", "day", "-appearanceMode", appearance, "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
         app.launch()
         app.activate()
         // XCTest can spawn a single-Window app without the Launch Services

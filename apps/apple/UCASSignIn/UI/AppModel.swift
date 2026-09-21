@@ -29,9 +29,19 @@ final class AppModel: ObservableObject {
     @Published var session: SchoolSession?
     @Published var isDemo = false
     @Published var courses: [Course] = [] {
-        didSet { weekPresentations.removeAll() }
+        didSet {
+            weekPresentations.removeAll()
+            if !courseSchedulePresentations.isEmpty, !ScheduleCalendar.sameArrangements(oldValue, courses) { courseSchedulePresentations.removeAll() }
+        }
     }
     private var weekPresentations: [String: WeekSchedulePresentation] = [:]
+    private var courseSchedulePresentations: [CatalogCourse: CourseSchedulePresentation] = [:]
+    private var courseScheduleDirectories: [String: (courses: [CatalogCourse], updatedAt: Date)] = [:]
+    private var courseScheduleTasks: [String: Task<Void, Never>] = [:]
+    private var courseScheduleRetryAfter: [String: Date] = [:]
+    @Published private(set) var courseScheduleLoading: Set<String> = []
+    @Published private(set) var courseScheduleErrors: [String: String] = [:]
+    @Published var visibleCourseSchedule: CatalogCourse?
     private var scheduleColors: [String: ScheduleColors] = [:]
     @Published var selectedDate = Date()
     @Published var scheduleMode: ScheduleMode = .day {
@@ -44,7 +54,7 @@ final class AppModel: ObservableObject {
         }
     }
     @Published private(set) var semesterSchedules: [String: SemesterScheduleCache] = [:] {
-        didSet { weekPresentations.removeAll() }
+        didSet { weekPresentations.removeAll(); courseSchedulePresentations.removeAll() }
     }
     @Published private(set) var isSemesterSyncing = false
     @Published private(set) var scheduleSyncError: String?
@@ -88,11 +98,11 @@ final class AppModel: ObservableObject {
     @Published private(set) var reminderLeadMinutes = 10
     @Published private(set) var coursePreferences: [String: CoursePreferences] = [:]
     @Published private(set) var semesters: [SchoolSemester] = [] {
-        didSet { if oldValue != semesters { weekPresentations.removeAll() } }
+        didSet { if oldValue != semesters { weekPresentations.removeAll(); courseSchedulePresentations.removeAll() } }
     }
     @Published private(set) var selectedSemester: SchoolSemester?
     @Published private(set) var catalogCourses: [CatalogCourse] = [] {
-        didSet { if oldValue != catalogCourses { weekPresentations.removeAll() } }
+        didSet { if oldValue != catalogCourses { weekPresentations.removeAll(); courseSchedulePresentations.removeAll() } }
     }
     @Published private(set) var catalogUpdatedAt: Date?
     @Published private(set) var catalogIsCached = false
@@ -383,6 +393,14 @@ final class AppModel: ObservableObject {
         attendanceErrors = [:]
         attendanceRefreshing = []
         visibleCatalogCourseId = nil
+        visibleCourseSchedule = nil
+        courseScheduleTasks.values.forEach { $0.cancel() }
+        courseScheduleTasks.removeAll()
+        courseScheduleDirectories.removeAll()
+        courseSchedulePresentations.removeAll()
+        courseScheduleLoading = []
+        courseScheduleErrors = [:]
+        courseScheduleRetryAfter = [:]
         pendingSignConfirmation = nil
         catalogFailureCount = 0
         catalogRetryAfter = nil
@@ -1202,7 +1220,7 @@ final class AppModel: ObservableObject {
             if !force, let updated = attendanceUpdatedAt[courseId], Date().timeIntervalSince(updated) < 5 * 60 { return }
             let matching = courses.filter { preferenceID(for: $0) == courseId }
             let records = matching.map {
-                CourseAttendance(id: $0.id, courseId: courseId, scheduledCourseId: $0.id,
+                CourseAttendance(id: "\($0.day)|\($0.id)", courseId: courseId, scheduledCourseId: $0.id,
                                  day: $0.day, beginTime: $0.beginTime, endTime: $0.endTime, signed: $0.signed)
             }
             attendanceByCourse[courseId] = CourseAttendanceSummary(
@@ -1332,11 +1350,14 @@ final class AppModel: ObservableObject {
         ]
     }
 
-    static let demoCatalogCourses = [
-        CatalogCourse(id: "demo-matrix", number: "MATH6001", name: "矩阵分析", teacher: "李明远", classroom: "教学楼 A101", semesterId: "demo", beginDate: SchoolDate.key(.now), endDate: SchoolDate.key(.now), totalSessions: 16, completedSessions: 3),
-        CatalogCourse(id: "demo-ai", number: "CS6002", name: "高级人工智能", teacher: "陈思远", classroom: "教学楼 B203", semesterId: "demo", beginDate: SchoolDate.key(.now), endDate: SchoolDate.key(.now), totalSessions: 16, completedSessions: 3),
-        CatalogCourse(id: "demo-english", number: "ENG6003", name: "学术英语写作", teacher: "王雅文", classroom: nil, semesterId: "demo", beginDate: SchoolDate.key(.now), endDate: SchoolDate.key(.now), totalSessions: 12, completedSessions: 2)
-    ]
+    static var demoCatalogCourses: [CatalogCourse] {
+        let term = demoSemester(containing: .now)
+        return [
+            CatalogCourse(id: "demo-matrix", number: "MATH6001", name: "矩阵分析", teacher: "李明远", classroom: "教学楼 A101", semesterId: term.id, beginDate: term.beginDate, endDate: term.endDate, totalSessions: 16, completedSessions: 3),
+            CatalogCourse(id: "demo-ai", number: "CS6002", name: "高级人工智能", teacher: "陈思远", classroom: "教学楼 B203", semesterId: term.id, beginDate: term.beginDate, endDate: term.endDate, totalSessions: 16, completedSessions: 3),
+            CatalogCourse(id: "demo-english", number: "ENG6003", name: "学术英语写作", teacher: "王雅文", classroom: nil, semesterId: term.id, beginDate: term.beginDate, endDate: term.endDate, totalSessions: 12, completedSessions: 2)
+        ]
+    }
 }
 
 // Schedule synchronization shares the existing per-day freshness and account-generation guards.
@@ -1510,21 +1531,24 @@ extension AppModel {
         await synchronizeSchedules()
     }
 
-    func synchronizeSchedules(force: Bool = false) async {
+    func synchronizeSchedules(force: Bool = false, semester requestedSemester: SchoolSemester? = nil) async {
         guard isConnected, !showLogin, !automaticRefreshPaused, !Task.isCancelled else { return }
-        if isDemo { populateDemoSemester(containing: selectedDate); return }
+        if isDemo { populateDemoSemester(containing: requestedSemester.flatMap { ScheduleCalendar.dateRange(in: $0)?.lowerBound } ?? selectedDate); return }
         if let scheduleSyncTask {
             let token = generation
+            let previousUpdate = requestedSemester.flatMap { semesterSchedules[$0.id]?.updatedAt }
             await scheduleSyncTask.value
             guard generation == token, !Task.isCancelled else { return }
-            // The user may have selected another semester while this batch was running.
-            await synchronizeSchedules()
+            if let requestedSemester, let snapshot = semesterSchedules[requestedSemester.id],
+               snapshot.updatedAt != previousUpdate, !snapshot.needsRefresh(at: .now) { return }
+            // Retain explicit detail-page targets while waiting for an existing batch.
+            await synchronizeSchedules(force: requestedSemester != nil && force, semester: requestedSemester)
             return
         }
         if !force, scheduleRetryAfter.map({ $0 > Date() }) == true { return }
         guard let session else { return }
         let token = generation
-        let requestedDate = selectedDate
+        let requestedDate = requestedSemester.flatMap { ScheduleCalendar.dateRange(in: $0)?.lowerBound } ?? selectedDate
         if force {
             let day = SchoolDate.key(requestedDate)
             for snapshot in semesterSchedules.values where snapshot.semester.beginDate <= day && day <= snapshot.semester.endDate {
@@ -1532,7 +1556,7 @@ extension AppModel {
             }
             savePendingScheduleSync(for: session)
         }
-        let task = Task { await self.performScheduleSync(session: session, date: requestedDate, force: force, token: token) }
+        let task = Task { await self.performScheduleSync(session: session, date: requestedDate, force: force, token: token, requestedSemester: requestedSemester) }
         scheduleSyncTask = task
         await task.value
         // A date check can detect a change while a batch is already running.
@@ -1562,7 +1586,7 @@ extension AppModel {
         return value
     }
 
-    private func performScheduleSync(session: SchoolSession, date: Date, force: Bool, token: UUID) async {
+    private func performScheduleSync(session: SchoolSession, date: Date, force: Bool, token: UUID, requestedSemester: SchoolSemester?) async {
         defer {
             if generation == token { isSemesterSyncing = false; scheduleSyncProgress = ""; scheduleSyncTask = nil }
         }
@@ -1573,11 +1597,12 @@ extension AppModel {
         isSemesterSyncing = true
         scheduleSyncError = nil
         do {
-            let terms = try await scheduleRead(token: token) { try await self.service.semesters(session: $0) }
+            var terms = try await scheduleRead(token: token) { try await self.service.semesters(session: $0) }
+            if let requestedSemester, !terms.contains(where: { $0.id == requestedSemester.id }) { terms.append(requestedSemester) }
             semesters = terms
             semestersUpdatedAt = .now
-            let date = boundedScheduleDate(date)
-            if SchoolDate.key(selectedDate) == selectedDay { selectedDate = date }
+            let date = requestedSemester.flatMap { requested in terms.first(where: { $0.id == requested.id }).flatMap { ScheduleCalendar.dateRange(in: $0)?.lowerBound } } ?? boundedScheduleDate(date)
+            if requestedSemester == nil, SchoolDate.key(selectedDate) == selectedDay { selectedDate = date }
             let selectedDay = SchoolDate.key(date)
             let matching = terms.filter { $0.beginDate <= selectedDay && selectedDay <= $0.endDate }
             let allCached = needsFullScheduleRefresh
@@ -1775,7 +1800,18 @@ extension AppModel {
         for day in days {
             let key = SchoolDate.key(day)
             if !hasSchedule(on: day) {
-                mergeCourses(Self.demoCourses(on: day), replacingDays: [key])
+                var examples = Self.demoCourses(on: day)
+                let week = ScheduleCalendar.weekNumber(on: day, in: term) ?? 1
+                // Early sample weeks include gaps and co-teachers without changing today's demo.
+                if week <= 4 {
+                    if week.isMultiple(of: 2) { examples.removeAll { $0.courseId == "demo-english" } }
+                    if let first = examples.first {
+                        examples.append(Course(id: "demo-co-teacher", courseId: first.courseId, name: first.name,
+                                               teacher: "周明远", classroom: first.classroom, beginTime: first.beginTime,
+                                               endTime: first.endTime, day: key))
+                    }
+                }
+                mergeCourses(examples, replacingDays: [key])
                 courseUpdates[key] = .now
             }
             checkedScheduleDays.insert("demo|\(key)")
@@ -1783,5 +1819,83 @@ extension AppModel {
         semesterSchedules[term.id] = SemesterScheduleCache(semester: term, courses: courses.filter {
             term.beginDate <= normalizedDay($0.day) && normalizedDay($0.day) <= term.endDate
         }, updatedAt: .now)
+    }
+}
+
+extension AppModel {
+    func courseScheduleSemester(for course: CatalogCourse) -> SchoolSemester? {
+        let term = semesters.first { $0.id == course.semesterId } ?? semesterSchedules[course.semesterId]?.semester
+        return term.flatMap { ScheduleCalendar.dateRange(in: $0) == nil ? nil : $0 }
+    }
+
+    func courseSchedulePresentation(for course: CatalogCourse) -> CourseSchedulePresentation? {
+        guard let semester = courseScheduleSemester(for: course) else { return nil }
+        if let cached = courseSchedulePresentations[course] { return cached }
+        let directory = courseScheduleDirectories[semester.id]?.courses ?? catalogCourses.filter { $0.semesterId == semester.id }
+        let result = CourseSchedulePresentation(course: course, semester: semester, catalog: directory,
+                                               semesters: identitySemesters, courses: courses)
+        if courseSchedulePresentations.count >= 32 { courseSchedulePresentations.removeAll() }
+        courseSchedulePresentations[course] = result
+        return result
+    }
+
+    /// Loads a course's own semester without changing either tab's navigation selection.
+    func loadCourseSchedule(for course: CatalogCourse) async {
+        guard isConnected, !showLogin, !Task.isCancelled else { return }
+        let id = course.semesterId
+        let token = generation
+        if let task = courseScheduleTasks[id] { await task.value; return }
+        if let snapshot = semesterSchedules[id], !snapshot.needsRefresh(at: .now),
+           isDemo || courseScheduleDirectories[id].map({ Date().timeIntervalSince($0.updatedAt) < 30 * 60 }) == true {
+            courseScheduleErrors[id] = nil
+            courseScheduleRetryAfter[id] = nil
+            return
+        }
+        if courseScheduleRetryAfter[id].map({ $0 > Date() }) == true { return }
+        let task = Task { await self.performCourseScheduleLoad(course, token: token) }
+        courseScheduleTasks[id] = task
+        await task.value
+        if generation == token { courseScheduleTasks[id] = nil }
+    }
+
+    private func performCourseScheduleLoad(_ course: CatalogCourse, token: UUID) async {
+        let id = course.semesterId
+        courseScheduleLoading.insert(id)
+        courseScheduleErrors[id] = nil
+        defer { if generation == token { courseScheduleLoading.remove(id) } }
+        do {
+            if courseScheduleSemester(for: course) == nil, !isDemo {
+                semesters = try await scheduleRead(token: token) { try await self.service.semesters(session: $0) }
+                semestersUpdatedAt = .now
+            }
+            guard let term = courseScheduleSemester(for: course) else {
+                throw APIError(code: "COURSE_SCHEDULE_SEMESTER", message: "无法确定这门课所属学期的有效范围。")
+            }
+            if isDemo {
+                populateDemoSemester(containing: ScheduleCalendar.dateRange(in: term)!.lowerBound)
+                return
+            }
+            if courseScheduleDirectories[id] == nil, selectedSemester?.id == id, let updated = catalogUpdatedAt, !catalogCourses.isEmpty {
+                courseScheduleDirectories[id] = (catalogCourses, updated)
+            }
+            let directory = courseScheduleDirectories[id]
+            if directory == nil || Date().timeIntervalSince(directory!.updatedAt) >= 30 * 60 {
+                let values = try await scheduleRead(token: token) { try await self.service.catalogCourses(session: $0, semesterId: id) }
+                courseScheduleDirectories[id] = (values, .now)
+            }
+            courseSchedulePresentations.removeAll()
+            if semesterSchedules[id]?.needsRefresh(at: .now) != false {
+                await synchronizeSchedules(semester: term)
+                guard generation == token, !Task.isCancelled else { return }
+                if semesterSchedules[id]?.needsRefresh(at: .now) != false {
+                    throw APIError(code: "COURSE_SCHEDULE_INCOMPLETE", message: scheduleSyncError ?? "排课尚未完整同步，请稍后重试。")
+                }
+            }
+            courseScheduleRetryAfter[id] = nil
+        } catch {
+            guard generation == token, !(error is CancellationError), !Task.isCancelled else { return }
+            courseScheduleErrors[id] = error.localizedDescription
+            courseScheduleRetryAfter[id] = Date().addingTimeInterval(60)
+        }
     }
 }

@@ -873,6 +873,70 @@ final class UCASSignInUITests: XCTestCase {
     }
 
     @MainActor
+    func testCourseSemesterScheduleFromCatalogAndWeeklyView() {
+        let app = launchDemo()
+        selectTab("课程", in: app)
+        tapAfterScrolling(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "矩阵分析")).firstMatch, in: app)
+        let showAll = app.buttons["courseSchedule.showAll"]
+        tapAfterScrolling(showAll, in: app)
+        XCTAssertTrue(app.navigationBars["排课信息"].waitForExistence(timeout: 10))
+        let meetings = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "courseSchedule.meeting."))
+        XCTAssertTrue(meetings.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["为本节课程签到"].exists)
+        capture(app, name: "课程整学期排课")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(app.scrollViews["catalogCourseDetail.scroll"].waitForExistence(timeout: 5))
+        capture(app, name: "课程排课摘要")
+        selectTab("课表", in: app)
+        app.segmentedControls["schedule.mode"].buttons["周"].tap()
+        let card = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "schedule.weekCourse.")).firstMatch
+        XCTAssertTrue(card.waitForExistence(timeout: 10))
+        card.tap()
+        tapAfterScrolling(showAll, in: app)
+        XCTAssertTrue(app.navigationBars["排课信息"].waitForExistence(timeout: 5))
+        XCTAssertTrue(meetings.firstMatch.exists)
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(app.segmentedControls["schedule.mode"].buttons["周"].isSelected)
+    }
+
+    @MainActor
+    func testCourseSemesterScheduleLargeTypeAndDarkAppearance() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--demo", "-appearanceMode", "dark", "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
+        app.launch()
+        selectTab("课程", in: app)
+        tapAfterScrolling(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "矩阵分析")).firstMatch, in: app)
+        tapAfterScrolling(app.buttons["courseSchedule.showAll"], in: app)
+        XCTAssertTrue(app.navigationBars["排课信息"].waitForExistence(timeout: 10))
+        capture(app, name: "课程排课-深色大字号")
+    }
+
+    @MainActor
+    func testCourseSemesterScheduleFailureKeepsPartialContent() {
+        let app = launchAccounts(extraArguments: ["--co-teacher-fixture", "--failed-schedule-fixture", "-scheduleViewMode", "day"])
+        // Seed the fixture's Monday lessons through a successful daily read before the weekly failure.
+        var calendar = schoolCalendar
+        calendar.firstWeekday = 2
+        let monday = calendar.dateInterval(of: .weekOfYear, for: Date())!.start
+        selectTab("课表", in: app)
+        let day = app.buttons[dateButtonLabel(monday)]
+        XCTAssertTrue(day.waitForExistence(timeout: 5))
+        day.tap()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "联合课程：")).firstMatch.waitForExistence(timeout: 10))
+        selectTab("课程", in: app)
+        tapAfterScrolling(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "联合课程")).firstMatch, in: app)
+        let error = app.staticTexts["courseSchedule.error"]
+        XCTAssertTrue(error.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.staticTexts["本学期暂无排课"].exists)
+        tapAfterScrolling(app.buttons["courseSchedule.showAll"], in: app)
+        XCTAssertTrue(app.navigationBars["排课信息"].waitForExistence(timeout: 5))
+        XCTAssertTrue(error.exists)
+        XCTAssertTrue(app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "courseSchedule.meeting.")).firstMatch.exists)
+        capture(app, name: "课程排课-部分同步失败")
+    }
+
+    @MainActor
     private func launchDemo() -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--demo", "-scheduleViewMode", "day", "-appearanceMode", "light", "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
