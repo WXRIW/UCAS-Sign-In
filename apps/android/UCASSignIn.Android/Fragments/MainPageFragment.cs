@@ -43,7 +43,7 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
     Color Surface => C(Dark ? "1D2922" : "FFFFFF");
     bool Landscape => Resources!.Configuration!.ScreenWidthDp > Resources.Configuration.ScreenHeightDp;
     bool TwoColumns => Landscape && Resources!.Configuration!.ScreenWidthDp >= 760 * Math.Max(1, Resources.Configuration.FontScale);
-    int ContentWidthLimit => TwoColumns ? 1040 : 680;
+    int ContentWidthLimit => Host.Vm.Page == 1 ? Resources!.Configuration!.ScreenWidthDp : TwoColumns ? 1040 : 680;
     Color C(string hex) => Color.ParseColor("#" + hex);
     static ColorStateList EnabledColors(Color enabled, Color disabled) => new(
         [[global::Android.Resource.Attribute.StateEnabled], []],
@@ -75,6 +75,7 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
     public override void OnDestroyView()
     {
         qrCancellation?.Cancel();
+        CloseSchedulePickers();
         ClearScenes();
         body = null;
         scroll = null;
@@ -176,6 +177,7 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
     void RenderContent()
     {
         var y = scroll!.ScrollY;
+        if (Host.Vm.Page == 1 && Route is null && UpdateExistingWeek()) return;
         if (Host.Vm.Page == 2 && Route is null && ReferenceEquals(coursePageBody, body) && updateCoursePage is not null)
         {
             updateCoursePage();
@@ -184,6 +186,7 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
             return;
         }
         body!.RemoveAllViews();
+        if (activeScene is not null) activeScene.LargeTitle = null;
         scroll!.SetBackgroundColor(C(Dark ? "111A16" : "F6F7F2"));
         if (refresh is not null)
             refresh.Enabled = (Route is null && Host.Vm.Page < 3 || Route == "catalog-detail") && Host.Vm.Page != 3 && Model.IsConnected;
@@ -203,7 +206,12 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
             else InformationPage();
             return;
         }
-        if (!Landscape) Add(Text(new[] { "果壳签到", "课表", "课程", "账户" }[Host.Vm.Page], 32, true), 22);
+        if (!Landscape || Host.Vm.Page == 1)
+        {
+            var title = Text(new[] { "果壳签到", "课表", "课程", "账户" }[Host.Vm.Page], 32, true);
+            activeScene!.LargeTitle = title;
+            Add(title, 22);
+        }
         if (Host.Vm.Page == 3 && !string.IsNullOrWhiteSpace(Model.Message))
             Add(Text(Model.Message!, 12, color: Secondary), 12);
         if (Host.Vm.Page == 3)
@@ -215,7 +223,12 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
         else
             Today();
         var targetScroll = scroll;
-        targetScroll.Post(() => targetScroll.ScrollTo(0, y));
+        var targetScene = activeScene;
+        targetScroll.Post(() =>
+        {
+            targetScroll.ScrollTo(0, y);
+            if (targetScene is not null) UpdateScrollChrome(targetScene);
+        });
     }
     void Banner(DateOnly date)
     {
@@ -420,11 +433,10 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
         }
         Add(list, 8);
     }
-    void Schedule()
+    void DailySchedule()
     {
         var date = Model.SelectedDate;
-        var month = Text(date.ToString("yyyy 年 M 月"), 16, true);
-        month.Gravity = GravityFlags.Center;
+        var month = ScheduleMonthTitle();
         var nav = Layout(Orientation.Horizontal, GravityFlags.CenterVertical);
         nav.AddView(WeekButton(false), new LinearLayout.LayoutParams(D(44), D(44)));
         nav.AddView(month, new LinearLayout.LayoutParams(0, -2, 1));
@@ -440,7 +452,8 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
                 ((TextView)label.GetChildAt(j)!).Gravity = GravityFlags.Center;
             var card = Card(label, 8, active ? C("1F4736") : Color.Transparent);
             card.Radius = D(17);
-            Tap(card, () => Model.SelectDateAsync(day), day.ToString("M月d日"));
+            Tap(card, ScheduleDayAction(day), day.ToString("M月d日"));
+            card.Enabled = Model.CanSelectVisibleDate(day); card.Alpha = card.Enabled ? 1 : .35f;
             week.AddView(card, new LinearLayout.LayoutParams(0, -2, 1) { MarginEnd = D(i == 6 ? 0 : 5) });
         }
         var dateControls = Column(nav, week);
@@ -450,14 +463,12 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
         dateControls.SetPadding(0, D(12), 0, D(12));
         dateControls.TranslationZ = D(2);
         Add(dateControls, 24);
-        var courseStart = body!.ChildCount;
         var courses = DayCourses(date);
         var syncing = Model.IsLoadingCourses(date);
         Add(Across(Text(date.ToString("M 月 d 日"), 20, true), Text($"{courses.Count} 门课程", 12, color: Secondary)), 16);
         if (!Model.IsConnected)
         {
             Add(Column(Icon(Resource.Drawable.ic_calendar, 35), Text("连接你的课堂", 20, true), Text("登录后即可查询学校课表。", 12, color: Secondary), Button("连接账户", () => { Login(); return Task.CompletedTask; }, true)));
-            ArrangeColumns(i => i < courseStart);
             return;
         }
         if (Model.IsDemo)
@@ -466,12 +477,12 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
         if (syncing && courses.Count == 0) Add(SyncIndicator());
         if (courses.Count > 0 || !syncing) Timeline(courses);
         CourseNotice(date);
-        if (date != CourseTime.Today())
-            Add(Button("回到今天", () => Model.SelectDateAsync(CourseTime.Today())));
-        ArrangeColumns(i => i < courseStart);
+        if (date != CourseTime.Today() && Model.CanReturnToToday)
+            Add(Button("回到今天", Model.ReturnToScheduleTodayAsync));
         MaterialButton WeekButton(bool next)
         {
-            var button = Button("", () => Model.SelectDateAsync(date.AddDays(next ? 7 : -7)));
+            var button = Button("", () => Model.MoveScheduleWeekAsync(next));
+            button.Enabled = (next ? Model.NextScheduleWeek : Model.PreviousScheduleWeek) is not null;
             button.ContentDescription = next ? "下一周" : "上一周";
             button.Icon = AndroidX.AppCompat.Content.Res.AppCompatResources.GetDrawable(Ui, next ? Resource.Drawable.ic_chevron_right : Resource.Drawable.ic_chevron_left);
             button.IconSize = D(16);
@@ -559,6 +570,9 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
             () => { Appearance(); return Task.CompletedTask; }, "主题");
         appearance.SetPadding(0, D(8), 0, D(8));
         Add(MaterialSettingsSection("外观", appearance));
+        var otherWeeks = new MaterialSwitch(Ui) { Checked = Model.ShowOtherWeeks, ContentDescription = "显示非本周课程" };
+        otherWeeks.CheckedChange += (_, _) => { Model.ShowOtherWeeks = otherWeeks.Checked; Host.Vm.SaveSchedulePreferences(); };
+        Add(MaterialSettingsSection("课表", Across(SettingLabel(Resource.Drawable.ic_calendar, "显示非本周课程", "在周课表中显示非本周课程。"), otherWeeks)));
         var prefs = Model.Preferences;
         var remind = new MaterialSwitch(Ui) { Checked = prefs.RemindersEnabled, Enabled = Model.IsConnected && Model.CanChangeAccount, ContentDescription = "课程提醒" };
         var confirmation = new MaterialSwitch(Ui) { Checked = prefs.ConfirmBeforeSign, Enabled = Model.IsConnected && Model.CanChangeAccount, ContentDescription = "手动签到二次确认" };
@@ -660,7 +674,12 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
             QuickAccounts();
         else if (id == 11)
             _ = Host.Run(PickDate);
+        else if (id == 12)
+            PickSemester();
         else
-            _ = Host.Run(() => Host.Vm.Page == 2 ? Model.RefreshCatalogAsync(true) : Model.RefreshAsync(Host.Vm.Page == 1 ? Model.SelectedDate : CourseTime.Today()));
+            _ = Host.Run(() => Route == "catalog-detail" && CurrentCatalogDetail is { } course ? Model.RefreshAttendanceAsync(course.Id, true)
+                : Host.Vm.Page == 2 ? Model.RefreshCatalogAsync(true) : Host.Vm.Page == 1 && Route is null
+                    ? Model.ScheduleMode == ScheduleMode.Week ? Model.RefreshScheduleAsync() : Model.CheckDayAsync(Model.SelectedDate, true)
+                    : Model.RefreshAsync(CourseTime.Today()));
     }
 }

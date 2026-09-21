@@ -233,7 +233,7 @@ public sealed partial class MainPageFragment
         AddInformation(Resource.Drawable.ic_code, "课程编号", Missing(course.Number));
         AddInformation(Resource.Drawable.ic_person, "教师", Missing(course.Teacher));
         AddInformation(Resource.Drawable.ic_location, "教室", Missing(course.Classroom));
-        AddInformation(Resource.Drawable.ic_calendar, "学期", Missing(Model.SelectedSemester?.Name ?? course.SemesterId));
+        AddInformation(Resource.Drawable.ic_calendar, "学期", Missing(Model.Semesters.FirstOrDefault(s => s.Id == course.SemesterId)?.Name ?? course.SemesterId));
         AddInformation(Resource.Drawable.ic_calendar, "课程日期", DisplayLongDay(course.BeginDate) + "–" + DisplayLongDay(course.EndDate));
         if (information.ChildCount > 0)
         {
@@ -243,6 +243,7 @@ public sealed partial class MainPageFragment
             last.LayoutParameters = layout;
         }
         Add(MaterialSettingsSection("课程信息", information));
+        if (string.IsNullOrWhiteSpace(course.Id)) { Add(Text("课程身份尚未唯一关联，设置与学校考勤暂不可用。", 14, color: Secondary)); return; }
 
         var notification = Column(OverrideSettingRow(Resource.Drawable.ic_bell, "课前提醒", "在上课前发送本地通知",
             values.Reminders, Model.Preferences.RemindersEnabled,
@@ -325,7 +326,7 @@ public sealed partial class MainPageFragment
         Add(MaterialSettingsSection("学校考勤", attendance, attendanceFooter));
 
         var local = Column();
-        var records = Model.Records.Where(x => x.CourseId == course.Id).ToList();
+        var records = Model.RecordsForCourse(course.Id).ToList();
         if (records.Count == 0)
         {
             var empty = Text("本机尚无这门课程的签到操作记录", 12, color: Secondary);

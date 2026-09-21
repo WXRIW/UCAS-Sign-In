@@ -49,9 +49,10 @@ public sealed class MemoryAccounts : IAccountStore
         return Task.CompletedTask;
     }
 }
-public sealed class MemoryData : ICourseStore, IRecordStore, ICourseCatalogStore
+public class MemoryData : ICourseStore, IRecordStore, ICourseCatalogStore
 {
     public Dictionary<string, CourseCache> Cache = [];
+    public int CourseCacheWrites;
     public Dictionary<string, List<AttendanceRecord>> Records = [];
     public Dictionary<string, SemesterCache> Semesters = [];
     public Dictionary<string, CourseCatalogCache> Catalogs = [];
@@ -61,6 +62,7 @@ public sealed class MemoryData : ICourseStore, IRecordStore, ICourseCatalogStore
     public Task SaveAsync(string accountId, string day, CourseCache cache, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
+        CourseCacheWrites++;
         Cache[accountId + "|" + day] = cache;
         return Task.CompletedTask;
     }
@@ -93,6 +95,23 @@ public sealed class MemoryData : ICourseStore, IRecordStore, ICourseCatalogStore
 }
 public sealed class FakeSchool : ISchoolClient
 {
+    public Func<SchoolSession, DateOnly, Task<WeeklyScheduleResult>>? WeekQuery;
+    public int WeekReads;
+    public async Task<CourseQueryResult> DailyScheduleAsync(SchoolSession session, DateOnly date, CancellationToken ct = default)
+    {
+        var result = await CoursesAsync(session, date, ct);
+        if (result.FromWeeklyFallback) throw new SchoolException("SCHEDULE_UNKNOWN_DAY", "学校未明确返回所选日期");
+        return result with { Courses = result.Courses.Where(c => CourseTime.NormalizeDay(c.Day) == CourseTime.DayKey(date)).ToArray() };
+    }
+    public async Task<WeeklyScheduleResult> WeeklyScheduleAsync(SchoolSession session, DateOnly date, CancellationToken ct = default)
+    {
+        WeekReads++;
+        if (WeekQuery is not null) return await WeekQuery(session, date);
+        var days = Enumerable.Range(0, 7).Select(i => ScheduleLayout.Monday(date).AddDays(i)).ToArray();
+        var courses = new List<Course>();
+        foreach (var day in days) courses.AddRange((await CoursesAsync(session, day, ct)).Courses);
+        return new(courses, days.Select(CourseTime.DayKey).ToArray());
+    }
     public Func<string, Task<SchoolSession>> Login = id => Task.FromResult(TestData.Session(id));
     public Func<SchoolSession, DateOnly, Task<CourseQueryResult>> Query = (_, date) => Task.FromResult(new CourseQueryResult([TestData.Course() with { Day = CourseTime.DayKey(date) }], "同步成功"));
     public Func<Task<SignResult>> Sign = () => Task.FromResult(new SignResult(SignOutcome.Signed, "成功"));
@@ -101,6 +120,7 @@ public sealed class FakeSchool : ISchoolClient
     public Func<string, Task<IReadOnlyList<CatalogCourse>>> CatalogQuery = semester => Task.FromResult<IReadOnlyList<CatalogCourse>>([new("course-1", "CS001", "示例课程", "示例教师", null, semester, "20260901", "20270131")]);
     public Func<string, Task<CourseAttendanceSummary>> AttendanceQuery = course => Task.FromResult(new CourseAttendanceSummary(0, 0, []));
     public int Logins, Reads, Signs, ClockReads, SemesterReads, CatalogReads, AttendanceReads;
+    public Course? LastSignedCourse;
     public Task<SchoolSession> LoginAsync(string username, string password, CancellationToken ct = default)
     {
         Logins++;
@@ -119,6 +139,7 @@ public sealed class FakeSchool : ISchoolClient
         await BeforeSignAuthorization();
         if (authorize is not null && !authorize()) throw new OperationCanceledException();
         Signs++;
+        LastSignedCourse = course;
         return await Sign();
     }
     public Task<QrSnapshot> QrAsync(Course course, CancellationToken ct = default) => throw new NotImplementedException();

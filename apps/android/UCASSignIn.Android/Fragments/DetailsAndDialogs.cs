@@ -49,7 +49,7 @@ public sealed partial class MainPageFragment
         var epoch = Model.Generation;
         var current = Model.Courses.FirstOrDefault(x => x.Id == requested.Id && x.Day == requested.Day);
         if (current is null || !Model.CanSign(current)) return;
-        if (Model.EffectiveConfirmation(current.CourseId))
+        if (Model.EffectiveConfirmation(Model.PreferenceId(current)))
         {
             var answer = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var dialog = new MaterialAlertDialogBuilder(Ui).SetTitle("确认手动签到")!
@@ -283,7 +283,7 @@ public sealed partial class MainPageFragment
         var qrCard = Card(canvas, TwoColumns ? 16 : 24);
         if (!TwoColumns) Add(qrCard);
         var removed = !Model.Courses.Any(c => c.Id == course.Id && c.Day == course.Day) && Model.IsFresh(course);
-        var sign = Button(Model.IsSignInDisabled(course.CourseId) ? "本课程已禁用签到" : removed ? "课程已不在最新课表中" : course.Signed ? "✓ 已完成签到" : "✓ 为本节课程签到", () => RequestManualSignAsync(course), true);
+        var sign = Button(Model.IsSignInDisabled(Model.PreferenceId(course)) ? "本课程已禁用签到" : removed ? "课程已不在最新课表中" : course.Signed ? "✓ 已完成签到" : "✓ 为本节课程签到", () => RequestManualSignAsync(course), true);
         sign.Enabled = Model.CanSign(course);
         var disabledInk = Color.Argb(97, Ink.R, Ink.G, Ink.B);
         sign.BackgroundTintList = EnabledColors(C("285C45"), Color.Argb(31, Ink.R, Ink.G, Ink.B));

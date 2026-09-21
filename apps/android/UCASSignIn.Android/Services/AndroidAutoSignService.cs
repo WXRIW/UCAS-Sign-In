@@ -119,7 +119,7 @@ public sealed class AndroidAutoSignService : Service
         var now = DateTimeOffset.UtcNow;
         var today = CourseTime.DayKey(CourseTime.Today());
         var courses = model.Courses.Where(course => course.Day == today && !course.Signed
-            && model.EffectiveAutoSign(course.CourseId)
+            && model.EffectiveAutoSign(model.PreferenceId(course))
             && course.Start is not null && course.End is not null).ToList();
         if (courses.Any(course => now >= course.Start!.Value.AddMinutes(-30) && now < course.End!.Value.AddMinutes(5)))
             return TimeSpan.FromSeconds(30);

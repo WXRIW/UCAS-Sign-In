@@ -19,6 +19,7 @@ public sealed class MainViewModel
     public string?[] Routes { get; } = new string?[4];
     public Course?[] Details { get; } = new Course?[4];
     public CatalogCourse?[] CatalogDetails { get; } = new CatalogCourse?[4];
+    public Dictionary<string, int> ScrollPositions { get; } = [];
     public bool HideIdentity
     {
         get => prefs.GetBoolean("hide", false); set => prefs.Edit()!.PutBoolean("hide", value)!.Apply();
@@ -37,6 +38,9 @@ public sealed class MainViewModel
         var root = context.FilesDir!.AbsolutePath;
         var store = new FileDataStore(Path.Combine(root, "data"));
         Model = new(new SchoolClient(), new AndroidAccountStore(Path.Combine(root, "accounts.dat")), store, store, new AndroidReminderScheduler(context));
+        Model.ScheduleMode = prefs.GetString("scheduleMode", "day") == "week" ? ScheduleMode.Week : ScheduleMode.Day;
+        Model.ShowOtherWeeks = prefs.GetBoolean("showOtherWeeks", false);
     }
+    public void SaveSchedulePreferences() => prefs.Edit()!.PutString("scheduleMode", Model.ScheduleMode == ScheduleMode.Week ? "week" : "day")!.PutBoolean("showOtherWeeks", Model.ShowOtherWeeks)!.Apply();
     public string Identity(StoredAccount a) => HideIdentity ? "同学 · 学号已隐藏" : $"{a.Session.Name ?? "同学"} · {a.Id}";
 }

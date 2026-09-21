@@ -10,7 +10,10 @@ namespace UCASSignIn.Android.Fragments;
 
 public sealed partial class MainPageFragment
 {
-    sealed record Scene(string Key, int Tab, string? Route, LinearLayout Root, MaterialToolbar Toolbar, LinearLayout Brand, ScrollView Scroll, LinearLayout Body, SwipeRefreshLayout Refresh);
+    sealed record Scene(string Key, int Tab, string? Route, LinearLayout Root, MaterialToolbar Toolbar, LinearLayout Brand, ScrollView Scroll, LinearLayout Body, SwipeRefreshLayout Refresh)
+    {
+        public TextView? LargeTitle { get; set; }
+    }
     readonly Dictionary<string, Scene> scenes = [];
     FrameLayout? sceneHost;
     Scene? activeScene, previewScene;
@@ -53,10 +56,12 @@ public sealed partial class MainPageFragment
         {
             try
             {
-                if (Host.Vm.Page == 2 && route == "catalog-detail" && CurrentCatalogDetail is { } course)
+                if (route == "catalog-detail" && CurrentCatalogDetail is { } course)
                     await Host.Run(() => Model.RefreshAttendanceAsync(course.Id, true));
                 else if (Host.Vm.Page == 2)
                     await Host.Run(() => Model.RefreshCatalogAsync(true));
+                else if (Host.Vm.Page == 1 && route is null)
+                    await Host.Run(() => Model.ScheduleMode == UCASSignIn.Core.ScheduleMode.Week ? Model.RefreshScheduleAsync() : Model.CheckDayAsync(Model.SelectedDate, true));
                 else
                     await Host.Run(() => Model.RefreshAsync(Host.Vm.Page == 0 ? UCASSignIn.Core.CourseTime.Today() : Model.SelectedDate));
             }
@@ -70,17 +75,13 @@ public sealed partial class MainPageFragment
         var scene = new Scene(SceneKey(route), Host.Vm.Page, route, root, toolbar, brand, scroller, content, pull);
         scroller.ScrollChange += (_, _) =>
         {
-            if (!Landscape && scene.Tab == 1 && scene.Route is null)
-                for (var i = 0; i < content.ChildCount; i++)
-                {
-                    var header = content.GetChildAt(i)!;
-                    if (header.ContentDescription == "schedule.dateControls")
-                        header.TranslationY = Math.Max(0, scroller.ScrollY - header.Top);
-                }
-            if (activeScene == scene && !backPreview && scene.Route is null)
-                UpdateScrolledTitle(scene);
+            Host.Vm.ScrollPositions[scene.Key] = scroller.ScrollY;
+            UpdateScrollChrome(scene);
         };
+        content.LayoutChange += (_, _) => UpdateScrollChrome(scene);
         scenes[scene.Key] = scene;
+        var restoredOffset = Host.Vm.ScrollPositions.GetValueOrDefault(scene.Key);
+        scroller.Post(() => scroller.ScrollTo(0, restoredOffset));
         return scene;
     }
     void UseScene(Scene scene)
@@ -104,6 +105,7 @@ public sealed partial class MainPageFragment
         var previous = activeScene;
         var next = GetScene(Route);
         UseScene(next);
+        if (previous != next && Host.Vm.Page == 1 && Route is null) _ = Host.Run(Model.EnterScheduleAsync);
         RenderContent();
         UpdatePageToolbar();
         if (previous != next) PresentScene(previous, next);
@@ -202,13 +204,37 @@ public sealed partial class MainPageFragment
     void UpdatePageToolbar()
     {
         Host.SetBackEnabled(Route is not null);
+        UpdateScheduleNavigation();
         if (activeScene is { } scene) UpdateScrolledTitle(scene);
+    }
+    void ConfigureScheduleHeader(View header)
+    {
+        header.ContentDescription = "schedule.dateControls";
+        header.SetBackgroundColor(C(Dark ? "111A16" : "F6F7F2"));
+        header.TranslationZ = D(2);
+        var scene = activeScene!;
+        header.LayoutChange += (_, _) => UpdateScrollChrome(scene);
+    }
+    void UpdateScrollChrome(Scene scene)
+    {
+        if (scene.Tab == 1 && scene.Route is null)
+            for (var i = 0; i < scene.Body.ChildCount; i++)
+            {
+                var header = scene.Body.GetChildAt(i)!;
+                if (header.ContentDescription == "schedule.dateControls")
+                    // Keep its place in the scroll layout; pin only after reaching the toolbar.
+                    header.TranslationY = Math.Max(0, scene.Scroll.ScrollY - scene.Body.Top - header.Top);
+            }
+        UpdateScrolledTitle(scene);
     }
     void UpdateScrolledTitle(Scene scene)
     {
         if (scene.Route is not null) return;
-        var collapsed = Landscape || scene.Scroll.ScrollY > D(48);
-        scene.Toolbar.Title = collapsed ? new[] { "果壳签到", "课表", "课程", "账户" }[scene.Tab] : "";
+        var collapsed = scene.Tab == 1
+            ? scene.LargeTitle is { Height: > 0 } title && scene.Scroll.ScrollY >= scene.Body.Top + title.Bottom
+            : Landscape || scene.Scroll.ScrollY > D(48);
+        var toolbarTitle = collapsed ? new[] { "果壳签到", "课表", "课程", "账户" }[scene.Tab] : "";
+        if (scene.Toolbar.Title != toolbarTitle) scene.Toolbar.Title = toolbarTitle;
         scene.Brand.Visibility = !collapsed && scene.Tab == 0 ? ViewStates.Visible : ViewStates.Gone;
     }
     string? PageTitle(string? route) => route switch

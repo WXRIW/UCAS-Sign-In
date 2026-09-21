@@ -4,6 +4,8 @@ public interface ISchoolClient
 {
     Task<SchoolSession> LoginAsync(string username, string password, CancellationToken ct = default);
     Task<CourseQueryResult> CoursesAsync(SchoolSession session, DateOnly date, CancellationToken ct = default);
+    Task<CourseQueryResult> DailyScheduleAsync(SchoolSession session, DateOnly date, CancellationToken ct = default);
+    Task<WeeklyScheduleResult> WeeklyScheduleAsync(SchoolSession session, DateOnly date, CancellationToken ct = default);
     Task<IReadOnlyList<SchoolSemester>> SemestersAsync(SchoolSession session, CancellationToken ct = default);
     Task<IReadOnlyList<CatalogCourse>> CatalogCoursesAsync(SchoolSession session, string semesterId, CancellationToken ct = default);
     Task<CourseAttendanceSummary> CourseAttendanceAsync(SchoolSession session, string courseId, CancellationToken ct = default);

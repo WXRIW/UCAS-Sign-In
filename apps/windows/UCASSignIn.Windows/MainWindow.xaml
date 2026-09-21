@@ -22,10 +22,11 @@
         <NavigationViewItem Content="账户" Tag="account" Icon="Contact" />
       </NavigationView.MenuItems>
       <Grid x:Name="ContentSurface" RowSpacing="0" SizeChanged="ContentSizeChanged"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-        <Grid x:Name="ContentHeader" Padding="32,16" MaxWidth="960" HorizontalAlignment="Stretch" ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+        <Grid x:Name="ContentHeader" Padding="32,16" MaxWidth="960" HorizontalAlignment="Stretch" ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
           <TextBlock x:Name="PageTitle" Text="果壳签到" FontSize="28" FontWeight="SemiBold" VerticalAlignment="Center" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
-          <CalendarDatePicker x:Name="DatePicker" Grid.Column="1" Visibility="Collapsed" DateChanged="PickDate" PlaceholderText="选择日期" Width="152"/>
-          <Button x:Name="RefreshButton" Grid.Column="2" Width="36" Height="36" Padding="0" CornerRadius="4" AutomationProperties.Name="刷新课程" ToolTipService.ToolTip="刷新课程（Ctrl+R）" Click="RefreshClicked">
+          <DropDownButton x:Name="SemesterMenu" Grid.Column="1" Visibility="Collapsed" AutomationProperties.Name="选择学期" ToolTipService.ToolTip="选择学期"><FontIcon Glyph="&#xE8F1;" FontSize="16"/><DropDownButton.Flyout><MenuFlyout Opening="ScheduleSemestersOpening"/></DropDownButton.Flyout></DropDownButton>
+          <CalendarDatePicker x:Name="DatePicker" Grid.Column="2" Opened="ScheduleDateOpened" Visibility="Collapsed" DateChanged="PickDate" PlaceholderText="选择日期" Width="152"/>
+          <Button x:Name="RefreshButton" Grid.Column="3" Width="36" Height="36" Padding="0" CornerRadius="4" AutomationProperties.Name="刷新课程" ToolTipService.ToolTip="刷新课程（Ctrl+R）" Click="RefreshClicked">
             <Grid Width="20" Height="20">
               <FontIcon x:Name="RefreshIcon" Glyph="&#xE72C;" FontSize="16" />
               <ProgressRing x:Name="RefreshProgress" Width="20" Height="20" MinWidth="20" MinHeight="20" IsActive="False" Visibility="Collapsed" />

@@ -50,7 +50,8 @@ public static class ResponseParser
             var room = Field(e, "classroomName").ValueKind == JsonValueKind.String ? Text(e, "classroomName") : "";
             var name = Text(e, "courseName");
             courses.Add(new(id, Text(e, "uuid"), name.Length > 0 ? name : "未命名课程", Text(e, "teacherName"), room.Length == 0 ? null : room,
-                Text(e, "classBeginTime"), Text(e, "classEndTime"), day, Text(e, "signStatus") == "1", EmptyToNull(Text(e, "courseId"))));
+                Text(e, "classBeginTime"), Text(e, "classEndTime"), day, Text(e, "signStatus") == "1", EmptyToNull(Text(e, "courseId")),
+                EmptyToNull(Text(e, "courseNum")), EmptyToNull(Text(e, "teacherId"))));
         }
         return courses.OrderBy(c => c.Start ?? DateTimeOffset.MaxValue).ToList();
     }
@@ -71,7 +72,7 @@ public static class ResponseParser
         {
             var id = Text(entry, "code"); var name = Text(entry, "name");
             var begin = CourseTime.NormalizeDay(Text(entry, "beginDate")); var end = CourseTime.NormalizeDay(Text(entry, "endDate"));
-            if (id.Length == 0 || name.Length == 0 || begin is null || end is null)
+            if (id.Length == 0 || name.Length == 0 || begin is null || end is null || string.CompareOrdinal(begin, end) > 0 || result.Any(s => s.Id == id))
                 throw new SchoolException("SEMESTER_BAD_RESPONSE", "学校学期数据不完整，请稍后重试");
             result.Add(new(id, name, begin, end, Text(entry, "yearStatus") == "1"));
         }
@@ -139,6 +140,23 @@ public static class ResponseParser
         if (selected.Count > 0)
             return new(selected, "已从周课表更新当天课程");
         return all.Count > 0 ? new(all.OrderBy(c => c.Start).ToList(), "当天没有课程，已显示本周课程", true) : new([], "当天及本周暂无课程");
+    }
+    public static WeeklyScheduleResult WeeklySchedule(JsonElement json)
+    {
+        RejectSessionError(json);
+        var days = Field(json, "result");
+        if (Text(json, "STATUS") is not ("0" or "1") || Text(json, "ERRCODE") is not ("" or "0")
+            || Text(json, "ERRMSG") != "" || days.ValueKind != JsonValueKind.Array
+            || Field(json, "success").ValueKind is not (JsonValueKind.Undefined or JsonValueKind.True))
+            throw new SchoolException("SCHEDULE_REJECTED", "学校暂未返回可用周课表");
+        var covered = new HashSet<string>(); var courses = new List<Course>();
+        foreach (var entry in days.EnumerateArray())
+        {
+            var day = CourseTime.NormalizeDay(Text(entry, "dateStr"));
+            if (day is null || !covered.Add(day)) throw new SchoolException("SCHEDULE_BAD_RESPONSE", "学校周课表日期缺失或重复");
+            courses.AddRange(Courses(Field(entry, "schedData"), day));
+        }
+        return new(courses.AsReadOnly(), covered.Order().ToArray());
     }
     public static SignResult Sign(JsonElement json)
     {

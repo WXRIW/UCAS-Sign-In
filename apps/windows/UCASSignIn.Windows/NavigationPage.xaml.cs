@@ -7,6 +7,7 @@ public sealed partial class NavigationPage : Page
 {
     internal StackPanel ContentPanel => Body;
     internal ScrollViewer ScrollHost => Scroller;
+    internal StackPanel FixedPanel => FixedHeader;
 
     public NavigationPage()
     {

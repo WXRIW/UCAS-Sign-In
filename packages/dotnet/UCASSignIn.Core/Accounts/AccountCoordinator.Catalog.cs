@@ -12,7 +12,11 @@ public sealed partial class AccountCoordinator
     DateTimeOffset? catalogRetryAt;
     readonly Dictionary<string, int> attendanceFailures = [];
     readonly Dictionary<string, DateTimeOffset> attendanceRetryAt = [];
-    public IReadOnlyList<SchoolSemester> Semesters { get; private set; } = [];
+    public IReadOnlyList<SchoolSemester> Semesters
+    {
+        get => semesters;
+        private set { semesters = value; UpdateScheduleMetadata(); }
+    }
     public SchoolSemester? SelectedSemester { get; private set; }
     public IReadOnlyList<CatalogCourse> CatalogCourses { get; private set; } = [];
     public DateTimeOffset? CatalogUpdatedAt { get; private set; }
@@ -28,8 +32,32 @@ public sealed partial class AccountCoordinator
     public DateTimeOffset? AttendanceUpdatedAt(string courseId) => attendanceUpdates.GetValueOrDefault(courseId);
     public string? AttendanceError(string courseId) => attendanceErrors.GetValueOrDefault(courseId);
 
+    (long Arrangement, long Identity) aliasIndexVersion = (-1, -1);
+    readonly Dictionary<string, List<string>> aliasIndex = [];
+    IEnumerable<string> ProvenAliases(string courseId)
+    {
+        var version = (ArrangementVersion, IdentityVersion);
+        if (aliasIndexVersion != version)
+        {
+            aliasIndex.Clear();
+            var catalogCourses = AllCatalogCourses.ToArray();
+            foreach (var group in Courses.Where(c => c.CourseId is not null).GroupBy(c => c.CourseId!))
+            {
+                var targets = group.Select(c => CourseIdentity.Resolve(c, Semesters, catalogCourses)?.Id).Distinct().Take(2).ToArray();
+                if (targets.Length != 1 || targets[0] is not { } target || target == group.Key) continue;
+                if (!aliasIndex.TryGetValue(target, out var aliases)) aliasIndex[target] = aliases = [];
+                aliases.Add(group.Key);
+            }
+            aliasIndexVersion = version;
+        }
+        return aliasIndex.TryGetValue(courseId, out var result) ? result : [];
+    }
     public CoursePreferences CoursePreferencesFor(string courseId)
-        => Preferences.Courses.GetValueOrDefault(courseId)?.Normalized() ?? new();
+    {
+        if (Preferences.Courses.Count == 0) return new();
+        var values = ProvenAliases(courseId).Append(courseId).Select(id => Preferences.Courses.GetValueOrDefault(id)).OfType<CoursePreferences>().ToArray();
+        return values.Length == 0 ? new() : CourseIdentity.MergePreferences(values);
+    }
     public bool IsSignInDisabled(string? courseId) => courseId is not null && CoursePreferencesFor(courseId).SignInDisabled;
     public bool EffectiveConfirmation(string? courseId) => !IsSignInDisabled(courseId) && (courseId is null
         ? Preferences.ConfirmBeforeSign : CoursePreferences.Resolve(CoursePreferencesFor(courseId).Confirmation, Preferences.ConfirmBeforeSign));
@@ -51,17 +79,17 @@ public sealed partial class AccountCoordinator
 
     void SetupDemoCatalog()
     {
-        var today = CourseTime.DayKey(CourseTime.Today(clock));
-        Semesters = [new("demo", "演示学期", today, today, true)]; SelectedSemester = Semesters[0];
+        var term = ScheduleCalendar.DemoSemester(SelectedDate);
+        Semesters = [term]; SelectedSemester = term;
         var names = new[] { "矩阵分析", "高级人工智能", "学术英语写作", "计算机体系结构", "模式识别", "自然语言处理", "现代密码学", "软件工程", "并行计算", "数据科学导论", "机器学习", "数字图像处理", "科技伦理", "创新创业", "学术交流英语", "随机过程", "高等数值分析", "跨学科前沿专题（长课程名称演示）" };
         CatalogCourses = names.Select((name, i) => new CatalogCourse(i switch { 0 => "demo-matrix", 1 => "demo-ai", 2 => "demo-english", _ => "demo-" + (i + 1) },
-            $"DEMO{i + 1:000}", name, i % 5 == 0 ? "" : $"演示教师{i % 6 + 1}", i % 4 == 0 ? null : $"教学楼 {(char)('A' + i % 4)}{101 + i}", "demo", today, today, 16, i % 12)).ToArray();
+            $"DEMO{i + 1:000}", name, i % 5 == 0 ? "" : $"演示教师{i % 6 + 1}", i % 4 == 0 ? null : $"教学楼 {(char)('A' + i % 4)}{101 + i}", "demo", term.BeginDate, term.EndDate, 16, i % 12)).ToArray();
         CatalogUpdatedAt = clock.GetUtcNow(); CatalogError = null;
     }
 
     public Task RefreshCatalogAsync(bool force = false)
     {
-        if (IsDemo) { SetupDemoCatalog(); Notify(); return Task.CompletedTask; }
+        if (IsDemo) { EnsureDemoSchedule(); Notify(); return Task.CompletedTask; }
         if (ActiveAccount is not { } account || catalog is null) return Task.CompletedTask;
         lock (catalogGate)
         {
@@ -93,7 +121,7 @@ public sealed partial class AccountCoordinator
                 }
             }
         }
-        finally { if (epoch == Generation) { lock (catalogGate) catalogRead = null; Notify(); } }
+        finally { if (epoch == Generation) { lock (catalogGate) catalogRead = null; IdentityVersion++; Notify(); } }
     }
 
     async Task RefreshCatalogCoreAsync(StoredAccount account, Guid epoch, bool force)
@@ -173,7 +201,8 @@ public sealed partial class AccountCoordinator
 
     public Task RefreshAttendanceAsync(string courseId, bool force = false)
     {
-        if (string.IsNullOrWhiteSpace(courseId) || SelectedSemester is null) return Task.CompletedTask;
+        var courseSemester = AllCatalogCourses.FirstOrDefault(c => c.Id == courseId)?.SemesterId ?? SelectedSemester?.Id;
+        if (string.IsNullOrWhiteSpace(courseId) || courseSemester is null) return Task.CompletedTask;
         if (IsDemo)
         {
             var records = Courses.Where(x => x.CourseId == courseId).Select(x => new CourseAttendance(x.Id, courseId, x.Id, x.Day, x.BeginTime, x.EndTime, x.Signed)).ToArray();
@@ -183,7 +212,7 @@ public sealed partial class AccountCoordinator
         lock (catalogGate)
         {
             if (attendanceReads.TryGetValue(courseId, out var existing)) return existing;
-            var task = CompleteAttendanceRefreshAsync(account, SelectedSemester.Id, courseId, Generation, force);
+            var task = CompleteAttendanceRefreshAsync(account, courseSemester, courseId, Generation, force);
             attendanceReads[courseId] = task; Notify(); return task;
         }
     }
@@ -243,6 +272,7 @@ public sealed partial class AccountCoordinator
         if (IsDemo)
         {
             var values = new Dictionary<string, CoursePreferences>(demoPreferences.Courses);
+            foreach (var alias in ProvenAliases(courseId)) values.Remove(alias);
             if (preferences == new CoursePreferences()) values.Remove(courseId); else values[courseId] = preferences;
             demoPreferences = new(demoPreferences.AutoSignEnabled, demoPreferences.RemindersEnabled, demoPreferences.ConfirmBeforeSign, demoPreferences.ReminderLeadMinutes, values); Notify(); return;
         }
@@ -256,6 +286,7 @@ public sealed partial class AccountCoordinator
             if (epoch != Generation || ActiveAccount is not { } current) return;
             IsBusy = true; Notify();
             var values = new Dictionary<string, CoursePreferences>(current.Preferences.Courses);
+            foreach (var alias in ProvenAliases(courseId)) values.Remove(alias);
             if (preferences == new CoursePreferences()) values.Remove(courseId); else values[courseId] = preferences;
             var p = current.Preferences;
             await CommitAsync(Updated(current with { Settings = new(p.AutoSignEnabled, p.RemindersEnabled, p.ConfirmBeforeSign, p.ReminderLeadMinutes, values) }));

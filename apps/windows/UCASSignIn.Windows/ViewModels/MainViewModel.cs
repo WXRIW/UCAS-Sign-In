@@ -25,11 +25,13 @@ public sealed class MainViewModel
         var prefs = AtomicFile.ReadJson<Appearance>(Path.Combine(Root, "appearance.json"));
         HideIdentity = prefs?.HideIdentity ?? false;
         Theme = prefs?.Theme ?? "system";
+        Model.ScheduleMode = prefs?.ScheduleMode == ScheduleMode.Week ? ScheduleMode.Week : ScheduleMode.Day;
+        Model.ShowOtherWeeks = prefs?.ShowOtherWeeks ?? false;
         AutoCheckUpdates = prefs?.AutoCheckUpdates ?? true;
         StoreUpdates = prefs?.StoreUpdates is { } storeUpdates && Enum.IsDefined(storeUpdates)
             ? storeUpdates : StoreUpdateOption.Download;
     }
     public string Identity(StoredAccount a) => HideIdentity ? "同学 · 学号已隐藏" : $"{a.Session.Name ?? "同学"} · {a.Id}";
-    public void SaveAppearance() => AtomicFile.WriteJson(Path.Combine(Root, "appearance.json"), new Appearance(HideIdentity, Theme, AutoCheckUpdates, StoreUpdates));
-    public sealed record Appearance(bool HideIdentity, string Theme, bool? AutoCheckUpdates = null, StoreUpdateOption? StoreUpdates = null);
+    public void SaveAppearance() => AtomicFile.WriteJson(Path.Combine(Root, "appearance.json"), new Appearance(HideIdentity, Theme, AutoCheckUpdates, StoreUpdates, Model.ScheduleMode, Model.ShowOtherWeeks));
+    public sealed record Appearance(bool HideIdentity, string Theme, bool? AutoCheckUpdates = null, StoreUpdateOption? StoreUpdates = null, ScheduleMode ScheduleMode = ScheduleMode.Day, bool ShowOtherWeeks = false);
 }

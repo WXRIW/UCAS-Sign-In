@@ -1,9 +1,13 @@
 <Page x:Class="UCASSignIn.Windows.NavigationPage"
       xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
       xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-  <ScrollViewer x:Name="Scroller" HorizontalContentAlignment="Stretch" HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled">
+  <Grid>
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+    <StackPanel x:Name="FixedHeader" Spacing="8" Margin="16,0,16,8"/>
+  <ScrollViewer Grid.Row="1" x:Name="Scroller" HorizontalContentAlignment="Stretch" HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled">
     <Grid HorizontalAlignment="Stretch">
       <StackPanel x:Name="Body" Spacing="20" MaxWidth="960" Padding="32,12,32,32" HorizontalAlignment="Stretch" />
     </Grid>
   </ScrollViewer>
+  </Grid>
 </Page>

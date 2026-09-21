@@ -13,6 +13,7 @@ public sealed partial class MainWindow
     readonly UISettings motionSettings = new();
     StackPanel Page = null!;
     ScrollViewer PageScroll = null!;
+    StackPanel ScheduleHeader = null!;
     (string Section, string? Route, string? CourseId, string? Day, Guid Generation)? displayedPage;
     NavigationTransitionInfo? lastPageTransition;
     bool rendering;
@@ -50,6 +51,16 @@ public sealed partial class MainWindow
             {
                 Page = view.ContentPanel;
                 PageScroll = view.ScrollHost;
+                var scroller = PageScroll;
+                scroller.ViewChanged += (_, _) =>
+                {
+                    if (PageScroll == scroller && section == "schedule" && route is null && displayedWeek is { } week)
+                    {
+                        if (weekScroll.Count >= 8 && !weekScroll.ContainsKey(week.Monday)) weekScroll.Remove(weekScroll.Keys.First());
+                        weekScroll[week.Monday] = scroller.VerticalOffset;
+                    }
+                };
+                ScheduleHeader = view.FixedPanel;
                 var gutter = ContentSurface.ActualWidth < 600 ? 16 : 32;
                 Page.Padding = new(gutter, 8, gutter, 24);
                 RenderCurrentPage();

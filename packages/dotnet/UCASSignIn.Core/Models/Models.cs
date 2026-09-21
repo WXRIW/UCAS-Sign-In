@@ -2,7 +2,8 @@ namespace UCASSignIn.Core;
 
 public sealed record SchoolSession(string UserId, string SessionId, string StudentNo, string? Name = null);
 public sealed record Course(string Id, string Uuid, string Name, string Teacher, string? Classroom,
-    string BeginTime, string EndTime, string Day, bool Signed = false, string? CourseId = null)
+    string BeginTime, string EndTime, string Day, bool Signed = false, string? CourseId = null,
+    string? CourseNumber = null, string? TeacherId = null)
 {
     public DateTimeOffset? Start => CourseTime.Parse(Day, BeginTime);
     public DateTimeOffset? End => CourseTime.Parse(Day, EndTime);
@@ -95,7 +96,7 @@ public sealed record AccountVault(int Version, List<StoredAccount> Accounts, str
 }
 public sealed record AttendanceRecord(string CourseName, DateTimeOffset Date, string Message, bool Succeeded,
     string? CourseId = null, string? ScheduledCourseId = null);
-public sealed record CourseCache(List<Course> Courses, DateTimeOffset UpdatedAt, bool FromWeeklyFallback = false);
+public sealed record CourseCache(List<Course> Courses, DateTimeOffset UpdatedAt, bool FromWeeklyFallback = false, long WriteSequence = 0);
 public sealed record Reminder(string Id, string AccountId, string CourseId, string Day, string Title, string Body, DateTimeOffset At);
 public sealed class SchoolException(string code, string message) : Exception(message)
 {

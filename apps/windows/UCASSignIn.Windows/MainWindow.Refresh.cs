@@ -16,8 +16,9 @@ public sealed partial class MainWindow
         if (RefreshButton is null) return;
         var date = RefreshDate;
         var visible = section is "today" or "schedule" || section == "courses" && route is null;
-        var refreshing = section == "courses" ? Model.IsCatalogRefreshing : Model.IsLoadingCourses(date) || requestedRefreshes.Contains((Model.Generation, section, date));
-        var title = section == "schedule" ? "刷新课表" : section == "courses" ? "刷新课程目录" : "刷新课程";
+        var refreshing = route == "catalog-detail" && catalogDetail is { } detailCourse ? Model.IsAttendanceRefreshing(detailCourse.Id)
+            : section == "courses" ? Model.IsCatalogRefreshing : Model.IsLoadingCourses(date) || Model.IsScheduleRefreshing || requestedRefreshes.Contains((Model.Generation, section, date));
+        var title = route == "catalog-detail" ? "刷新学校考勤" : section == "schedule" ? "刷新课表" : section == "courses" ? "刷新课程目录" : "刷新课程";
         RefreshButton.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
         RefreshButton.IsEnabled = Model.IsConnected && !refreshing;
         RefreshIcon.Visibility = refreshing ? Visibility.Collapsed : Visibility.Visible;
@@ -32,11 +33,11 @@ public sealed partial class MainWindow
     async Task RefreshCurrentCoursesAsync()
     {
         var model = Model;
+        if (route == "catalog-detail" && catalogDetail is { } linked) { await model.RefreshAttendanceAsync(linked.Id, true); return; }
+        if (section == "schedule" && route is null) { if (Model.ScheduleMode == ScheduleMode.Week) await Model.RefreshScheduleAsync(); else await Model.CheckDayAsync(Model.SelectedDate, true); return; }
         if (section == "courses")
         {
-            if (route == "catalog-detail" && catalogDetail is { } course)
-                await model.RefreshAttendanceAsync(course.Id, true);
-            else if (route is null)
+            if (route is null)
                 await model.RefreshCatalogAsync(true);
             return;
         }

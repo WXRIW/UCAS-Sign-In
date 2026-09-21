@@ -54,7 +54,7 @@ public sealed partial class MainWindow
         var epoch = Model.Generation;
         var current = Model.Courses.FirstOrDefault(x => x.Id == requested.Id && x.Day == requested.Day);
         if (current is null || !Model.CanSign(current)) return;
-        if (Model.EffectiveConfirmation(current.CourseId))
+        if (Model.EffectiveConfirmation(Model.PreferenceId(current)))
         {
             var result = await Show(new ContentDialog
             {
@@ -332,7 +332,7 @@ public sealed partial class MainWindow
             item.HorizontalAlignment = HorizontalAlignment.Center;
         Page.Children.Add(title);
         if (!Model.IsDemo && !Model.IsFresh(course))
-            Banner();
+            Banner(CourseTime.Date(course.Day));
         var image = new Image { Width = 224, Height = 224, HorizontalAlignment = HorizontalAlignment.Center };
         qrImage = image;
         var caption = Text("正在同步学校时间…", 12, color: Secondary);
@@ -342,7 +342,7 @@ public sealed partial class MainWindow
         var canvas = new Border { Child = image, Width = 250, Height = 250, Padding = new(13), Background = Brush("FFFFFF"), CornerRadius = new(12), HorizontalAlignment = HorizontalAlignment.Center };
         Page.Children.Add(Card(Column(canvas, progress, caption), 26));
         var removed = !Model.Courses.Any(c => c.Id == course.Id && c.Day == course.Day) && Model.IsFresh(course);
-        var signText = Model.IsSignInDisabled(course.CourseId) ? "本课程已禁用签到" : removed ? "课程已不在最新课表中" : course.Signed ? "已完成签到" : "为本节课程签到";
+        var signText = Model.IsSignInDisabled(Model.PreferenceId(course)) ? "本课程已禁用签到" : removed ? "课程已不在最新课表中" : course.Signed ? "已完成签到" : "为本节课程签到";
         var sign = Button(signText, () => RequestManualSignAsync(course), true);
         if (!removed)
         {

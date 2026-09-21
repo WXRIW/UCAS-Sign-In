@@ -4,16 +4,20 @@ namespace UCASSignIn.Core;
 
 public static class CourseTime
 {
+    static readonly BoundedCache<string, string?> days = new(2048);
+    static readonly BoundedCache<(string Day, string Time), DateTimeOffset?> times = new(4096);
     public static readonly TimeSpan ShanghaiOffset = TimeSpan.FromHours(8);
     public static DateOnly Today(TimeProvider? clock = null) => DateOnly.FromDateTime((clock ?? TimeProvider.System).GetUtcNow().ToOffset(ShanghaiOffset).DateTime);
     public static string DayKey(DateOnly date) => date.ToString("yyyyMMdd", CultureInfo.InvariantCulture);
-    public static string? NormalizeDay(string? raw)
+    public static string? NormalizeDay(string? raw) => days.Get(raw ?? "", NormalizeDayCore);
+    static string? NormalizeDayCore(string raw)
     {
         var m = Regex.Match(raw?.Trim() ?? "", @"^(\d{4})[-/]?(\d{2})[-/]?(\d{2})(?:[T ].*)?$");
         return m.Success && DateOnly.TryParseExact($"{m.Groups[1]}{m.Groups[2]}{m.Groups[3]}", "yyyyMMdd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var d) ? DayKey(d) : null;
     }
     public static DateOnly Date(string day) => DateOnly.ParseExact(NormalizeDay(day) ?? throw new FormatException("无效课程日期"), "yyyyMMdd", CultureInfo.InvariantCulture);
-    public static DateTimeOffset? Parse(string day, string time)
+    public static DateTimeOffset? Parse(string day, string time) => times.Get((day, time), key => ParseCore(key.Day, key.Time));
+    static DateTimeOffset? ParseCore(string day, string time)
     {
         var value = (time ?? "").Trim().Replace('：', ':').Replace('．', '.');
         var full = Regex.Match(value, @"^(\d{4}[-/]\d{2}[-/]\d{2})[T ]+(.+)$");

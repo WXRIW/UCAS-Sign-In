@@ -176,17 +176,13 @@ public sealed partial class MainWindow
             return;
         qrCancellation?.Cancel();
         ApplyTheme();
-        Page.Children.Clear();
-        Page.Spacing = section == "account" || route is "settings" or "catalog-detail" ? 24 : 20;
+        UpdateScheduleNavigation();
         AccountMenuLabel.Text = AccountName;
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(AccountMenu, AccountName);
         AccountMenu.IsEnabled = Model.CanChangeAccount;
         AppTitleBar.IsBackButtonVisible = route is not null;
         AppTitleBar.IsBackButtonEnabled = route is not null;
         UpdateRefreshButton();
-        DatePicker.Visibility = section == "schedule" && route is null ? Visibility.Visible : Visibility.Collapsed;
-        if (DatePicker.Date?.Date != Model.SelectedDate.ToDateTime(TimeOnly.MinValue))
-            DatePicker.Date = new(Model.SelectedDate.ToDateTime(TimeOnly.MinValue), CourseTime.ShanghaiOffset);
         PageTitle.Text = route switch
         {
             "detail" => "课程签到",
@@ -201,6 +197,10 @@ public sealed partial class MainWindow
         Status.Message = Model.Message ?? "";
         Status.IsOpen = !string.IsNullOrWhiteSpace(Model.Message);
         Status.Severity = InfoBarSeverity.Informational;
+        if (section == "schedule" && route is null && UpdateExistingWeek()) return;
+        ScheduleHeader.Children.Clear();
+        Page.Children.Clear();
+        Page.Spacing = section == "account" || route is "settings" or "catalog-detail" ? 24 : 20;
         if (route == "detail" && detail is { } c)
         {
             RenderDetail(Model.Courses.FirstOrDefault(x => x.Id == c.Id && x.Day == c.Day) ?? c);
@@ -234,16 +234,19 @@ public sealed partial class MainWindow
         }
         RenderToday();
     }
-    void Banner()
+    void Banner(DateOnly date)
     {
         if (Model.IsDemo)
         {
             Page.Children.Add(Card(Across(Leading(new FontIcon { Glyph = "\uE946", FontSize = 16, Foreground = Green },
                 Text("演示模式 · 示例课表", 12, color: Secondary)), Button("连接账号", () => Login())), 12));
         }
-        else if (Model.Courses.Any(c => !Model.IsFresh(c)))
+        else if (Model.IsCached(date))
         {
-            var b = Card(Across(Text("正在显示本机缓存\n同步后可继续签到", 12, color: Secondary), Button("重新同步", () => Model.RefreshAsync(section == "today" ? CourseTime.Today() : Model.SelectedDate))), 14);
+            var syncing = Model.IsLoadingCourses(date);
+            var retry = Button(syncing ? "正在同步…" : "重新同步", () => Model.RefreshAsync(date));
+            retry.IsEnabled = Model.CanChangeAccount && !syncing;
+            var b = Card(Across(Text("正在显示本机缓存\n同步后可继续签到", 12, color: Secondary), retry), 14);
             b.Background = Pale;
             Page.Children.Add(b);
         }
@@ -266,7 +269,7 @@ public sealed partial class MainWindow
             Welcome();
             return;
         }
-        Banner();
+        Banner(CourseTime.Today());
         var (current, next) = CourseTime.CurrentAndNext(courses, now);
         var featured = current is { Signed: false } ? current : next ?? current ?? courses.LastOrDefault();
         if (featured is not null)
@@ -354,7 +357,7 @@ public sealed partial class MainWindow
         }
         Page.Children.Add(list);
     }
-    void RenderSchedule()
+    void RenderDailySchedule()
     {
         var date = Model.SelectedDate;
         var weekHeader = new Grid();
@@ -370,16 +373,16 @@ public sealed partial class MainWindow
         {
             Width = GridLength.Auto
         });
-        var previousWeek = Button("", () => Model.SelectDateAsync(date.AddDays(-7)));
-        previousWeek.Content = new FontIcon { Glyph = "\uE76B", FontSize = 12 };
+        var previousWeek = Plain(new FontIcon { Glyph = "\uE76B", FontSize = 12 }, () => Model.MoveScheduleWeekAsync(false));
+        previousWeek.IsEnabled = Model.PreviousScheduleWeek is not null;
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(previousWeek, "上一周");
         weekHeader.Children.Add(previousWeek);
-        var month = Text(date.ToString("yyyy 年 M 月"), 16, true);
+        var month = ScheduleMonthTitle();
         month.HorizontalAlignment = HorizontalAlignment.Center;
         Grid.SetColumn(month, 1);
         weekHeader.Children.Add(month);
-        var nextWeek = Button("", () => Model.SelectDateAsync(date.AddDays(7)));
-        nextWeek.Content = new FontIcon { Glyph = "\uE76C", FontSize = 12 };
+        var nextWeek = Plain(new FontIcon { Glyph = "\uE76C", FontSize = 12 }, () => Model.MoveScheduleWeekAsync(true));
+        nextWeek.IsEnabled = Model.NextScheduleWeek is not null;
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(nextWeek, "下一周");
         Grid.SetColumn(nextWeek, 2);
         weekHeader.Children.Add(nextWeek);
@@ -398,7 +401,8 @@ public sealed partial class MainWindow
             p.Spacing = 4;
             foreach (FrameworkElement item in p.Children)
                 item.HorizontalAlignment = HorizontalAlignment.Center;
-            var b = Button("", () => Model.SelectDateAsync(d));
+            var b = Button("", ScheduleDayAction(d));
+            b.IsEnabled = Model.CanSelectVisibleDate(d); b.Opacity = b.IsEnabled ? 1 : .35;
             b.Content = p;
             b.Padding = new(0, 8, 0, 8);
             b.HorizontalAlignment = HorizontalAlignment.Stretch;
@@ -414,12 +418,12 @@ public sealed partial class MainWindow
             Welcome();
             return;
         }
-        Banner();
+        Banner(date);
         var courses = DayCourses(date);
         Page.Children.Add(Across(Text(date.ToString("M 月 d 日"), 20, true), Text($"{courses.Count} 门课程", 12, color: Secondary)));
         Timeline(courses);
-        if (date != CourseTime.Today())
-            Page.Children.Add(Button("回到今天", () => Model.SelectDateAsync(CourseTime.Today())));
+        if (date != CourseTime.Today() && Model.CanReturnToToday)
+            Page.Children.Add(Button("回到今天", Model.ReturnToScheduleTodayAsync));
     }
     void RenderAccount()
     {
@@ -477,6 +481,9 @@ public sealed partial class MainWindow
             Render();
         };
         Page.Children.Add(SettingsGroup("外观", SettingRow("主题", "选择应用的显示模式", "\uE790", theme)));
+        var otherWeeks = new ToggleSwitch { IsOn = Model.ShowOtherWeeks, OnContent = "", OffContent = "" };
+        otherWeeks.Toggled += (_, _) => { Model.ShowOtherWeeks = otherWeeks.IsOn; vm.SaveAppearance(); };
+        Page.Children.Add(SettingsGroup("课表", SettingRow("显示非本周课程", "在周课表中显示非本周课程。", "\uE787", otherWeeks)));
         var prefs = Model.Preferences;
         var reminders = new ToggleSwitch { IsOn = prefs.RemindersEnabled, OnContent = "", OffContent = "", Width = 50, MinWidth = 0, IsEnabled = Model.IsConnected && Model.CanChangeAccount };
         var confirmation = new ToggleSwitch { IsOn = prefs.ConfirmBeforeSign, OnContent = "", OffContent = "", Width = 50, MinWidth = 0, IsEnabled = Model.IsConnected && Model.CanChangeAccount };
@@ -576,8 +583,8 @@ public sealed partial class MainWindow
     }
     async void PickDate(CalendarDatePicker sender, CalendarDatePickerDateChangedEventArgs e)
     {
-        if (sender.Date is { } d && DateOnly.FromDateTime(d.DateTime) != Model.SelectedDate)
-            await Run(() => Model.SelectDateAsync(DateOnly.FromDateTime(d.DateTime)));
+        if (!updatingScheduleDate && sender.Date is { } d && Model.ViewedDateRange is not null)
+            await Run(() => Model.SelectScheduleDateAsync(DateOnly.FromDateTime(d.DateTime), datePickerGeneration, datePickerSemester));
     }
     async void RefreshClicked(object sender, RoutedEventArgs e) => await Run(RefreshCurrentCoursesAsync);
     Task Detail(Course course)

@@ -10,6 +10,7 @@ namespace UCASSignIn.Android.Services;
 public sealed class AndroidReminderScheduler(Context context, string storageName = "reminders.json") : IReminderScheduler
 {
     const string Channel = "courses";
+    static readonly SemaphoreSlim updates = new(1);
     string Path => System.IO.Path.Combine(context.FilesDir!.AbsolutePath, storageName);
     public static Func<Task<bool>>? PermissionRequest
     {
@@ -20,25 +21,43 @@ public sealed class AndroidReminderScheduler(Context context, string storageName
     PendingIntent Alarm(Reminder r) => PendingIntent.GetBroadcast(context, RequestId(r.Id),
         new Intent(context, typeof(CourseReminderReceiver)).SetAction("cn.ucas.signin.REMINDER").SetData(global::Android.Net.Uri.Parse("ucas-signin://reminder/" + Uri.EscapeDataString(r.Id))).PutExtra("id", r.Id),
         PendingIntentFlags.UpdateCurrent | PendingIntentFlags.Immutable)!;
-    public Task ReplaceAsync(IReadOnlyList<Reminder> reminders)
+    public Task ReplaceAsync(IReadOnlyList<Reminder> reminders) => UpdateAsync(reminders.ToArray(), false);
+    Task UpdateAsync(IReadOnlyList<Reminder>? requested, bool restore) => Task.Run(async () =>
     {
-        var alarms = (AlarmManager)context.GetSystemService(Context.AlarmService)!;
-        var manager = (NotificationManager)context.GetSystemService(Context.NotificationService)!;
-        if (OperatingSystem.IsAndroidVersionAtLeast(26))
-            manager.CreateNotificationChannel(new NotificationChannel(Channel, "课程提醒", NotificationImportance.Default));
-        var old = AtomicFile.ReadJson<List<Reminder>>(Path) ?? [];
-        // Persist the replacement before delivery can inspect it; stale broadcasts are ignored.
-        AtomicFile.WriteJson(Path, reminders);
-        foreach (var r in old)
+        await updates.WaitAsync().ConfigureAwait(false);
+        try
         {
-            using var pending = Alarm(r);
-            alarms.Cancel(pending);
-            manager.Cancel(RequestId(r.Id));
+            var old = AtomicFile.ReadJson<List<Reminder>>(Path) ?? [];
+            var pendingPath = Path + ".pending";
+            var pending = AtomicFile.ReadJson<List<Reminder>>(pendingPath);
+            var changes = ReminderChanges.Create(old.Concat(pending ?? []), requested ?? old, DateTimeOffset.UtcNow, restore || pending is not null);
+            if (changes.Cancel.Count == 0 && changes.Schedule.Count == 0)
+            {
+                if (pending is not null) File.Delete(pendingPath);
+                return;
+            }
+            var alarms = (AlarmManager)context.GetSystemService(Context.AlarmService)!;
+            var manager = (NotificationManager)context.GetSystemService(Context.NotificationService)!;
+            if (OperatingSystem.IsAndroidVersionAtLeast(26))
+                manager.CreateNotificationChannel(new NotificationChannel(Channel, "课程提醒", NotificationImportance.Default));
+            // Remember incomplete OS updates so a failure/restart retries all registrations.
+            AtomicFile.WriteJson(pendingPath, old.Concat(pending ?? []).DistinctBy(r => r.Id).ToArray());
+            AtomicFile.WriteJson(Path, changes.Current);
+            foreach (var r in changes.Cancel)
+            {
+                using var pendingAlarm = Alarm(r);
+                alarms.Cancel(pendingAlarm);
+                manager.Cancel(RequestId(r.Id));
+            }
+            foreach (var r in changes.Schedule)
+            {
+                using var pendingAlarm = Alarm(r);
+                alarms.SetAndAllowWhileIdle(AlarmType.RtcWakeup, r.At.ToUnixTimeMilliseconds(), pendingAlarm);
+            }
+            File.Delete(pendingPath);
         }
-        foreach (var r in reminders.Where(r => r.At > DateTimeOffset.UtcNow))
-            alarms.SetAndAllowWhileIdle(AlarmType.RtcWakeup, r.At.ToUnixTimeMilliseconds(), Alarm(r));
-        return Task.CompletedTask;
-    }
+        finally { updates.Release(); }
+    });
     public void Deliver(string id)
     {
         var r = (AtomicFile.ReadJson<List<Reminder>>(Path) ?? []).FirstOrDefault(r => r.Id == id);
@@ -54,7 +73,7 @@ public sealed class AndroidReminderScheduler(Context context, string storageName
             .SetContentTitle("即将上课 · " + r.Title)!.SetContentText(r.Body)!.SetContentIntent(open)!.SetAutoCancel(true)!.Build();
         NotificationManagerCompat.From(context)!.Notify(RequestId(r.Id), notification);
     }
-    public Task RestoreAsync() => ReplaceAsync((AtomicFile.ReadJson<List<Reminder>>(Path) ?? []).Where(r => r.At > DateTimeOffset.UtcNow).ToList());
+    public Task RestoreAsync() => UpdateAsync(null, true);
 }
 [BroadcastReceiver(Enabled = true, Exported = false)]
 public sealed class CourseReminderReceiver : BroadcastReceiver

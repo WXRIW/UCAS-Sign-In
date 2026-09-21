@@ -145,17 +145,16 @@ public sealed class MainActivity : AppCompatActivity
         Window.DecorView!.Post(ClearNavigationBarBackground);
         ViewCompat.RequestApplyInsets(windowRoot);
         Model.Changed += Changed;
+        Model.ScheduleProgressChanged += ScheduleProgressChanged;
         ShowPage();
         _ = Run(async () =>
         {
-            await Model.InitializeAsync();
-            AndroidAutoSignService.Sync(UiContext, Model);
-            if (savedInstanceState?.GetBoolean("demoState", false) == true && !Model.IsDemo)
-                await Model.EnterDemoAsync();
+            var demoLaunch = Model.IsDemo || Intent?.GetBooleanExtra("demo", false) == true || savedInstanceState?.GetBoolean("demoState", false) == true;
+            if (demoLaunch) { if (!Model.IsDemo) await Model.InitializeDemoAsync(); } else await Model.InitializeAsync();
+            if (!demoLaunch) AndroidAutoSignService.Sync(UiContext, Model);
             if (Intent?.GetBooleanExtra("demo", false) == true)
             {
                 Intent.RemoveExtra("demo");
-                await Model.EnterDemoAsync();
             }
             ready = true;
             // The retained view model already owns this date after rotation/theme changes.
@@ -204,6 +203,7 @@ public sealed class MainActivity : AppCompatActivity
         {
             if (renderedGeneration != Model.Generation)
             {
+                page?.CloseSchedulePickers();
                 if (!Model.IsBusy)
                     ActiveDialog?.Dismiss();
                 Array.Clear(Vm.Routes);
@@ -216,6 +216,7 @@ public sealed class MainActivity : AppCompatActivity
             page?.Render();
         });
     }
+    void ScheduleProgressChanged() => RunOnUiThread(() => page?.UpdateScheduleProgress());
     void ShowPage()
     {
         page = SupportFragmentManager.FindFragmentByTag("page") as MainPageFragment;
@@ -263,7 +264,10 @@ public sealed class MainActivity : AppCompatActivity
             toolbar.Menu!.Add(0, 10, 0, "切换账户")!.SetIcon(icon)!.SetShowAsAction(ShowAsAction.Always);
         }
         if (tab == 1)
-            toolbar.Menu!.Add(0, 11, 0, "选择日期")!.SetIcon(Resource.Drawable.ic_calendar)!.SetShowAsAction(ShowAsAction.Always);
+        {
+            toolbar.Menu!.Add(0, 12, 0, "选择学期")!.SetIcon(Resource.Drawable.ic_book)!.SetShowAsAction(ShowAsAction.Always);
+            toolbar.Menu!.Add(0, 11, 1, "选择日期")!.SetIcon(Resource.Drawable.ic_calendar)!.SetShowAsAction(ShowAsAction.Always);
+        }
         return (toolbar, brand);
     }
     public void SetBackEnabled(bool enabled)
@@ -279,18 +283,18 @@ public sealed class MainActivity : AppCompatActivity
             if (f is Google.Android.Material.DatePicker.MaterialDatePicker picker)
             {
                 picker.ClearOnPositiveButtonClickListeners();
-                picker.AddOnPositiveButtonClickListener(new DateSelected(host));
+                picker.AddOnPositiveButtonClickListener(new DateSelected(host, picker.Arguments?.GetString("schedule.generation"), picker.Arguments?.GetString("schedule.semester")));
             }
             if (OperatingSystem.IsAndroidVersionAtLeast(34) && f is AndroidX.Fragment.App.DialogFragment { Dialog: { } dialog } fragment)
                 PredictiveDialogBack.Attach(dialog, () => fragment.Cancelable);
         }
     }
-    sealed class DateSelected(MainActivity host) : Java.Lang.Object, Google.Android.Material.DatePicker.IMaterialPickerOnPositiveButtonClickListener
+    sealed class DateSelected(MainActivity host, string? generation, string? semester) : Java.Lang.Object, Google.Android.Material.DatePicker.IMaterialPickerOnPositiveButtonClickListener
     {
         public void OnPositiveButtonClick(Java.Lang.Object? selection)
         {
-            if (selection is Java.Lang.Long value)
-                _ = host.Run(() => host.Model.SelectDateAsync(DateOnly.FromDateTime(DateTimeOffset.FromUnixTimeMilliseconds(value.LongValue()).UtcDateTime)));
+            if (selection is Java.Lang.Long value && Guid.TryParse(generation, out var epoch) && semester is not null)
+                _ = host.Run(() => host.Model.SelectScheduleDateAsync(DateOnly.FromDateTime(DateTimeOffset.FromUnixTimeMilliseconds(value.LongValue()).UtcDateTime), epoch, semester));
         }
     }
     public View AccountMenuAnchor => page!.ActiveToolbar;
@@ -369,6 +373,7 @@ public sealed class MainActivity : AppCompatActivity
     protected override void OnDestroy()
     {
         Model.Changed -= Changed;
+        Model.ScheduleProgressChanged -= ScheduleProgressChanged;
         foreground?.Cancel();
         foreground?.Dispose();
         ActiveDialog?.Dismiss();

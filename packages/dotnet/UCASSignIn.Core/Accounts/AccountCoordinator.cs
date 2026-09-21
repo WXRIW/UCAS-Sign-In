@@ -16,7 +16,6 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
     readonly HashSet<string> freshDays = [];
     readonly Dictionary<string, DateTimeOffset> courseUpdates = [];
     readonly Dictionary<string, string?> courseNotices = [];
-    readonly Dictionary<string, HashSet<string>> weeklyFallbackDays = [];
     readonly HashSet<string> autoAttempts = [];
     readonly HashSet<string> signPreparations = [];
     readonly HashSet<string> recoveryAttempts = [];
@@ -77,16 +76,14 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
     public IReadOnlyList<Course> DisplayCourses(DateOnly date)
     {
         var day = CourseTime.DayKey(date);
-        var selected = Courses.Where(c => c.Day == day).ToList();
-        return selected.Count > 0 || !weeklyFallbackDays.TryGetValue(day, out var fallback) ? selected
-            : Courses.Where(c => fallback.Contains(c.Day)).ToList();
+        return Courses.Where(c => c.Day == day).ToList();
     }
     public bool IsFresh(Course course) => IsDemo || freshDays.Contains(CourseTime.NormalizeDay(course.Day) ?? "");
     public bool IsCached(DateOnly date) => !IsDemo && courseUpdates.ContainsKey(CourseTime.DayKey(date)) && !freshDays.Contains(CourseTime.DayKey(date));
     public DateTimeOffset? LastUpdated(DateOnly date) => courseUpdates.TryGetValue(CourseTime.DayKey(date), out var updated) ? updated : null;
     public string? CourseNotice(DateOnly date) => courseNotices.GetValueOrDefault(CourseTime.DayKey(date));
     public bool CanSign(Course c) => IsConnected && !IsBusy && !IsRecovering && !paused && ActiveAccount?.RequiresLogin != true
-        && !IsSignInDisabled(c.CourseId)
+        && !IsSignInDisabled(PreferenceId(c))
         && IsFresh(c) && Courses.Any(x => x.Id == c.Id && x.Day == c.Day && !x.Signed);
     void Notify() => Changed?.Invoke();
     public void SetMessage(string? text)
@@ -120,6 +117,11 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
         }
         else
             Notify();
+    }
+    public async Task InitializeDemoAsync()
+    {
+        if (!loaded) { vault = await accounts.LoadAsync(); vault.Validate(); loaded = true; }
+        await EnterDemoAsync();
     }
     async Task CommitAsync(AccountVault next)
     {
@@ -166,6 +168,7 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
     }
     async Task ResetAsync()
     {
+        ResetSchedule();
         lifetime.Cancel();
         lifetime.Dispose();
         lifetime = new();
@@ -176,7 +179,6 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
         freshDays.Clear();
         courseUpdates.Clear();
         courseNotices.Clear();
-        weeklyFallbackDays.Clear();
         signPreparations.Clear();
         reads.Clear();
         versions.Clear();
@@ -195,11 +197,17 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
         IsDemo = false;
         await ResetAsync();
         var epoch = Generation;
+        RestoreAccountChecks(a);
         paused = a.RequiresLogin;
         Records = await records.LoadAsync(a.Id, lifetime.Token);
         if (epoch != Generation)
             return;
-        await RefreshAsync();
+        await LoadScheduleCacheAsync(a, epoch);
+        if (epoch != Generation) return;
+        if (checkedDays.Contains(CourseTime.DayKey(SelectedDate))) await LoadCacheAsync(a.Id, SelectedDate, epoch);
+        if (epoch != Generation) return;
+        await CheckDayAsync(SelectedDate);
+        if (epoch == Generation && scheduleStore is not null) { scheduleEntered = true; await RefreshScheduleAsync(false, onlyDue: true); }
     }
     public async Task EnterDemoAsync()
     {
@@ -208,8 +216,7 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
         IsDemo = true;
         demoPreferences = new();
         await ResetAsync();
-        Courses = DemoCourses(SelectedDate);
-        SetupDemoCatalog();
+        EnsureDemoSchedule();
         Notify();
     }
     public async Task ExitDemoAsync()
@@ -230,12 +237,15 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
         SelectedDate = date;
         if (IsDemo)
         {
-            MergeDemo(date);
+            EnsureDemoSchedule();
             Notify();
             return;
         }
         if (ActiveAccount is not null)
-            await RefreshAsync(date);
+        {
+            if (scheduleEntered && ScheduleMode == ScheduleMode.Week) { var pending = RefreshScheduleAsync(false); Notify(); await pending; }
+            else { await CheckDayAsync(date); Notify(); }
+        }
         else
             Notify();
     }
@@ -244,23 +254,23 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
         var value = await cache.LoadAsync(id, CourseTime.DayKey(date), lifetime.Token);
         if (epoch != Generation || value is null)
             return;
-        SetFallback(CourseTime.DayKey(date), value.Courses, value.FromWeeklyFallback);
-        Merge(value.Courses, CourseTime.DayKey(date));
+        if (courseUpdates.TryGetValue(CourseTime.DayKey(date), out var updated) && (value.WriteSequence > 0
+            ? successfulWrites.GetValueOrDefault(CourseTime.DayKey(date)) >= value.WriteSequence : updated >= value.UpdatedAt)) return;
+        Merge(value.Courses.Where(c => CourseTime.NormalizeDay(c.Day) == CourseTime.DayKey(date)), CourseTime.DayKey(date));
         courseUpdates[CourseTime.DayKey(date)] = value.UpdatedAt;
-        Message = "正在显示本机缓存，同步成功后才能签到";
+        requestSequence = Math.Max(requestSequence, value.WriteSequence);
+        successfulWrites[CourseTime.DayKey(date)] = value.WriteSequence;
     }
     void Merge(IEnumerable<Course> courses, string day)
     {
-        var incoming = courses.ToList();
+        var incoming = courses.Select(c => CourseIdentity.PreserveFields(c with { Day = CourseTime.NormalizeDay(c.Day) ?? day },
+            Courses.FirstOrDefault(x => x.Day == day && x.Id == c.Id))).ToList();
         var days = incoming.Select(c => c.Day).Append(day).ToHashSet();
+        var previous = Courses.Where(c => days.Contains(c.Day)).ToArray();
+        var changed = !CourseIdentity.SameArrangement(previous, incoming);
+        if (!changed && previous.OrderBy(c => c.Id).Select(c => c.Signed).SequenceEqual(incoming.OrderBy(c => c.Id).Select(c => c.Signed))) return;
         Courses = Courses.Where(c => !days.Contains(c.Day)).Concat(incoming).OrderBy(c => c.Start).ToList();
-    }
-    void SetFallback(string day, IEnumerable<Course> courses, bool fallback)
-    {
-        if (fallback)
-            weeklyFallbackDays[day] = courses.Select(c => c.Day).ToHashSet();
-        else
-            weeklyFallbackDays.Remove(day);
+        if (changed) { ArrangementVersion++; }
     }
     void MergeDemo(DateOnly date)
     {
@@ -273,7 +283,7 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
         var target = date ?? SelectedDate;
         if (IsDemo)
         {
-            MergeDemo(target);
+            EnsureDemoSchedule();
             Notify();
             return Task.CompletedTask;
         }
@@ -325,36 +335,33 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
             CourseQueryResult result;
             try
             {
-                result = await school.CoursesAsync(account.Session, date, ct);
+                result = await school.DailyScheduleAsync(account.Session, date, ct);
             }
             catch (SchoolException e) when (e.IsSessionExpired)
             {
                 var session = await RecoverAsync(account.Session, epoch);
                 if (session is null)
                     return;
-                result = await school.CoursesAsync(session, date, ct);
+                result = await school.DailyScheduleAsync(session, date, ct);
             }
             if (epoch != Generation || paused || versions.GetValueOrDefault(day) != sequence)
                 return;
-            await cache.SaveAsync(account.Id, day, new(result.Courses.ToList(), clock.GetUtcNow(), result.FromWeeklyFallback), ct);
+            if (successfulWrites.GetValueOrDefault(day) > sequence) return;
+            result = result with { Courses = result.Courses.Where(c => CourseTime.NormalizeDay(c.Day) == day).Select(c => CourseIdentity.PreserveFields(c with { Day = day }, Courses.FirstOrDefault(x => x.Day == day && x.Id == c.Id))).ToArray(), FromWeeklyFallback = false };
+            var arrangementChanged = courseUpdates.ContainsKey(day) && !CourseIdentity.SameArrangement(Courses.Where(c => c.Day == day), result.Courses);
+            var updatedAt = clock.GetUtcNow();
+            await cache.SaveAsync(account.Id, day, new(result.Courses.ToList(), updatedAt, false, sequence), ct);
             if (epoch != Generation || paused)
                 return;
             Merge(result.Courses, day);
-            SetFallback(day, result.Courses, result.FromWeeklyFallback);
+            successfulWrites[day] = sequence;
+            checkedDays.Add(day); retryAt.Remove("day:" + day); failures.Remove("day:" + day);
             freshDays.Add(day);
-            courseUpdates[day] = clock.GetUtcNow();
-            courseNotices[day] = result.FromWeeklyFallback ? "所选日期没有课程，课表中可查看学校返回的本周课程。" : null;
-            foreach (var group in result.Courses.GroupBy(c => c.Day))
-            {
-                freshDays.Add(group.Key);
-                courseUpdates[group.Key] = clock.GetUtcNow();
-                if (group.Key != day) courseNotices[group.Key] = null;
-                await cache.SaveAsync(account.Id, group.Key, new(group.ToList(), clock.GetUtcNow()), ct);
-                if (epoch != Generation)
-                    return;
-            }
-            LastSyncAt = clock.GetUtcNow();
+            courseUpdates[day] = updatedAt;
+            courseNotices.Remove(day);
+            LastSyncAt = updatedAt;
             Message = null;
+            if (arrangementChanged) ScheduleArrangementChanged();
             await UpdateRemindersAsync();
         }
         catch (OperationCanceledException) { }
@@ -363,6 +370,8 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
             if (epoch == Generation)
             {
                 freshDays.Remove(day);
+                checkedDays.Remove(day);
+                RetryLater("day:" + day);
                 Message = e.Message;
                 courseNotices[day] = e.Message;
                 if (e is SchoolException se && se.IsSessionExpired)
@@ -400,6 +409,7 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
     {
         paused = true;
         freshDays.Clear();
+        checkedDays.Clear();
         Notify();
         try
         {
@@ -421,6 +431,7 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
                 RequiresLogin = false
             }));
             paused = false;
+            scheduleSessionId = result.SessionId;
             return result;
         }
         catch (Exception) { if (epoch == Generation) await RequireLoginAsync(failed.StudentNo, epoch); return null; }
@@ -446,7 +457,7 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
     public async Task SignAsync(Course course, Guid expectedGeneration, bool automatically = false)
     {
         var preparationKey = course.Day + "|" + course.Id;
-        if (expectedGeneration != Generation || !CanSign(course) || automatically && !EffectiveAutoSign(course.CourseId) || !signPreparations.Add(preparationKey))
+        if (expectedGeneration != Generation || !CanSign(course) || automatically && !EffectiveAutoSign(PreferenceId(course)) || !signPreparations.Add(preparationKey))
             return;
         var epoch = Generation;
         var id = ActiveAccount?.Id ?? "demo";
@@ -456,7 +467,7 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
         {
             var current = Courses.FirstOrDefault(x => x.Id == course.Id && x.Day == course.Day);
             if (epoch != Generation || paused || ActiveAccount?.RequiresLogin == true || current is null || current.Signed
-                || !IsFresh(current) || IsSignInDisabled(current.CourseId) || automatically && !EffectiveAutoSign(current.CourseId)) return false;
+                || !IsFresh(current) || IsSignInDisabled(PreferenceId(current)) || automatically && !EffectiveAutoSign(PreferenceId(current))) return false;
             submitted = true;
             IsBusy = true;
             if (automatically) autoAttempts.Add(attemptKey);
@@ -480,8 +491,10 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
                 await records.SaveAsync(id, Records, lifetime.Token);
             if (result.Outcome == SignOutcome.Signed)
             {
-                InvalidateAttendance(course.CourseId);
+                InvalidateAttendance(PreferenceId(course));
                 Courses = Courses.Select(c => c.Id == course.Id && c.Day == course.Day ? c with { Signed = true } : c).ToList();
+                successfulWrites[course.Day] = ++requestSequence;
+                if (!IsDemo) await cache.SaveAsync(id, course.Day, new(Courses.Where(c => c.Day == course.Day).ToList(), clock.GetUtcNow(), false, successfulWrites[course.Day]), lifetime.Token);
             }
             else ReportSignInError(course.Day, result.Message);
             if (!IsDemo)
@@ -520,7 +533,7 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
         if (IsDemo && IsForeground)
         {
             var demoToday = CourseTime.Today(clock);
-            if (!Courses.Any(c => c.Day == CourseTime.DayKey(demoToday)))
+            if (CourseIdentity.Semester(demoToday, Semesters) is null && demoToday.DayOfWeek is not (DayOfWeek.Saturday or DayOfWeek.Sunday))
             {
                 MergeDemo(demoToday);
                 Notify();
@@ -530,18 +543,20 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
         if (!Active() || IsDemo || IsBusy || IsRecovering || IsRefreshing || paused || ActiveAccount is not { } a)
             return;
         var epoch = Generation;
+        if (!IsScheduleRefreshing) await MaintainScheduleAsync();
+        if (epoch != Generation || !Active() || paused) return;
         var today = CourseTime.Today(clock);
         if (!freshDays.Contains(CourseTime.DayKey(today)))
-            await RefreshAsync(today);
+            await CheckDayAsync(today);
         if (epoch != Generation || !Active() || paused) return;
         if (SelectedDate != today && IsCached(SelectedDate))
-            await RefreshAsync(SelectedDate);
+            await CheckDayAsync(SelectedDate);
         if (epoch != Generation || !Active() || paused || IsBusy)
             return;
         // Avoid waking the school clock endpoint all day. Device time is only a
         // coarse gate; the signed request still uses the authoritative school time.
         var localNow = clock.GetUtcNow();
-        var candidates = Courses.Where(c => c.Day == CourseTime.DayKey(today) && CanSign(c) && EffectiveAutoSign(c.CourseId)
+        var candidates = Courses.Where(c => c.Day == CourseTime.DayKey(today) && CanSign(c) && EffectiveAutoSign(PreferenceId(c))
             && c.Start is { } start && c.End is { } end
             && localNow >= start.AddMinutes(-30) && localNow < end.AddMinutes(5)
             && !autoAttempts.Contains(a.Id + "|" + c.Day + "|" + c.Id)).ToList();
@@ -550,7 +565,7 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
         var now = await school.SchoolNowAsync(lifetime.Token);
         if (epoch != Generation || !Active())
             return;
-        var course = candidates.FirstOrDefault(c => CanSign(c) && EffectiveAutoSign(c.CourseId) && CourseTime.InSignWindow(c, now)
+        var course = candidates.FirstOrDefault(c => CanSign(c) && EffectiveAutoSign(PreferenceId(c)) && CourseTime.InSignWindow(c, now)
             && !autoAttempts.Contains(a.Id + "|" + c.Day + "|" + c.Id));
         if (course is not null)
             await SignAsync(course, epoch, true);
@@ -595,10 +610,27 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
         try
         {
             var a = ActiveAccount;
-            var list = IsDemo || paused || a is null ? [] : Courses.Where(c => IsFresh(c) && EffectiveReminders(c.CourseId)
-                    && c.Start?.AddMinutes(-EffectiveReminderLeadMinutes(c.CourseId)) > clock.GetUtcNow())
-                .Select(c => new Reminder(a.Id + "|" + c.Day + "|" + c.Id, a.Id, c.Id, c.Day, c.Name,
-                    $"{c.TimeRange} · {c.Classroom ?? "教室暂未提供"}", c.Start!.Value.AddMinutes(-EffectiveReminderLeadMinutes(c.CourseId)))).ToArray();
+            var list = new List<Reminder>();
+            if (!IsDemo && !paused && a is not null)
+            {
+                var now = clock.GetUtcNow();
+                var prefs = Preferences;
+                var settings = new Dictionary<string, CoursePreferences>();
+                foreach (var c in Courses)
+                {
+                    if (!IsFresh(c) || c.Start is not { } start || start <= now) continue;
+                    CoursePreferences? coursePrefs = null;
+                    if (prefs.Courses.Count > 0 && PreferenceId(c) is { } id)
+                    {
+                        if (!settings.TryGetValue(id, out coursePrefs)) settings[id] = coursePrefs = CoursePreferencesFor(id);
+                    }
+                    if (!CoursePreferences.Resolve(coursePrefs?.Reminders ?? PreferenceOverride.Inherit, prefs.RemindersEnabled)) continue;
+                    var at = start.AddMinutes(-(coursePrefs?.ReminderLeadMinutes ?? prefs.ReminderLeadMinutes));
+                    if (at <= now) continue;
+                    list.Add(new(a.Id + "|" + c.Day + "|" + c.Id, a.Id, c.Id, c.Day, c.Name,
+                        $"{c.TimeRange} · {c.Classroom ?? "教室暂未提供"}", at));
+                }
+            }
             try
             {
                 await reminders.ReplaceAsync(list);
@@ -624,6 +656,7 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
             if (catalog is not null)
                 await catalog.RemoveCatalogAsync(id);
             await records.RemoveAsync(id);
+            accountChecks.Remove(id);
         }
         finally { IsBusy = false; mutations.Release(); Notify(); }
     }

@@ -229,9 +229,10 @@ public sealed partial class MainWindow
         information.Children.Add(CourseInfoRow("\uE943", "课程编号", Missing(course.Number)));
         information.Children.Add(CourseInfoRow("\uE77B", "教师", Missing(course.Teacher)));
         information.Children.Add(CourseInfoRow("\uE707", "教室", Missing(course.Classroom)));
-        information.Children.Add(CourseInfoRow("\uE787", "学期", Missing(Model.SelectedSemester?.Name ?? course.SemesterId)));
+        information.Children.Add(CourseInfoRow("\uE787", "学期", Missing(Model.Semesters.FirstOrDefault(s => s.Id == course.SemesterId)?.Name ?? course.SemesterId)));
         information.Children.Add(CourseInfoRow("\uE823", "课程日期", DisplayLongDay(course.BeginDate) + "–" + DisplayLongDay(course.EndDate)));
         Page.Children.Add(CourseInformationSection(information));
+        if (string.IsNullOrWhiteSpace(course.Id)) { Page.Children.Add(Text("课程身份尚未唯一关联，设置与学校考勤暂不可用。", 14, color: Secondary)); return; }
 
         var reminder = OverridePicker("课前提醒", values.Reminders, Model.Preferences.RemindersEnabled,
             selected => Model.SetCoursePreferencesAsync(course.Id, values with { Reminders = selected }));
@@ -312,7 +313,7 @@ public sealed partial class MainWindow
         attendanceGroup.Children.Add(SettingsNote(attendanceFooter));
         Page.Children.Add(attendanceGroup);
 
-        var local = Model.Records.Where(x => x.CourseId == course.Id).ToList();
+        var local = Model.RecordsForCourse(course.Id).ToList();
         var localGroup = SettingsGroup("本机操作记录");
         var localRows = (StackPanel)localGroup.Children[1];
         if (local.Count == 0)

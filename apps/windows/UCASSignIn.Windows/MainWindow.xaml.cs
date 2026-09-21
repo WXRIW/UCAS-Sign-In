@@ -32,6 +32,7 @@ public sealed partial class MainWindow : Window
         {
             if (renderedGeneration != Model.Generation)
             {
+                CloseSchedulePickers();
                 if (!Model.IsBusy)
                     activeDialog?.Hide();
                 paths.Clear();
@@ -45,6 +46,8 @@ public sealed partial class MainWindow : Window
             ShowPendingSignInError();
         };
         renderedGeneration = Model.Generation;
+        Model.ScheduleProgressChanged += UpdateWeekProgress;
+        motionSettings.TextScaleFactorChanged += ScheduleTextScaleChanged;
         Activated += (_, e) =>
         {
             Model.IsForeground = e.WindowActivationState != WindowActivationState.Deactivated;
@@ -55,7 +58,7 @@ public sealed partial class MainWindow : Window
                 else if (section == "courses") _ = Run(() => Model.RefreshCatalogAsync());
             }
         };
-        Closed += (_, _) => { closed = true; Model.IsForeground = false; timer.Stop(); qrCancellation?.Cancel(); activeDialog?.Hide(); };
+        Closed += (_, _) => { closed = true; Model.ScheduleProgressChanged -= UpdateWeekProgress; motionSettings.TextScaleFactorChanged -= ScheduleTextScaleChanged; Model.IsForeground = false; timer.Stop(); qrCancellation?.Cancel(); activeDialog?.Hide(); };
         Root.ActualThemeChanged += (_, _) => Render();
         timer.Tick += async (_, _) => await Run(Tick);
         AddKey(VirtualKey.R, () => Run(RefreshCurrentCoursesAsync));
@@ -78,12 +81,10 @@ public sealed partial class MainWindow : Window
                 work.Y + (work.Height - height) / 2, width, height));
             ApplyTheme();
             Navigation.SelectedItem = Navigation.MenuItems[0];
-            await Run(Model.InitializeAsync);
+            await Run(Environment.GetCommandLineArgs().Contains("--demo") ? Model.InitializeDemoAsync : Model.InitializeAsync);
             ready = true;
             timer.Start();
             Render();
-            if (Environment.GetCommandLineArgs().Contains("--demo"))
-                await Run(Model.EnterDemoAsync);
             if (notification is not null)
                 OpenNotification(notification);
             _ = CheckForUpdates(false);
@@ -127,6 +128,7 @@ public sealed partial class MainWindow : Window
         section = (args.SelectedItem as NavigationViewItem)?.Tag?.ToString() ?? "today";
         (route, detail, catalogDetail) = paths.GetValueOrDefault(section);
         qrCancellation?.Cancel();
+        if (section == "schedule" && route is null) _ = Run(Model.EnterScheduleAsync);
         if (PageFrame is not null)
             Render();
     }

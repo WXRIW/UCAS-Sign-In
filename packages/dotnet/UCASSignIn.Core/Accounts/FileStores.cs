@@ -63,7 +63,7 @@ public static class AtomicFile
     public static void WriteJson<T>(string path, T value) => Write(path, JsonSerializer.SerializeToUtf8Bytes(value));
     public static T? ReadJson<T>(string path) => File.Exists(path) ? JsonSerializer.Deserialize<T>(File.ReadAllBytes(path)) : default;
 }
-public sealed class FileDataStore(string root) : ICourseStore, IRecordStore, ICourseCatalogStore
+public sealed class FileDataStore(string root) : ICourseStore, IRecordStore, ICourseCatalogStore, IScheduleStore
 {
     string AccountPath(string id) => Path.Combine(root, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(id))));
     public Task<CourseCache?> LoadAsync(string accountId, string day, CancellationToken ct = default)
@@ -113,4 +113,31 @@ public sealed class FileDataStore(string root) : ICourseStore, IRecordStore, ICo
         var path = CatalogPath(accountId); if (Directory.Exists(path)) Directory.Delete(path, true); return Task.CompletedTask;
     }
     static string Safe(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+    string SchedulePath(string id) => Path.Combine(AccountPath(id), "schedule");
+    public Task<IReadOnlyList<ScheduleSnapshot>> LoadSchedulesAsync(string accountId, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested(); var path = SchedulePath(accountId);
+        IReadOnlyList<ScheduleSnapshot> result = Directory.Exists(path) ? Directory.EnumerateFiles(path, "semester-*.json")
+            .Select(AtomicFile.ReadJson<ScheduleSnapshot>).Where(x => x is not null && x.AccountId == accountId).Cast<ScheduleSnapshot>().ToArray() : [];
+        return Task.FromResult(result);
+    }
+    public Task SaveScheduleAsync(ScheduleSnapshot snapshot, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        AtomicFile.WriteJson(Path.Combine(SchedulePath(snapshot.AccountId), "semester-" + Safe(snapshot.Semester.Id) + ".json"), snapshot);
+        return Task.CompletedTask;
+    }
+    public Task<IReadOnlyList<string>> CachedDaysAsync(string accountId, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested(); var path = AccountPath(accountId);
+        IReadOnlyList<string> result = Directory.Exists(path) ? Directory.EnumerateFiles(path, "*.json")
+            .Select(Path.GetFileNameWithoutExtension).Select(CourseTime.NormalizeDay).OfType<string>().Order().ToArray() : [];
+        return Task.FromResult(result);
+    }
+    public Task<ScheduleRetryTargets?> LoadScheduleRetriesAsync(string accountId, CancellationToken ct = default)
+        => Task.FromResult(AtomicFile.ReadJson<ScheduleRetryTargets>(Path.Combine(SchedulePath(accountId), "retries.json")));
+    public Task SaveScheduleRetriesAsync(string accountId, ScheduleRetryTargets targets, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested(); AtomicFile.WriteJson(Path.Combine(SchedulePath(accountId), "retries.json"), targets); return Task.CompletedTask;
+    }
 }

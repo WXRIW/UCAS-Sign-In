@@ -52,6 +52,23 @@ public sealed class SchoolClient : ISchoolClient, IDisposable
             ["userId"] = session.UserId,
             ["type"] = "2"
         }, ct: ct));
+    public async Task<WeeklyScheduleResult> WeeklyScheduleAsync(SchoolSession session, DateOnly date, CancellationToken ct = default)
+        => ResponseParser.WeeklySchedule(await ExecuteAsync("course/get_stu_course_sched_week.action", session,
+            new() { ["id"] = session.UserId, ["dateStr"] = CourseTime.DayKey(date) }, ct: ct));
+    public async Task<CourseQueryResult> DailyScheduleAsync(SchoolSession session, DateOnly date, CancellationToken ct = default)
+    {
+        var day = CourseTime.DayKey(date);
+        var json = await ExecuteAsync("course/get_stu_course_sched.action", session,
+            new() { ["id"] = session.UserId, ["dateStr"] = day }, ct: ct);
+        ResponseParser.RejectSessionError(json);
+        if (ResponseParser.Text(json, "STATUS") == "0" && ResponseParser.Text(json, "ERRCODE") is "" or "0"
+            && ResponseParser.Field(json, "success").ValueKind is JsonValueKind.Undefined or JsonValueKind.True
+            && ResponseParser.Field(json, "result").ValueKind == JsonValueKind.Array)
+            return new(ResponseParser.Courses(ResponseParser.Field(json, "result"), day), "已更新当天课程");
+        var week = await WeeklyScheduleAsync(session, date, ct);
+        if (!week.CoveredDays.Contains(day)) throw new SchoolException("SCHEDULE_UNKNOWN_DAY", "学校未明确返回所选日期");
+        return new(week.Courses.Where(x => x.Day == day).ToArray(), "已从周课表更新当天课程");
+    }
     public async Task<IReadOnlyList<CatalogCourse>> CatalogCoursesAsync(SchoolSession session, string semesterId, CancellationToken ct = default)
         => ResponseParser.CatalogCourses(await ExecuteAsync("choosecourse/get_myall_course.action", session, new()
         {

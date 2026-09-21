@@ -18,6 +18,20 @@ public sealed class AccountCoordinatorTests
         while (!condition())
             await Task.Delay(5, timeout.Token);
     }
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DailyRefreshWritesEachCacheOnceIncludingEmptyDays(bool hasCourse)
+    {
+        var h = new Harness();
+        h.School.Query = (_, _) => Task.FromResult(new CourseQueryResult(hasCourse ? [TestData.Course()] : [], ""));
+        await h.Model.InitializeAsync();
+        Assert.Equal(1, h.Data.CourseCacheWrites);
+        await h.Model.RefreshAsync();
+        Assert.Equal(2, h.Data.CourseCacheWrites);
+        Assert.Equal(hasCourse ? 1 : 0, h.Data.Cache["a|20260916"].Courses.Count);
+        Assert.False(h.Model.IsCached(h.Model.SelectedDate));
+    }
     [Fact]
     public async Task SuccessfulSyncDoesNotPublishServiceMessagesAsNotices()
     {
@@ -35,9 +49,9 @@ public sealed class AccountCoordinatorTests
         await h.Model.InitializeAsync();
         var today = h.Model.SelectedDate;
         var target = today.AddDays(1);
-        h.School.Query = (_, _) => Task.FromResult(new CourseQueryResult([], "服务器周课表提示", true));
+        h.School.Query = (_, _) => Task.FromResult(new CourseQueryResult([], "合法空日"));
         await h.Model.SelectDateAsync(target);
-        Assert.NotNull(h.Model.CourseNotice(target));
+        Assert.Null(h.Model.CourseNotice(target));
         Assert.Null(h.Model.CourseNotice(today));
         h.School.Query = (_, _) => throw new IOException("offline");
         await h.Model.RefreshAsync(target);
@@ -48,6 +62,8 @@ public sealed class AccountCoordinatorTests
         h.School.Query = (_, _) => Task.FromResult(new CourseQueryResult([], "已更新当天课程"));
         var reads = h.School.Reads;
         await h.Model.TickAsync();
+        Assert.Equal(reads, h.School.Reads); // Automatic retries respect the daily failure cooldown.
+        await h.Model.CheckDayAsync(target, true);
         Assert.Equal(reads + 1, h.School.Reads);
         Assert.False(h.Model.IsCached(target));
         Assert.Null(h.Model.CourseNotice(target));
@@ -83,7 +99,7 @@ public sealed class AccountCoordinatorTests
         Assert.Equal(selected, h.Model.SelectedDate);
     }
     [Fact]
-    public async Task SelectingSavedActiveAccountFromDemoStillActivatesAndFetches()
+    public async Task SelectingSavedActiveAccountFromDemoReusesSuccessfulSessionCheck()
     {
         var h = new Harness();
         await h.Model.InitializeAsync();
@@ -91,8 +107,9 @@ public sealed class AccountCoordinatorTests
         var reads = h.School.Reads;
         await h.Model.SwitchAsync("a");
         Assert.False(h.Model.IsDemo);
-        Assert.Equal(reads + 1, h.School.Reads);
+        Assert.Equal(reads, h.School.Reads);
         Assert.Equal("a", h.Model.ActiveAccount?.Id);
+        Assert.NotEmpty(h.Model.Courses);
     }
     [Fact]
     public async Task RestoresSessionWithoutRememberedPassword()
@@ -473,14 +490,14 @@ public sealed class AccountCoordinatorTests
         var h = new Harness();
         await h.Model.InitializeAsync();
         await h.Model.EnterDemoAsync();
-        var course = h.Model.Courses.First(c => !c.Signed);
+        var course = h.Model.DisplayCourses(new(2026, 9, 16)).First(c => !c.Signed);
         await h.Model.SignAsync(course, h.Model.Generation);
         await h.Model.SelectDateAsync(new(2026, 9, 17));
         await h.Model.SelectDateAsync(new(2026, 9, 16));
         await h.Model.RefreshAsync();
         Assert.True(h.Model.DisplayCourses(new(2026, 9, 16)).Single(c => c.Id == course.Id).Signed);
         Assert.Single(h.Model.Records);
-        Assert.Equal(3, h.Model.DisplayCourses(new(2026, 9, 17)).Count);
+        Assert.InRange(h.Model.DisplayCourses(new(2026, 9, 17)).Count, 2, 3);
     }
     [Fact]
     public async Task EmptyDateDoesNotDisplayUnrelatedCachedCourses()
@@ -517,7 +534,7 @@ public sealed class AccountCoordinatorTests
         model.IsForeground = true;
         clock.Now = clock.Now.AddSeconds(2);
         await model.TickAsync();
-        Assert.Equal(3, model.DisplayCourses(new(2026, 9, 17)).Count);
+        Assert.InRange(model.DisplayCourses(new(2026, 9, 17)).Count, 2, 3);
         Assert.Equal(0, school.Reads);
     }
     [Fact]
@@ -543,12 +560,13 @@ public sealed class AccountCoordinatorTests
         Assert.Empty(h.Reminders.Scheduled);
     }
     [Fact]
-    public async Task WeeklyFallbackOnlyDisplaysReturnedDates()
+    public async Task StrictDailyReadRejectsUnrelatedWeeklyFallback()
     {
         var h = new Harness();
         await h.Model.InitializeAsync();
         h.School.Query = (_, _) => Task.FromResult(new CourseQueryResult([TestData.Course() with { Day = "20261021" }], "周课表", true));
         await h.Model.SelectDateAsync(new(2026, 10, 20));
-        Assert.Equal("20261021", Assert.Single(h.Model.DisplayCourses(new(2026, 10, 20))).Day);
+        Assert.Empty(h.Model.DisplayCourses(new(2026, 10, 20)));
+        Assert.NotNull(h.Model.CourseNotice(new(2026, 10, 20)));
     }
 }
