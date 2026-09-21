@@ -29,11 +29,14 @@ public struct SemesterScheduleCache: Codable, Sendable {
 }
 
 public enum CourseIdentity {
+    public static func colorKey(for course: Course) -> String {
+        course.courseNumber ?? course.name.split(whereSeparator: \.isWhitespace).joined()
+    }
     /// Color follows the course number, never a meeting/teacher ID or response order.
     /// A normalized title is a visual-only fallback, not an identity association.
     public static func colorIndex(for course: Course, paletteSize: Int) -> Int {
         guard paletteSize > 0 else { return 0 }
-        let key = course.courseNumber ?? course.name.split(whereSeparator: \.isWhitespace).joined()
+        let key = colorKey(for: course)
         let hash = key.utf8.reduce(0) { ($0 * 31 + Int($1)) % 65521 }
         return hash % paletteSize
     }
@@ -55,6 +58,32 @@ public enum CourseIdentity {
             matches = directory.filter { $0.id == id }
         } else { return nil }
         return matches.count == 1 ? matches[0] : nil
+    }
+}
+
+/// Linear probing uses every color once before starting the next round.
+/// Register the whole semester, not just the visible week, to keep colors stable.
+public struct ScheduleColors: Sendable {
+    public static let count = 7
+    private var assignments: [String: Int] = [:]
+
+    public init() {}
+
+    public mutating func register(_ courses: [Course]) {
+        let keys = Set(courses.map(CourseIdentity.colorKey)).sorted()
+        var usage = Array(repeating: 0, count: Self.count)
+        for index in assignments.values { usage[index] += 1 }
+        for key in keys where assignments[key] == nil {
+            let start = key.utf8.reduce(0) { ($0 * 31 + Int($1)) % 65521 } % Self.count
+            let round = usage.min()!
+            let index = (0..<Self.count).map { (start + $0) % Self.count }.first { usage[$0] == round }!
+            assignments[key] = index
+            usage[index] += 1
+        }
+    }
+
+    public func index(for course: Course) -> Int {
+        assignments[CourseIdentity.colorKey(for: course)] ?? CourseIdentity.colorIndex(for: course, paletteSize: Self.count)
     }
 }
 
@@ -169,12 +198,16 @@ public struct WeekScheduleBlock: Identifiable {
 
 /// Immutable drawing data, reused across progress, selection and attendance UI updates.
 public final class WeekSchedulePresentation {
+    public let colors: ScheduleColors
     public let entries: [WeekScheduleEntry]
     public let hours: ClosedRange<Int>
     public let blocksByDay: [String: [WeekScheduleBlock]]
     public let untimedByDay: [String: [WeekScheduleEntry]]
 
-    public init(entries: [WeekScheduleEntry]) {
+    public init(entries: [WeekScheduleEntry], colors: ScheduleColors? = nil) {
+        var palette = colors ?? ScheduleColors()
+        palette.register(entries.map(\.course))
+        self.colors = palette
         self.entries = entries
         let positioned = entries.map(\.positionedCourse)
         hours = ScheduleLayout.hours(positioned)

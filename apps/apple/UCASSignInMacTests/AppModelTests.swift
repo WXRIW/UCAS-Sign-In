@@ -668,6 +668,33 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(cachedCatalogRequests, 1)
     }
 
+    func testInitialWeekLoadsAsOneRefreshAndCachedWeekStaysVisible() async throws {
+        let gate = ResponseGate()
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("课程"))],
+            "semesters:session-a": [.init(scheduleSemesterResponse()), .init(scheduleSemesterResponse())],
+            "weekly:session-a": [.init(scheduleWeekResponse(), gate: gate), .init(scheduleWeekResponse())]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), transport)
+        await model.restore()
+        model.scheduleMode = .week
+        XCTAssertTrue(model.isInitialWeekLoading)
+        let initial = Task { await model.openScheduleDate(model.selectedDate) }
+        await assertEventually { await transport.count("weekly:session-a") == 1 }
+        XCTAssertTrue(model.isInitialWeekLoading)
+        await gate.open()
+        await initial.value
+        XCTAssertTrue(model.hasWeekSchedule)
+        XCTAssertFalse(model.isInitialWeekLoading)
+        await model.openScheduleDate(model.selectedDate)
+        let reads = await transport.count("weekly:session-a")
+        XCTAssertEqual(reads, 1)
+        let daily = await transport.count("courses:session-a")
+        XCTAssertEqual(daily, 1)
+        await model.refreshSchedule()
+        XCTAssertFalse(model.isInitialWeekLoading)
+    }
+
     func testSemesterSyncCommitsEmptyDaysAndColdStartReusesCache() async throws {
         let transport = PlannedTransport([
             "courses:session-a": [.init(courseResponse("课程"))],

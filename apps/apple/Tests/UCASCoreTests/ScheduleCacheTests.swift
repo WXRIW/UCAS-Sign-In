@@ -2,6 +2,30 @@ import XCTest
 @testable import UCASCore
 
 final class ScheduleCacheTests: XCTestCase {
+    func testColorCollisionsProbeEverySlotBeforeReusingColors() {
+        let courses = (0..<200).map { index in
+            Course(id: "\(index)", courseNumber: "COLOR\(index)", name: "课程\(index)",
+                   beginTime: "08:00", endTime: "09:00", day: "20260921")
+        }
+        let collisions = Array(courses.filter { CourseIdentity.colorIndex(for: $0, paletteSize: 7) == 6 }.prefix(15))
+        XCTAssertEqual(collisions.count, 15)
+        var palette = ScheduleColors()
+        palette.register(Array(collisions.prefix(7)))
+        let first = collisions.prefix(7).map { palette.index(for: $0) }
+        XCTAssertEqual(Set(first).count, 7)
+        palette.register(collisions)
+        XCTAssertEqual(collisions.prefix(7).map { palette.index(for: $0) }, first)
+        let usage = Dictionary(grouping: collisions, by: { palette.index(for: $0) }).mapValues(\.count)
+        XCTAssertEqual(usage.values.sorted(), [2, 2, 2, 2, 2, 2, 3])
+        var reordered = ScheduleColors()
+        reordered.register(Array(collisions.prefix(7).reversed()))
+        XCTAssertEqual(collisions.prefix(7).map { reordered.index(for: $0) }, first)
+        let sameCourse = Course(id: "new-meeting", courseNumber: collisions[0].courseNumber, name: "另一教师",
+                                beginTime: "10:00", endTime: "11:00", day: "20260928")
+        palette.register([sameCourse])
+        XCTAssertEqual(palette.index(for: sameCourse), first[0])
+    }
+
     func testSemesterWeekLayoutPerformance() {
         let start = date("20260907")
         let courses = (0..<140).flatMap { offset in

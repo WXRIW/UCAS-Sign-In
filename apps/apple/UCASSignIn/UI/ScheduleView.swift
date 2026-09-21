@@ -169,12 +169,18 @@ struct ScheduleView: View {
                         .font(.caption).foregroundStyle(Palette.green)
                 }
                 VStack(spacing: 8) {
-                    WeekScheduleView(pinnedHeaderTop: pinsDateHeaders ? dateControlsHeight : nil,
-                                     selectDate: selectDate) { path.append(.course($0)) }
-                    if SchoolDate.week(containing: model.selectedDate).first != SchoolDate.week(containing: .now).first {
-                        Button("回到本周") { selectDate(.now) }.buttonStyle(.bordered)
+                    if model.isInitialWeekLoading {
+                        ProgressView("正在加载…")
+                            .frame(maxWidth: .infinity).padding(.vertical, 60)
+                            .accessibilityIdentifier("schedule.initialLoading")
+                    } else {
+                        WeekScheduleView(pinnedHeaderTop: pinsDateHeaders ? dateControlsHeight : nil,
+                                         selectDate: selectDate) { path.append(.course($0)) }
+                        if SchoolDate.week(containing: model.selectedDate).first != SchoolDate.week(containing: .now).first {
+                            Button("回到本周") { selectDate(.now) }.buttonStyle(.bordered)
+                        }
+                        synchronizationFooter
                     }
-                    synchronizationFooter
                 }
             }.padding(.vertical)
         } else {

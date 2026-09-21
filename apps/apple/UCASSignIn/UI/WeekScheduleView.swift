@@ -57,7 +57,7 @@ struct WeekScheduleView: View {
                                 timeLabels(hours: hours, hourHeight: metrics.hourHeight)
                                     .frame(width: gutter, height: metrics.gridHeight)
                                 ForEach(days, id: \.self) { date in
-                                    dayColumn(date, blocks: presentation.blocksByDay[SchoolDate.key(date)] ?? [],
+                                    dayColumn(date, blocks: presentation.blocksByDay[SchoolDate.key(date)] ?? [], colors: presentation.colors,
                                               width: columnWidth, hours: hours, hourHeight: metrics.hourHeight)
                                         .frame(width: columnWidth, height: metrics.gridHeight)
                                 }
@@ -152,7 +152,7 @@ struct WeekScheduleView: View {
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
     }
 
-    private func dayColumn(_ date: Date, blocks: [WeekScheduleBlock], width: CGFloat,
+    private func dayColumn(_ date: Date, blocks: [WeekScheduleBlock], colors: ScheduleColors, width: CGFloat,
                            hours: ClosedRange<Int>, hourHeight: CGFloat) -> some View {
         let dayStart = SchoolDate.calendar.startOfDay(for: date)
         return ZStack(alignment: .topLeading) {
@@ -165,7 +165,7 @@ struct WeekScheduleView: View {
             ForEach(blocks) { block in
                 let startHours = block.start.timeIntervalSince(dayStart) / 3600 - Double(hours.lowerBound)
                 let height = max(18, block.end.timeIntervalSince(block.start) / 3600 * hourHeight - 3)
-                courseBlock(block)
+                courseBlock(block, colors: colors)
                     .frame(width: max(0, width - 4), height: height, alignment: .topLeading)
                     .clipShape(RoundedRectangle(cornerRadius: 6))
                     .offset(x: 2, y: startHours * hourHeight + 1)
@@ -175,18 +175,15 @@ struct WeekScheduleView: View {
                     Image(systemName: "exclamationmark.icloud").font(.caption)
                         .foregroundStyle(.secondary).padding(.top, 16).frame(width: width)
                         .accessibilityLabel("\(SchoolDate.text(date, "M月d日")) 查询失败：\(error)")
-                } else if !model.hasSchedule(on: date) {
-                    Text(model.isSemesterSyncing ? "同步中" : "待同步")
-                        .font(.caption2).foregroundStyle(.secondary).padding(.top, 16).frame(width: width)
                 }
             }
         }
     }
 
-    private func courseBlock(_ block: WeekScheduleBlock) -> some View {
+    private func courseBlock(_ block: WeekScheduleBlock, colors: ScheduleColors) -> some View {
         let groups = block.groups
         let course = (block.entries.first { !$0.isOutsideWeek } ?? block.entries[0]).course
-        let tint = block.isOutsideWeek ? Color.gray : courseColor(course)
+        let tint = block.isOutsideWeek ? Color.gray : courseColor(course, palette: colors)
         return Button {
             if groups.count > 1 { overlappingBlock = block }
             else { openCourse(course) }
@@ -228,9 +225,9 @@ struct WeekScheduleView: View {
         .accessibilityIdentifier("schedule.\(block.isOutsideWeek ? "outsideWeekCourse" : "weekCourse").\(SchoolDate.key(block.start)).\(course.id)")
     }
 
-    private func courseColor(_ course: Course) -> Color {
+    private func courseColor(_ course: Course, palette: ScheduleColors) -> Color {
         let colors: [Color] = [.blue, .purple, .teal, .indigo, .orange, .pink, .green]
-        return colors[CourseIdentity.colorIndex(for: course, paletteSize: colors.count)]
+        return colors[palette.index(for: course)]
     }
 }
 

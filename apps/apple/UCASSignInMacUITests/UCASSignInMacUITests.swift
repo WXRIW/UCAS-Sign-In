@@ -494,7 +494,10 @@ final class UCASSignInMacUITests: XCTestCase {
         XCTAssertTrue(progress.waitForExistence(timeout: 5))
         XCTAssertTrue(progress.isHittable)
         let date = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "schedule.weekDate.")).firstMatch
-        XCTAssertLessThan(progress.frame.maxY, date.frame.minY)
+        XCTAssertFalse(date.exists)
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "schedule.initialLoading").firstMatch.exists)
+        XCTAssertFalse(app.staticTexts["待同步"].exists)
+        XCTAssertFalse(app.staticTexts["同步中"].exists)
         var calendar = schoolCalendar
         calendar.firstWeekday = 2
         let weekStart = calendar.dateInterval(of: .weekOfYear, for: Date())!.start
@@ -505,6 +508,7 @@ final class UCASSignInMacUITests: XCTestCase {
         XCTAssertTrue(detailText.contains(range), detailText)
         let finished = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: progress)
         XCTAssertEqual(XCTWaiter.wait(for: [finished], timeout: 20), .completed)
+        XCTAssertTrue(date.waitForExistence(timeout: 5))
         XCTAssertTrue(date.isHittable)
     }
 

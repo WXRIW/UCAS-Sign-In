@@ -32,6 +32,7 @@ final class AppModel: ObservableObject {
         didSet { weekPresentations.removeAll() }
     }
     private var weekPresentations: [String: WeekSchedulePresentation] = [:]
+    private var scheduleColors: [String: ScheduleColors] = [:]
     @Published var selectedDate = Date()
     @Published var scheduleMode: ScheduleMode = .day {
         didSet { defaults.set(scheduleMode.rawValue, forKey: "scheduleViewMode") }
@@ -344,6 +345,7 @@ final class AppModel: ObservableObject {
         scheduleSyncTask?.cancel()
         scheduleSyncTask = nil
         semesterSchedules = [:]
+        scheduleColors = [:]
         isSemesterSyncing = false
         scheduleSyncError = nil
         scheduleSyncProgress = ""
@@ -1346,7 +1348,17 @@ extension AppModel {
         let entries = ScheduleLayout.weekEntries(courses, containing: selectedDate,
                                                 semesters: identitySemesters,
                                                 includeOutsideWeek: showOutsideWeekCourses, catalog: catalogCourses)
-        let value = WeekSchedulePresentation(entries: entries)
+        let day = SchoolDate.key(selectedDate)
+        let term = identitySemesters.first { $0.beginDate <= day && day <= $0.endDate }
+        let colorKey = term?.id ?? "unassigned"
+        var colors = scheduleColors[colorKey] ?? ScheduleColors()
+        colors.register(courses.filter { course in
+            guard let term else { return true }
+            let day = normalizedDay(course.day)
+            return term.beginDate <= day && day <= term.endDate
+        })
+        scheduleColors[colorKey] = colors
+        let value = WeekSchedulePresentation(entries: entries, colors: colors)
         if weekPresentations.count >= 8 { weekPresentations.removeAll() }
         weekPresentations[key] = value
         return value
@@ -1367,8 +1379,22 @@ extension AppModel {
 
     func hasSchedule(on date: Date) -> Bool { courseUpdates[SchoolDate.key(date)] != nil }
 
+    var hasWeekSchedule: Bool {
+        isDemo || scheduleUpdatedAt(on: selectedDate) != nil || SchoolDate.week(containing: selectedDate).allSatisfy { hasSchedule(on: $0) }
+    }
+
+    var isInitialWeekLoading: Bool {
+        !hasWeekSchedule && scheduleSyncError == nil && !SchoolDate.week(containing: selectedDate).contains {
+            scheduleDayErrors[SchoolDate.key($0)] != nil
+        }
+    }
+
     func openScheduleDate(_ date: Date) async {
         let token = generation
+        if scheduleMode == .week, isInitialWeekLoading {
+            await refreshSchedule()
+            return
+        }
         if let session, !hasSchedule(on: date) {
             if loadCache(for: session, date: date) { courseFreshness[SchoolDate.key(date)] = false }
         }
