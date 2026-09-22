@@ -642,7 +642,8 @@ final class UCASSignInMacUITests: XCTestCase {
         let summary = app.buttons["courseSchedule.showAll"]
         XCTAssertTrue(summary.waitForExistence(timeout: 10))
         assertEventually("摘要卡片应显示同步失败并保留已有排课") {
-            summary.label.contains("测试同步失败") && !summary.label.contains("本学期暂无排课")
+            app.staticTexts["courseSchedule.error"].label.contains("测试同步失败")
+                && !app.staticTexts["本学期暂无排课"].exists
         }
         clickAfterScrolling(summary, in: app.scrollViews["catalogCourseDetail.scroll"])
         XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "courseSchedule.list").firstMatch.waitForExistence(timeout: 5))

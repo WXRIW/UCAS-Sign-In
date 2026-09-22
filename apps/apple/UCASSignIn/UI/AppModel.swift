@@ -1157,7 +1157,7 @@ final class AppModel: ObservableObject {
         guard !Task.isCancelled else { return }
         if isDemo {
             if force || catalogUpdatedAt == nil { catalogUpdatedAt = .now }
-            catalogIsCached = false
+            if catalogIsCached { catalogIsCached = false }
             return
         }
         guard let session else { return }
@@ -1846,6 +1846,10 @@ extension AppModel {
         return result
     }
 
+    func courseScheduleIsComplete(for course: CatalogCourse) -> Bool {
+        semesterSchedules[course.semesterId]?.courseIdentityVersion == 1
+    }
+
     /// Loads a course's own semester without changing either tab's navigation selection.
     func loadCourseSchedule(for course: CatalogCourse) async {
         guard isConnected, !showLogin, !Task.isCancelled else { return }
@@ -1854,7 +1858,8 @@ extension AppModel {
         if let task = courseScheduleTasks[id] { await task.value; return }
         if let snapshot = semesterSchedules[id], !snapshot.needsRefresh(at: .now),
            isDemo || CachePolicy.isFresh(courseScheduleDirectories[id]?.updatedAt, at: .now) {
-            courseScheduleErrors[id] = nil
+            // Keep cache hits silent while a tab restores its existing detail view.
+            if courseScheduleErrors[id] != nil { courseScheduleErrors[id] = nil }
             courseScheduleRetryAfter[id] = nil
             return
         }

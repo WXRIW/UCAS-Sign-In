@@ -349,7 +349,10 @@ public sealed class MainActivity : AppCompatActivity
             while (!ct.IsCancellationRequested)
             {
                 if (ready && !DialogOpen)
+                {
+                    page?.UpdateCourseScheduleProgress();
                     await Run(() => Model.TickAsync());
+                }
                 await Task.Delay(15000, ct);
             }
         }

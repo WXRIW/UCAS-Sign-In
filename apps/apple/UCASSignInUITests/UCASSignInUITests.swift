@@ -87,14 +87,38 @@ final class UCASSignInUITests: XCTestCase {
         XCTAssertTrue(app.buttons["courseDetail.refreshAttendance"].exists)
         XCTAssertFalse(app.buttons["刷新考勤"].exists)
 
-        selectTab("今日", in: app)
-        XCTAssertTrue(app.scrollViews["today.scroll"].waitForExistence(timeout: 5))
-        selectTab("课程", in: app)
+        let detail = app.scrollViews["catalogCourseDetail.scroll"]
+        let progress = app.descendants(matching: .any).matching(identifier: "courseSchedule.progress").firstMatch
+        XCTAssertTrue(progress.waitForExistence(timeout: 10))
+        let progressFrame = progress.frame
+        for otherTab in ["今日", "账户"] {
+            selectTab(otherTab, in: app)
+            selectTab("课程", in: app)
+            XCTAssertTrue(app.navigationBars["矩阵分析"].waitForExistence(timeout: 5))
+            XCTAssertTrue(detail.exists)
+            XCTAssertFalse(app.collectionViews["courses.scroll"].exists)
+            XCTAssertTrue(app.buttons["courseDetail.refreshAttendance"].exists)
+            XCTAssertEqual(progress.frame.minY, progressFrame.minY, accuracy: 1,
+                           "切回详情时应保留统计区域和滚动位置")
+        }
 
-        XCTAssertTrue(app.navigationBars["矩阵分析"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.scrollViews["catalogCourseDetail.scroll"].exists)
-        XCTAssertFalse(app.collectionViews["courses.scroll"].exists)
+        // The same detail can also be retained under the weekly timetable's stack.
+        selectTab("课表", in: app)
+        app.segmentedControls["schedule.mode"].buttons["周"].tap()
+        let weeklyCourse = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "schedule.weekCourse.")).firstMatch
+        XCTAssertTrue(weeklyCourse.waitForExistence(timeout: 10))
+        weeklyCourse.tap()
+        XCTAssertTrue(detail.waitForExistence(timeout: 5))
+        XCTAssertTrue(progress.waitForExistence(timeout: 10))
+        let weeklyProgressFrame = progress.frame
+        selectTab("今日", in: app)
+        selectTab("课表", in: app)
+        XCTAssertTrue(detail.waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["courseDetail.refreshAttendance"].exists)
+        XCTAssertEqual(progress.frame.minY, weeklyProgressFrame.minY, accuracy: 1,
+                       "周课表的课程详情在切回时应保持原布局")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(app.segmentedControls["schedule.mode"].buttons["周"].isSelected)
     }
 
     @MainActor

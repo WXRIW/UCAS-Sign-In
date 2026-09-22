@@ -24,6 +24,8 @@ public sealed partial class AccountCoordinator
         coursePresentations.TryGet(CoursePresentationKey(course), out var value) ? value : null;
     public CourseSchedulePresentation CourseScheduleFor(CatalogCourse course) => coursePresentations.Get(CoursePresentationKey(course),
         _ => CourseSchedule.Build(course, CourseSemesters, AllCatalogCourses, Courses));
+    public CourseScheduleProgress CourseScheduleProgressFor(CatalogCourse course) => CourseScheduleFor(course).ProgressAt(clock.GetUtcNow());
+    public bool CourseScheduleIsComplete(CatalogCourse course) => IsDemo || CourseScheduleComplete(course.SemesterId);
     public async Task<CourseSchedulePresentation> PrepareCourseScheduleAsync(CatalogCourse course)
     {
         var key = CoursePresentationKey(course);
@@ -58,7 +60,7 @@ public sealed partial class AccountCoordinator
         var value = presentation ?? CourseScheduleFor(course);
         if (CourseScheduleLoading(course.SemesterId) && value.Meetings.Length == 0) return "正在加载排课…";
         if (value.UnavailableReason is { } reason) return reason;
-        if (!IsDemo && !CourseScheduleComplete(course.SemesterId)) return "排课尚未完整同步";
+        if (!CourseScheduleIsComplete(course)) return "排课尚未完整同步";
         return value.Meetings.Length == 0 ? "本学期暂无排课" : null;
     }
     public Task EnsureCourseScheduleAsync(CatalogCourse course)

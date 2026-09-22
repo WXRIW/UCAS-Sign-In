@@ -6,13 +6,26 @@ namespace UCASSignIn.Core;
 public sealed record CourseScheduleMeeting(string Id, DateOnly Date, int Week, DateTimeOffset? Start,
     string Time, string Classroom, ImmutableArray<string> Teachers, ImmutableArray<string> SourceIds, string ArrangementKey)
 {
+    public DateTimeOffset? End { get; init; }
     public string Weekday => CourseSchedule.Weekday(Date.DayOfWeek);
     public string TeacherText => Teachers.Length == 0 ? "教师暂未提供" : string.Join("、", Teachers);
     public string ClassroomText => Classroom.Length == 0 ? "教室暂未提供" : Classroom;
+    internal bool HasValidTime => Start is { } start && End is { } end && end > start
+        && DateOnly.FromDateTime(start.ToOffset(CourseTime.ShanghaiOffset).DateTime) == Date
+        && DateOnly.FromDateTime(end.ToOffset(CourseTime.ShanghaiOffset).DateTime) == Date;
+    public bool HasEnded(DateTimeOffset now) => HasValidTime && End <= now;
 }
 public sealed record CourseScheduleSummary(string Weeks, string Weekday, string Time, string Classroom);
+public sealed record CourseScheduleProgress(int Total, int Ended, int UnknownTime)
+{
+    public double Fraction => Total == 0 ? 0 : (double)Ended / Total;
+}
 public sealed record CourseSchedulePresentation(ImmutableArray<CourseScheduleMeeting> Meetings,
-    ImmutableArray<CourseScheduleSummary> Summaries, string? UnavailableReason);
+    ImmutableArray<CourseScheduleSummary> Summaries, string? UnavailableReason)
+{
+    public CourseScheduleProgress ProgressAt(DateTimeOffset now) => new(Meetings.Length,
+        Meetings.Count(m => m.HasEnded(now)), Meetings.Count(m => !m.HasValidTime));
+}
 
 /// <summary>Only actual schedule records participate; attendance and catalog room descriptions are never inputs.</summary>
 public static class CourseSchedule
@@ -57,7 +70,7 @@ public static class CourseSchedule
             // Incomplete records retain their own identity and are never merged with another teacher's record.
             var id = Key(day, arrangement, valid && room.Length > 0 ? null : Key(source, teacher));
             rows.Add(new(id, date, ScheduleCalendar.WeekNumber(date, term)!.Value, valid ? start : null,
-                time, room, teacher.Length == 0 ? [] : [teacher], [source], arrangement));
+                time, room, teacher.Length == 0 ? [] : [teacher], [source], arrangement) { End = valid ? end : null });
         }
         var meetings = rows.GroupBy(r => r.Id).Select(g =>
         {

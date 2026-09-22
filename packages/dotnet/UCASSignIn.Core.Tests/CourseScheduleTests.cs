@@ -31,6 +31,32 @@ public sealed class CourseScheduleTests
         Assert.Equal(2, merged.Teachers.Length);
         Assert.Equal(JsonSerializer.Serialize(data), JsonSerializer.Serialize(Build(rows.Reverse().ToArray())));
     }
+    [Fact] public void ProgressCountsMergedMeetingsAndUsesTheEndTimeBoundary()
+    {
+        var past = Course();
+        var ongoing = Course("20270106");
+        var data = Build(past, past with { Id = "second-teacher", Teacher = "李老师", TeacherId = "t2" },
+            ongoing, Course("20270113"), ongoing with { Id = "unknown", BeginTime = "bad" });
+        var now = new DateTimeOffset(2027, 1, 6, 15, 0, 0, CourseTime.ShanghaiOffset);
+        Assert.Equal(new CourseScheduleProgress(4, 1, 1), data.ProgressAt(now));
+        Assert.Equal(0.25, data.ProgressAt(now).Fraction);
+        var current = Assert.Single(data.Meetings.Where(m => m.Date == new DateOnly(2027, 1, 6) && m.End is not null));
+        Assert.False(current.HasEnded(current.End!.Value.AddTicks(-1)));
+        Assert.True(current.HasEnded(current.End.Value.ToUniversalTime()));
+        Assert.Equal(2, data.ProgressAt(current.End.Value).Ended);
+        Assert.Equal(new CourseScheduleProgress(4, 3, 1), data.ProgressAt(now.AddYears(1)));
+    }
+    [Fact] public void EmptyFutureAndFullyEndedSchedulesHaveFiniteProgress()
+    {
+        var now = new DateTimeOffset(2026, 12, 30, 13, 0, 0, CourseTime.ShanghaiOffset);
+        Assert.Equal(new CourseScheduleProgress(0, 0, 0), Build().ProgressAt(now));
+        Assert.Equal(0, Build().ProgressAt(now).Fraction);
+        var data = Build(Course(), Course("20270106"));
+        Assert.Equal(new CourseScheduleProgress(2, 0, 0), data.ProgressAt(now));
+        Assert.Equal(0, data.ProgressAt(now).Fraction);
+        Assert.Equal(new CourseScheduleProgress(2, 2, 0), data.ProgressAt(now.AddMonths(1)));
+        Assert.Equal(1, data.ProgressAt(now.AddMonths(1)).Fraction);
+    }
     [Fact] public void MissingRoomsAndInvalidTimesRemainSeparateAndSortAfterValidTimes()
     {
         var a = Course();
@@ -40,7 +66,10 @@ public sealed class CourseScheduleTests
         var data = Build(rows);
         Assert.Equal(rows.Length, data.Meetings.Length);
         Assert.All(data.Meetings.Take(3), m => Assert.NotNull(m.Start));
+        Assert.All(data.Meetings.Take(3), m => Assert.NotNull(m.End));
         Assert.All(data.Meetings.Skip(3), m => Assert.Null(m.Start));
+        Assert.All(data.Meetings.Skip(3), m => Assert.Null(m.End));
+        Assert.Equal(new CourseScheduleProgress(7, 3, 4), data.ProgressAt(new(2027, 1, 1, 0, 0, 0, CourseTime.ShanghaiOffset)));
         Assert.Equal(3, data.Meetings.Count(m => m.Time.Contains("时间待确认")));
         Assert.Contains(data.Meetings, m => m.Time.Contains("2026-12-31 13:30"));
         Assert.Equal(2, data.Meetings.Count(m => m.ClassroomText == "教室暂未提供"));
@@ -93,6 +122,7 @@ public sealed class CourseScheduleTests
         await h.Model.EnsureCourseScheduleAsync(Catalog(History));
         Assert.Equal(reads, (h.School.Reads, h.School.WeekReads, h.School.CatalogReads));
         Assert.Null(h.Model.CourseScheduleStatus(Catalog(History)));
+        Assert.True(h.Model.CourseScheduleIsComplete(Catalog(History)));
     }
     [Fact] public async Task DetailAndTimetableShareBatchAndUnrelatedBatchRetainsTarget()
     {
@@ -118,6 +148,8 @@ public sealed class CourseScheduleTests
         Assert.Single(h.Model.CourseScheduleFor(Catalog(History)).Meetings);
         Assert.Contains("offline", h.Model.CourseScheduleError(History.Id));
         Assert.Equal("排课尚未完整同步", h.Model.CourseScheduleStatus(Catalog(History)));
+        Assert.False(h.Model.CourseScheduleIsComplete(Catalog(History)));
+        Assert.Equal(new CourseScheduleProgress(1, 1, 0), h.Model.CourseScheduleProgressFor(Catalog(History)));
         Assert.False(h.Data.Schedules.ContainsKey("a|history"));
         var reads = h.School.WeekReads;
         await h.Model.EnsureCourseScheduleAsync(Catalog(History)); Assert.Equal(reads, h.School.WeekReads);
@@ -209,6 +241,19 @@ public sealed class CourseScheduleTests
         h.Clock.Now = TestData.Now.AddDays(7);
         await h.Model.EnsureCourseScheduleAsync(Catalog(Current)); Assert.Equal(reads + 1, h.School.CatalogReads);
     }
+    [Fact] public async Task ProgressUsesCurrentClockWithoutRefreshingCachedPresentation()
+    {
+        var h = new Harness();
+        h.School.WeekQuery = (_, d) => Task.FromResult(Week(d, Course("20260916")));
+        await h.Model.InitializeAsync(); await h.Model.EnsureCourseScheduleAsync(Catalog(Current));
+        var original = h.Model.CourseScheduleFor(Catalog(Current));
+        var reads = (h.School.Reads, h.School.WeekReads, h.School.CatalogReads);
+        Assert.Equal(new CourseScheduleProgress(1, 0, 0), h.Model.CourseScheduleProgressFor(Catalog(Current)));
+        h.Clock.Now = original.Meetings[0].End!.Value;
+        Assert.Equal(new CourseScheduleProgress(1, 1, 0), h.Model.CourseScheduleProgressFor(Catalog(Current)));
+        Assert.Same(original, h.Model.CourseScheduleFor(Catalog(Current)));
+        Assert.Equal(reads, (h.School.Reads, h.School.WeekReads, h.School.CatalogReads));
+    }
     [Fact] public async Task AccountSwitchRejectsLateDetailResponse()
     {
         var h = new Harness(); await h.Model.InitializeAsync();
@@ -226,6 +271,7 @@ public sealed class CourseScheduleTests
         var course = h.Model.CatalogCourses[0]; var selected = h.Model.SelectedDate;
         await h.Model.EnsureCourseScheduleAsync(course);
         var data = h.Model.CourseScheduleFor(course);
+        Assert.True(h.Model.CourseScheduleIsComplete(course));
         Assert.Null(data.UnavailableReason); Assert.True(data.Summaries.Length > 3);
         Assert.Contains(data.Meetings, m => m.Teachers.Length == 2 && m.SourceIds.Length == 2);
         Assert.Contains(data.Summaries, s => s.Weeks.Contains('、'));

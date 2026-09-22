@@ -11,26 +11,45 @@ struct CourseScheduleSection: View {
                 .foregroundStyle(Palette.secondary)
                 .padding(.horizontal, PreferenceRowLayout.horizontalPadding)
                 .accessibilityAddTraits(.isHeader)
-            NavigationLink { CourseScheduleView(course: course) } label: {
-                HStack(spacing: 16) {
-                    summaryContent
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Image(systemName: "chevron.right")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(Palette.secondary)
-                        .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 0) {
+                let presentation = model.courseSchedulePresentation(for: course)
+                if let presentation, CourseScheduleProgressView.isVisible(presentation, complete: model.courseScheduleIsComplete(for: course)) {
+                    CourseScheduleProgressView(presentation: presentation, complete: model.courseScheduleIsComplete(for: course))
+                        .padding(PreferenceRowLayout.horizontalPadding)
+                    sectionDivider
                 }
-                .padding(.horizontal, PreferenceRowLayout.horizontalPadding)
-                .padding(.vertical, 18)
-                .cardSurface()
-                .contentShape(Rectangle())
+                summaryContent
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(PreferenceRowLayout.horizontalPadding)
+                sectionDivider
+                NavigationLink { CourseScheduleView(course: course) } label: {
+                    HStack(spacing: 16) {
+                        Text("查看完整排课信息")
+                            .font(.subheadline)
+                            .foregroundStyle(Palette.ink)
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(Palette.secondary)
+                            .accessibilityHidden(true)
+                    }
+                    .padding(PreferenceRowLayout.horizontalPadding)
+                    .frame(maxWidth: .infinity, minHeight: 48)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint("查看这门课的完整学期排课")
+                .accessibilityIdentifier("courseSchedule.showAll")
             }
-            .buttonStyle(.plain)
-            .accessibilityHint("查看这门课的完整学期排课")
-            .accessibilityIdentifier("courseSchedule.showAll")
+            .cardSurface()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .task { await model.loadCourseSchedule(for: course) }
+    }
+
+    private var sectionDivider: some View {
+        Divider().overlay(Palette.line)
+            .padding(.horizontal, PreferenceRowLayout.horizontalPadding)
     }
 
     private var summaryContent: some View {
@@ -61,6 +80,18 @@ struct CourseScheduleView: View {
         let presentation = model.courseSchedulePresentation(for: course)
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 12) {
+                if let presentation, CourseScheduleProgressView.isVisible(presentation, complete: model.courseScheduleIsComplete(for: course)) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("课程进度")
+                            .font(PreferenceTypography.section)
+                            .foregroundStyle(Palette.secondary)
+                            .padding(.horizontal, PreferenceRowLayout.horizontalPadding)
+                            .accessibilityAddTraits(.isHeader)
+                        CourseScheduleProgressView(presentation: presentation, complete: model.courseScheduleIsComplete(for: course))
+                            .padding(PreferenceRowLayout.horizontalPadding)
+                            .cardSurface()
+                    }
+                }
                 if CourseScheduleStatus.isVisible(for: course, model: model) {
                     CourseScheduleStatus(course: course)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -80,7 +111,7 @@ struct CourseScheduleView: View {
                                 .font(PreferenceTypography.section)
                                 .foregroundStyle(Palette.secondary)
                                 .padding(.horizontal, PreferenceRowLayout.horizontalPadding)
-                                .padding(.top, week == weekNumbers.first ? 0 : 12)
+                                .padding(.top, 12)
                                 .accessibilityAddTraits(.isHeader)
                         }
                     }
@@ -103,6 +134,70 @@ struct CourseScheduleView: View {
             if model.visibleCourseSchedule == course { model.visibleCourseSchedule = nil }
         }
         #endif
+    }
+}
+
+private struct CourseScheduleProgressView: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    let presentation: CourseSchedulePresentation
+    let complete: Bool
+
+    static func isVisible(_ presentation: CourseSchedulePresentation, complete: Bool) -> Bool {
+        presentation.associationIssue == nil && (complete || !presentation.meetings.isEmpty)
+    }
+
+    var body: some View {
+        // Only this small summary ticks; the full semester list retains its scroll position.
+        TimelineView(.periodic(from: .now, by: 15)) { context in
+            let progress = presentation.progress(at: context.date)
+            let percent = Int((progress.fraction * 100).rounded())
+            VStack(alignment: .leading, spacing: 12) {
+                if dynamicTypeSize.isAccessibilitySize {
+                    VStack(spacing: 12) {
+                        statistic(complete ? "总计" : "已同步", count: progress.total, tint: Palette.ink)
+                        statistic("已结束", count: progress.ended, tint: Palette.green)
+                        statistic("进度", count: percent, unit: "%", tint: Palette.green)
+                    }
+                } else {
+                    HStack(alignment: .top, spacing: 12) {
+                        statistic(complete ? "总计" : "已同步", count: progress.total, tint: Palette.ink)
+                        statistic("已结束", count: progress.ended, tint: Palette.green)
+                        statistic("进度", count: percent, unit: "%", tint: Palette.green)
+                    }
+                }
+                ProgressView(value: progress.fraction)
+                    .tint(Palette.green)
+                    .accessibilityLabel("课程进度")
+                    .accessibilityValue("\(progress.total) 节中已结束 \(progress.ended) 节")
+                if !complete || progress.unknownTime > 0 {
+                    Text([complete ? nil : "仅统计已同步排课",
+                          progress.unknownTime > 0 ? "\(progress.unknownTime) 节时间待确认" : nil]
+                        .compactMap { $0 }.joined(separator: " · "))
+                        .font(.footnote)
+                        .foregroundStyle(Palette.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("courseSchedule.progress")
+        }
+    }
+
+    private func statistic(_ title: String, count: Int, unit: String = " 节", tint: Color) -> some View {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 12))
+            : AnyLayout(VStackLayout(alignment: .leading, spacing: 6))
+        return layout {
+            Text(title).font(.subheadline).foregroundStyle(Palette.secondary)
+            if dynamicTypeSize.isAccessibilitySize { Spacer(minLength: 0) }
+            (Text(count.formatted()).font(.title2.weight(.semibold)) + Text(unit).font(.subheadline))
+                .monospacedDigit()
+                .foregroundStyle(tint)
+                .fixedSize()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(title) \(count)\(unit)")
     }
 }
 
@@ -192,14 +287,14 @@ private struct CourseScheduleStatus: View {
     @MainActor static func isVisible(for course: CatalogCourse, model: AppModel) -> Bool {
         let presentation = model.courseSchedulePresentation(for: course)
         return model.courseScheduleLoading.contains(course.semesterId) || model.courseScheduleErrors[course.semesterId] != nil ||
-            model.semesterSchedules[course.semesterId]?.courseIdentityVersion != 1 ||
+            !model.courseScheduleIsComplete(for: course) ||
             presentation == nil || presentation?.associationIssue != nil || presentation?.meetings.isEmpty == true
     }
 
     var body: some View {
         let loading = model.courseScheduleLoading.contains(course.semesterId)
         let presentation = model.courseSchedulePresentation(for: course)
-        let complete = model.semesterSchedules[course.semesterId]?.courseIdentityVersion == 1
+        let complete = model.courseScheduleIsComplete(for: course)
         VStack(alignment: .leading, spacing: 8) {
             if loading { ProgressView("正在加载排课…") }
             if let error = model.courseScheduleErrors[course.semesterId] {

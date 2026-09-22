@@ -12,6 +12,18 @@ public struct CourseScheduleMeeting: Identifiable, Sendable {
     public let teachers: [String]
     public var hasValidTime: Bool { start != nil && end != nil }
     public let timeText: String
+
+    public func hasEnded(at now: Date) -> Bool {
+        guard hasValidTime, let end else { return false }
+        return end <= now
+    }
+}
+
+public struct CourseScheduleProgress: Equatable, Sendable {
+    public let total: Int
+    public let ended: Int
+    public let unknownTime: Int
+    public var fraction: Double { total == 0 ? 0 : Double(ended) / Double(total) }
 }
 
 public struct CourseScheduleSummary: Identifiable, Sendable {
@@ -28,6 +40,12 @@ public struct CourseSchedulePresentation: Sendable {
     public let meetings: [CourseScheduleMeeting]
     public let summaries: [CourseScheduleSummary]
     public let associationIssue: String?
+
+    /// Count merged arrangements, independently of attendance or the current teaching week.
+    public func progress(at now: Date) -> CourseScheduleProgress {
+        CourseScheduleProgress(total: meetings.count, ended: meetings.filter { $0.hasEnded(at: now) }.count,
+                               unknownTime: meetings.filter { !$0.hasValidTime }.count)
+    }
 
     public init(course: CatalogCourse, semester: SchoolSemester, catalog: [CatalogCourse],
                 semesters: [SchoolSemester], courses: [Course]) {

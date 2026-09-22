@@ -1,5 +1,6 @@
 import XCTest
 import UserNotifications
+import Combine
 @testable import UCASSignInMac
 
 /// Uses only memory stores and controlled HTTP responses; no school account, Keychain,
@@ -668,6 +669,27 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(cachedCatalogRequests, 1)
     }
 
+    func testFreshDemoCatalogRefreshDoesNotPublishUnchangedState() async {
+        let transport = PlannedTransport([:])
+        let model = makeModel(MemoryAccountStore(accounts: [], active: nil), transport)
+        model.enterDemo()
+        let updatedAt = model.catalogUpdatedAt
+        var publications = 0
+        let observation = model.objectWillChange.sink { publications += 1 }
+        defer { observation.cancel() }
+
+        await model.refreshCatalog()
+        await model.refreshCatalog()
+        XCTAssertEqual(publications, 0, "Returning to a fresh demo catalog must not redraw unrelated detail content")
+        XCTAssertEqual(model.catalogUpdatedAt, updatedAt)
+
+        await model.refreshCatalog(force: true)
+        XCTAssertGreaterThan(publications, 0, "A manual refresh still publishes its updated timestamp")
+        XCTAssertFalse(model.catalogIsCached)
+        let requests = await transport.requests
+        XCTAssertTrue(requests.isEmpty)
+    }
+
     func testInitialWeekLoadsAsOneRefreshAndCachedWeekStaysVisible() async throws {
         let gate = ResponseGate()
         let transport = PlannedTransport([
@@ -1218,7 +1240,11 @@ final class AppModelTests: XCTestCase {
         let selectedSemester = model.selectedSemester
         let course = CatalogCourse(id: "old-catalog", number: "CS1", name: "历史课程", teacher: "", classroom: nil, semesterId: term.id, beginDate: "", endDate: "")
         await model.loadCourseSchedule(for: course)
+        var publications = 0
+        let observation = model.objectWillChange.sink { publications += 1 }
+        defer { observation.cancel() }
         await model.loadCourseSchedule(for: course)
+        XCTAssertEqual(publications, 0, "A fresh schedule without an error must not publish unchanged state")
         XCTAssertEqual(model.selectedDate, selectedDate)
         XCTAssertEqual(model.selectedSemester, selectedSemester)
         XCTAssertEqual(model.courseSchedulePresentation(for: course)?.meetings.count, 1)

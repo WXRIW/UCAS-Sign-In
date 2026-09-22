@@ -23,6 +23,7 @@ public sealed partial class MainPageFragment
         public bool EnsuringCatalog { get; set; }
         public object? CatalogContentKey { get; set; }
         public Action? UpdateScheduleSummary { get; set; }
+        public Action? UpdateCourseScheduleProgress { get; set; }
         public Action? UpdateAttendanceSection { get; set; }
     }
     readonly Dictionary<string, Scene> scenes = [];
@@ -127,6 +128,7 @@ public sealed partial class MainPageFragment
     }
     public void EnsureCurrentPage()
     {
+        UpdateCourseScheduleProgress();
         if (Route == "detail" && CurrentDetail is { } current)
             _ = Host.Run(() => Model.EnterDayAsync(CourseTime.Date(current.Day)));
         else if (Route is null)

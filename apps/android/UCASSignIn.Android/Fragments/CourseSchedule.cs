@@ -1,6 +1,7 @@
 using Android.Content;
 using Android.Views;
 using Android.Widget;
+using Google.Android.Material.ProgressIndicator;
 using UCASSignIn.Core;
 
 namespace UCASSignIn.Android.Fragments;
@@ -11,23 +12,37 @@ public sealed partial class MainPageFragment
     {
         var content = Column(Text("正在整理排课…", 13, color: Secondary));
         var generation = Model.Generation;
-        var inside = Across(content, Icon(Resource.Drawable.ic_chevron_right, 18, Secondary));
-        Tap(inside, () => generation == Model.Generation ? Navigate("course-schedule") : Task.CompletedTask,
-            "排课信息，" + course.Name + "，查看按周排列的完整排课信息");
+        var link = Across(Text("查看完整排课信息", 14, color: Green), Icon(Resource.Drawable.ic_chevron_right, 18, Green));
+        link.SetMinimumHeight(D(48));
+        Tap(link, () => generation == Model.Generation ? Navigate("course-schedule") : Task.CompletedTask,
+            "查看完整排课信息，" + course.Name);
+        var inside = Column(content, Rule(), link);
         Add(MaterialSettingsSection("排课信息", inside));
         var scene = activeScene!;
         object? requested = null;
         scene.UpdateScheduleSummary = () =>
         {
-            var state = (Model.ArrangementVersion, Model.IdentityVersion, Model.CourseScheduleLoading(course.SemesterId), Model.CourseScheduleError(course.SemesterId));
-            if (Equals(requested, state)) return;
+            var state = (Model.ArrangementVersion, Model.IdentityVersion, Model.CourseScheduleLoading(course.SemesterId),
+                Model.CourseScheduleError(course.SemesterId), Model.CourseScheduleIsComplete(course));
+            if (Equals(requested, state)) { scene.UpdateCourseScheduleProgress?.Invoke(); return; }
             requested = state;
             void Apply(CourseSchedulePresentation data)
             {
                 content.RemoveAllViews();
+                var progress = CourseScheduleProgressPanel(course, data, out var updateProgress);
+                scene.UpdateCourseScheduleProgress = updateProgress;
+                if (progress is not null)
+                {
+                    content.AddView(progress);
+                    content.AddView(Rule());
+                }
+                var firstSummary = true;
                 foreach (var summary in data.Summaries)
+                {
                     content.AddView(Column(Text(summary.Weeks + " · " + summary.Weekday, 14), Text(summary.Time + " · " + summary.Classroom, 13, color: Secondary)),
-                        new LinearLayout.LayoutParams(-1, -2) { TopMargin = D(content.ChildCount == 0 ? 0 : 16) });
+                        new LinearLayout.LayoutParams(-1, -2) { TopMargin = D(firstSummary ? 0 : 16) });
+                    firstSummary = false;
+                }
                 AddCourseScheduleStatus(content, course, data);
             }
             // Rebuilding unrelated detail sections must not replace an already loaded summary with a placeholder.
@@ -35,6 +50,68 @@ public sealed partial class MainPageFragment
             else PrepareScheduleContent(course, scene, Apply);
         };
         scene.UpdateScheduleSummary();
+    }
+    View? CourseScheduleProgressPanel(CatalogCourse course, CourseSchedulePresentation data, out Action? update)
+    {
+        update = null;
+        if (data.UnavailableReason is not null || data.Meetings.Length == 0 && !Model.CourseScheduleIsComplete(course)) return null;
+        var totalLabel = Text("总计", 12, color: Secondary);
+        var total = Text("", 27, true);
+        var ended = Text("", 27, true, Green);
+        var percentage = Text("", 27, true, Green);
+        var metrics = Layout(global::Android.Widget.Orientation.Horizontal, GravityFlags.Top);
+        metrics.AddView(Column(totalLabel, total), new LinearLayout.LayoutParams(0, -2, 1) { MarginEnd = D(12) });
+        metrics.AddView(Column(Text("已结束", 12, color: Secondary), ended), new LinearLayout.LayoutParams(0, -2, 1) { MarginEnd = D(12) });
+        metrics.AddView(Column(Text("进度", 12, color: Secondary), percentage), new LinearLayout.LayoutParams(0, -2, 1));
+        var bar = new LinearProgressIndicator(Ui)
+        {
+            Indeterminate = false, Max = 1000, TrackThickness = D(4), TrackCornerRadius = D(2),
+            TrackStopIndicatorSize = 0, IndicatorTrackGapSize = 0, TrackColor = Pale,
+            ImportantForAccessibility = ImportantForAccessibility.No
+        };
+        bar.SetIndicatorColor(Green);
+        var note = Text("", 11, color: Secondary);
+        var panel = Column(metrics);
+        panel.AddView(bar, new LinearLayout.LayoutParams(-1, D(4)) { TopMargin = D(14) });
+        panel.AddView(note, new LinearLayout.LayoutParams(-1, -2) { TopMargin = D(8) });
+        object? previous = null;
+        void Update()
+        {
+            // A replacement projection is prepared separately; never rebuild it on a foreground tick.
+            if (!ReferenceEquals(data, Model.CachedCourseScheduleFor(course))) return;
+            var progress = Model.CourseScheduleProgressFor(course);
+            var complete = Model.CourseScheduleIsComplete(course);
+            var state = (progress, complete);
+            if (Equals(previous, state)) return;
+            previous = state;
+            totalLabel.Text = complete ? "总计" : "已同步";
+            SetScheduleMetric(total, progress.Total, " 节");
+            SetScheduleMetric(ended, progress.Ended, " 节");
+            SetScheduleMetric(percentage, progress.Total == 0 ? 0 : (int)Math.Round(progress.Fraction * 100, MidpointRounding.AwayFromZero), "%");
+            bar.SetProgressCompat((int)Math.Round(progress.Fraction * bar.Max), false);
+            var notes = new List<string>();
+            if (!complete) notes.Add("仅统计已同步排课");
+            if (progress.UnknownTime > 0) notes.Add($"{progress.UnknownTime} 节时间待确认");
+            note.Text = string.Join(" · ", notes);
+            note.Visibility = notes.Count > 0 ? ViewStates.Visible : ViewStates.Gone;
+        }
+        update = Update;
+        Update();
+        return panel;
+    }
+    void SetScheduleMetric(TextView label, int value, string unit)
+    {
+        var text = new global::Android.Text.SpannableString(value + unit);
+        var unitStart = value.ToString().Length;
+        text.SetSpan(new global::Android.Text.Style.RelativeSizeSpan(12f / 27), unitStart, text.Length(), global::Android.Text.SpanTypes.ExclusiveExclusive);
+        text.SetSpan(new global::Android.Text.Style.ForegroundColorSpan(Secondary), unitStart, text.Length(), global::Android.Text.SpanTypes.ExclusiveExclusive);
+        text.SetSpan(new global::Android.Text.Style.StyleSpan(global::Android.Graphics.TypefaceStyle.Normal), unitStart, text.Length(), global::Android.Text.SpanTypes.ExclusiveExclusive);
+        label.TextFormatted = text;
+    }
+    public void UpdateCourseScheduleProgress()
+    {
+        if (IsAdded && !backPreview && sceneGeneration == Model.Generation)
+            activeScene?.UpdateCourseScheduleProgress?.Invoke();
     }
     void AddCourseScheduleStatus(LinearLayout panel, CatalogCourse course, CourseSchedulePresentation data)
     {
@@ -64,20 +141,25 @@ public sealed partial class MainPageFragment
     bool RetainCourseSchedule()
     {
         if (Route != "course-schedule" || CurrentCatalogDetail is not { } course || activeScene is not { } scene) return false;
-        return Model.CachedCourseScheduleFor(course) is { } data && ReferenceEquals(scene.ScheduleData, data) && scene.ScheduleStatus == Model.CourseScheduleStatus(course, data)
+        var retained = Model.CachedCourseScheduleFor(course) is { } data && ReferenceEquals(scene.ScheduleData, data) && scene.ScheduleStatus == Model.CourseScheduleStatus(course, data)
             && scene.ScheduleError == Model.CourseScheduleError(course.SemesterId) && scene.ScheduleDark == Dark;
+        if (retained) scene.UpdateCourseScheduleProgress?.Invoke();
+        return retained;
     }
     void RenderCourseSchedule(CatalogCourse course)
     {
         var offset = scroll!.IsLaidOut ? scroll.ScrollY : Host.Vm.ScrollPositions.GetValueOrDefault(SceneKey(Route));
         var data = Model.CourseScheduleFor(course);
+        var scene = activeScene!;
+        var progress = CourseScheduleProgressPanel(course, data, out var updateProgress);
+        scene.UpdateCourseScheduleProgress = updateProgress;
+        if (progress is not null) Add(MaterialSettingsSection("课程进度", progress), 16);
         AddCourseScheduleStatus(body!, course, data);
         foreach (var week in data.Meetings.GroupBy(m => m.Week))
         {
             Add(Text($"第 {week.Key} 周", 14, true), 12);
             foreach (var meeting in week) Add(CourseScheduleCard(meeting), 12);
         }
-        var scene = activeScene!;
         scene.ScheduleData = data; scene.ScheduleStatus = Model.CourseScheduleStatus(course, data);
         scene.ScheduleError = Model.CourseScheduleError(course.SemesterId); scene.ScheduleDark = Dark;
         var scroller = scroll;

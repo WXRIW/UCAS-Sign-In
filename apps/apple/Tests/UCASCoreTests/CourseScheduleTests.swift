@@ -58,4 +58,32 @@ final class CourseScheduleTests: XCTestCase {
         XCTAssertEqual(lhs.meetings.map(\.id), rhs.meetings.map(\.id))
         XCTAssertEqual(lhs.summaries.map(\.weekText), rhs.summaries.map(\.weekText))
     }
+
+    func testProgressUsesEndTimeAndMergedArrangements() {
+        var signedFuture = meeting("future", day: "20270106")
+        signedFuture.signed = true
+        let result = presentation([meeting("a"), meeting("b", teacher: "乙老师"),
+                                   meeting("later", start: "18:30", end: "20:00"), signedFuture])
+        let end = CourseTime.parse(day: "20261230", time: "16:10")!
+        XCTAssertEqual(result.progress(at: end.addingTimeInterval(-1)).ended, 0)
+        let progress = result.progress(at: end)
+        XCTAssertEqual(progress.total, 3)
+        XCTAssertEqual(progress.ended, 1)
+        XCTAssertEqual(progress.unknownTime, 0)
+        XCTAssertEqual(progress.fraction, 1.0 / 3.0)
+        XCTAssertEqual(result.progress(at: .distantFuture).ended, 3)
+    }
+
+    func testProgressDoesNotGuessInvalidTimesAndHandlesEmptySchedule() {
+        let result = presentation([meeting("bad", start: "待定", end: ""),
+                                   meeting("reverse", start: "16:00", end: "14:00"), meeting("valid")])
+        let progress = result.progress(at: .distantFuture)
+        XCTAssertEqual(progress.total, 3)
+        XCTAssertEqual(progress.ended, 1)
+        XCTAssertEqual(progress.unknownTime, 2)
+        let empty = presentation([]).progress(at: .distantFuture)
+        XCTAssertEqual(empty.total, 0)
+        XCTAssertEqual(empty.ended, 0)
+        XCTAssertEqual(empty.fraction, 0)
+    }
 }
