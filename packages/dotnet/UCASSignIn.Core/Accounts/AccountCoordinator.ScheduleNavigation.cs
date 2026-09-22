@@ -15,13 +15,13 @@ public sealed partial class AccountCoordinator
     public DateOnly? NextScheduleWeek => ScheduleCalendar.AdjacentWeek(SelectedDate, true, ViewedDateRange ?? ScheduleDateRange);
     public bool CanReturnToToday => ScheduleDateRange?.Contains(CourseTime.Today(clock)) ?? true;
     public bool CanSelectVisibleDate(DateOnly date) => ViewedDateRange?.Contains(date) ?? true;
-    void UpdateScheduleMetadata()
+    void UpdateScheduleMetadata(bool clampSelection = true)
     {
         ScheduleSemesters = semesters.Where(s => ScheduleCalendar.Range(s) is not null)
             .OrderByDescending(s => ScheduleCalendar.Range(s)!.Value.Begin).ThenBy(s => s.Id, StringComparer.Ordinal).ToArray();
         var ranges = ScheduleSemesters.Select(s => ScheduleCalendar.Range(s)!.Value).ToArray();
         ScheduleDateRange = ranges.Length == 0 ? null : new(ranges.Min(r => r.Begin), ranges.Max(r => r.End));
-        if (ScheduleDateRange is { } range) SelectedDate = range.Clamp(SelectedDate);
+        if (clampSelection && ScheduleDateRange is { } range) SelectedDate = range.Clamp(SelectedDate);
         IdentityVersion++; layouts.Clear();
     }
     public Task SelectScheduleDateAsync(DateOnly date, Guid generation, string? semesterId)

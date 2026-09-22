@@ -6,6 +6,10 @@ internal sealed class BoundedCache<TKey, TValue>(int capacity) where TKey : notn
     readonly object gate = new();
     readonly Dictionary<TKey, TValue> values = [];
     readonly Queue<TKey> order = [];
+    public bool TryGet(TKey key, out TValue value)
+    {
+        lock (gate) return values.TryGetValue(key, out value!);
+    }
     public TValue Get(TKey key, Func<TKey, TValue> create)
     {
         lock (gate) if (values.TryGetValue(key, out var value)) return value;

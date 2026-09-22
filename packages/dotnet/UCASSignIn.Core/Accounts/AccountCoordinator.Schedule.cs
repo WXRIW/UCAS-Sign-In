@@ -17,6 +17,8 @@ public sealed partial class AccountCoordinator
     readonly Dictionary<string, IReadOnlyList<CatalogCourse>> semesterCatalogs = [];
     readonly Dictionary<string, Task> identityReads = [];
     Task? scheduleTask;
+    string? syncingSemester;
+    HashSet<string> syncingTargets = [];
     bool scheduleEntered;
     public ScheduleMode ScheduleMode { get; set; }
     public bool ShowOtherWeeks { get; set; }
@@ -38,8 +40,10 @@ public sealed partial class AccountCoordinator
         get { var days = VisibleScheduleDays; return days.Count > 0 && (IsDemo || days.All(d => courseUpdates.ContainsKey(CourseTime.DayKey(d)))); }
     }
     public bool IsInitialScheduleLoading => IsScheduleRefreshing && !HasCompleteWeek;
-    public IEnumerable<CatalogCourse> AllCatalogCourses => CatalogCourses.Concat(semesterCatalogs
-        .Where(x => x.Key != SelectedSemester?.Id || CatalogUpdatedAt is null).SelectMany(x => x.Value)).Distinct();
+    public IEnumerable<CatalogCourse> AllCatalogCourses =>
+        (SelectedSemester is { } selected && identityUpdates.GetValueOrDefault(selected.Id) > CatalogUpdatedAt
+            ? Array.Empty<CatalogCourse>() : CatalogCourses).Concat(semesterCatalogs
+        .Where(x => x.Key != SelectedSemester?.Id || CatalogUpdatedAt is null || identityUpdates.GetValueOrDefault(x.Key) > CatalogUpdatedAt).SelectMany(x => x.Value)).Distinct();
     public CatalogCourse? CatalogFor(Course course) => CourseIdentity.Resolve(course, Semesters, AllCatalogCourses);
     public string? PreferenceId(Course course) => CatalogFor(course)?.Id ?? course.CourseId;
     public IEnumerable<AttendanceRecord> RecordsForCourse(string courseId) => Records.Where(r => r.CourseId == courseId
@@ -66,9 +70,10 @@ public sealed partial class AccountCoordinator
         if (scheduleAccountId is not null && scheduleSessionId is not null)
             accountChecks[scheduleAccountId] = (scheduleSessionId, new(checkedDays));
         scheduleAccountId = scheduleSessionId = null;
+        ResetCourseSchedules();
         snapshots.Clear(); successfulWrites.Clear(); retryAt.Clear(); failures.Clear(); checkedDays.Clear(); pendingSemesters.Clear(); pendingWeeks.Clear();
         dirtyWeeks.Clear(); pendingWeekSemesters.Clear();
-        scheduleColors.Clear(); layouts.Clear(); semesterCatalogs.Clear(); identityReads.Clear(); scheduleTask = null;
+        scheduleColors.Clear(); layouts.Clear(); semesterCatalogs.Clear(); identityReads.Clear(); scheduleTask = null; syncingSemester = null; syncingTargets = [];
         ScheduleProgress = null; ScheduleError = null; ArrangementVersion++; IdentityVersion++;
     }
     void RestoreAccountChecks(StoredAccount account)
@@ -114,7 +119,7 @@ public sealed partial class AccountCoordinator
                 var stored = await catalog.LoadCatalogAsync(account.Id, term.Id, lifetime.Token);
                 if (epoch != Generation) return;
                 if (stored is { Version: CourseCatalogCache.CurrentVersion } && stored.AccountId == account.Id && stored.SemesterId == term.Id
-                    && stored.Courses.All(c => c.SemesterId == term.Id)) semesterCatalogs[term.Id] = stored.Courses;
+                    && stored.Courses.All(c => c.SemesterId == term.Id)) { semesterCatalogs[term.Id] = stored.Courses; identityUpdates[term.Id] = stored.UpdatedAt; }
             }
             IdentityVersion++;
         }
@@ -159,16 +164,22 @@ public sealed partial class AccountCoordinator
         if (IsDemo) { EnsureDemoSchedule(); Notify(); return; }
         if (ActiveAccount is null || paused) return;
         var epoch = Generation;
-        if (!force && ViewedSemester is { } term && NeedsSemesterSync(term)) pendingSemesters.Add(term.Id);
-        foreach (var cachedTerm in ScheduleSemesters.Where(t => snapshots.ContainsKey(t.Id) && NeedsSemesterSync(t))) pendingSemesters.Add(cachedTerm.Id);
+        if (!force && ViewedSemester is { } term && term.Id != syncingSemester && NeedsSemesterSync(term)) pendingSemesters.Add(term.Id);
+        foreach (var cachedTerm in ScheduleSemesters.Where(t => t.Id != syncingSemester && snapshots.ContainsKey(t.Id) && NeedsSemesterSync(t))) pendingSemesters.Add(cachedTerm.Id);
         if (!force && Semesters.Count > 0 && !HasCompleteWeek) QueueVisibleWeek();
+        var joinedBatch = scheduleTask is not null;
+        var joinedTargets = syncingTargets;
+        var requestedSemester = ViewedSemester?.Id;
         await StartScheduleAsync(force);
+        if (epoch != Generation) return;
+        if (force && joinedBatch && (requestedSemester ?? ViewedSemester?.Id) is { } requested && !joinedTargets.Contains(requested))
+            await StartScheduleAsync(true);
         if (epoch != Generation) return;
         await EnsureCatalogForDateAsync(SelectedDate, force);
         if (epoch != Generation) return;
         if (!onlyDue) await CheckDayAsync(SelectedDate);
     }
-    Task StartScheduleAsync(bool force)
+    Task StartScheduleAsync(bool force, string? targetSemester = null)
     {
         if (scheduleTask is not null) return scheduleTask;
         if (ActiveAccount is not { } account || paused) return Task.CompletedTask;
@@ -176,8 +187,9 @@ public sealed partial class AccountCoordinator
             && !pendingSemesters.Any(id => CanRetry("semester:" + id, force))
             && !pendingWeeks.Any(day => CanRetry("week:" + day, force))) return Task.CompletedTask;
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        syncingTargets = [];
         scheduleTask = completion.Task;
-        _ = RunScheduleAsync(account, Generation, lifetime.Token, force, completion);
+        _ = RunScheduleAsync(account, Generation, lifetime.Token, force, completion, targetSemester);
         return completion.Task;
     }
     async Task SaveTargetsAsync(string id, CancellationToken ct)
@@ -195,7 +207,7 @@ public sealed partial class AccountCoordinator
             return await request(session);
         }
     }
-    async Task RunScheduleAsync(StoredAccount account, Guid epoch, CancellationToken ct, bool force, TaskCompletionSource completion)
+    async Task RunScheduleAsync(StoredAccount account, Guid epoch, CancellationToken ct, bool force, TaskCompletionSource completion, string? targetSemester)
     {
         await Task.Yield();
         try
@@ -205,7 +217,7 @@ public sealed partial class AccountCoordinator
             var visibleMonday = ScheduleLayout.Monday(SelectedDate);
             ScheduleProgress = new(ViewedSemester?.Name ?? "课表", visibleMonday, visibleMonday.AddDays(6));
             Notify();
-            if ((force || Semesters.Count == 0) && CanRetry("semesters", force))
+            if (targetSemester is null && (force || Semesters.Count == 0) && CanRetry("semesters", force))
             {
                 try
                 {
@@ -217,27 +229,30 @@ public sealed partial class AccountCoordinator
                 catch (Exception e) when (e is not OperationCanceledException) { if (epoch != Generation) return; RetryLater("semesters"); ScheduleError = "无法确定学期，不能完成完整同步：" + e.Message; }
             }
             // Metadata can move the selected date. Choose targets only after applying it.
-            if (force || !HasCompleteWeek) QueueVisibleWeek();
+            if (targetSemester is null && (force || !HasCompleteWeek)) QueueVisibleWeek();
             foreach (var monday in pendingWeeks.ToArray())
                 foreach (var term in PendingWeekDays(monday).Select(d => CourseIdentity.Semester(d, ScheduleSemesters)).OfType<SchoolSemester>().Distinct())
                     if (NeedsSemesterSync(term)) pendingSemesters.Add(term.Id);
-            if (ViewedSemester is { } viewed && (force || NeedsSemesterSync(viewed))) pendingSemesters.Add(viewed.Id);
+            if (targetSemester is null && ViewedSemester is { } viewed && (force || NeedsSemesterSync(viewed))) pendingSemesters.Add(viewed.Id);
             await SaveTargetsAsync(account.Id, ct);
             var failed = new HashSet<string>();
             while (epoch == Generation)
             {
-                var id = pendingSemesters.OrderBy(x => x == ViewedSemester?.Id ? 0 : 1).FirstOrDefault(x => !failed.Contains(x) && CanRetry("semester:" + x, force));
+                var id = pendingSemesters.OrderBy(x => x == targetSemester || courseScheduleReads.ContainsKey(x) ? 0 : x == ViewedSemester?.Id ? 1 : 2).FirstOrDefault(x => !failed.Contains(x) && CanRetry("semester:" + x, force));
                 if (id is null) break;
-                var term = ScheduleSemesters.FirstOrDefault(x => x.Id == id);
+                var term = CourseSemester(id);
                 if (term is null) { pendingSemesters.Remove(id); continue; }
                 pendingSemesters.Remove(id);
+                syncingSemester = id; syncingTargets.Add(id);
                 try { await SyncSemesterAsync(account, term, epoch, ct); }
                 catch (Exception e) when (e is not OperationCanceledException)
                 {
                     if (epoch != Generation) return;
                     pendingSemesters.Add(id); failed.Add(id); RetryLater("semester:" + id);
+                    courseScheduleErrors[id] = e.Message + "；已保留可用缓存";
                     SetScheduleError($"{ScheduleProgress}：{e.Message}；已保留可用缓存", id);
                 }
+                finally { if (epoch == Generation) syncingSemester = null; }
                 if (epoch != Generation) return;
                 await SaveTargetsAsync(account.Id, ct);
             }
@@ -268,12 +283,19 @@ public sealed partial class AccountCoordinator
             if (epoch == Generation)
             {
                 await SaveTargetsAsync(account.Id, ct);
-                await EnsureCatalogForDateAsync(SelectedDate);
-                if (epoch == Generation && ViewedSemester is null && ScheduleError is null) ScheduleError = "无法唯一确定所选日期的学期，已查询可见周；尚不能完成完整学期同步。";
+                if (targetSemester is null) await EnsureCatalogForDateAsync(SelectedDate);
+                if (targetSemester is null && epoch == Generation && ViewedSemester is null && ScheduleError is null) ScheduleError = "无法唯一确定所选日期的学期，已查询可见周；尚不能完成完整学期同步。";
             }
         }
         catch (OperationCanceledException) { }
-        catch (Exception e) { if (epoch == Generation) { ScheduleError = e.Message; RetryLater("semesters"); } }
+        catch (Exception e)
+        {
+            if (epoch == Generation)
+            {
+                ScheduleError = e.Message; RetryLater("semesters");
+                if (targetSemester is { } target) { courseScheduleErrors[target] = e.Message; RetryLater("course:" + target); }
+            }
+        }
         finally
         {
             if (epoch == Generation) { scheduleTask = null; ScheduleProgress = null; ScheduleProgressChanged?.Invoke(); Notify(); }
@@ -316,17 +338,19 @@ public sealed partial class AccountCoordinator
             courseUpdates[day] = snapshot.UpdatedAt; checkedDays.Add(day); freshDays.Add(day); courseNotices.Remove(day);
         }
         retryAt.Remove("semester:" + term.Id); failures.Remove("semester:" + term.Id);
+        courseScheduleErrors.Remove(term.Id); retryAt.Remove("course:" + term.Id);
         Notify();
-        await EnsureCatalogForDateAsync(begin);
+        await EnsureCatalogForSemesterAsync(term);
         if (epoch == Generation) await UpdateRemindersAsync();
     }
     void ScheduleArrangementChanged()
     {
         if (scheduleStore is null) return;
-        foreach (var term in snapshots.Keys) pendingSemesters.Add(term);
+        foreach (var term in snapshots.Keys.Where(id => id != syncingSemester)) pendingSemesters.Add(term);
         foreach (var date in courseUpdates.Keys)
         {
-            if (CourseIdentity.Semester(CourseTime.Date(date), Semesters) is { } term) pendingSemesters.Add(term.Id);
+            if (CourseIdentity.Semester(CourseTime.Date(date), Semesters) is { } term)
+            { if (term.Id != syncingSemester) pendingSemesters.Add(term.Id); }
             else
             {
                 var monday = CourseTime.DayKey(ScheduleLayout.Monday(CourseTime.Date(date)));
@@ -337,12 +361,18 @@ public sealed partial class AccountCoordinator
         _ = StartScheduleAsync(false);
     }
     public Task EnsureCatalogForDateAsync(DateOnly date, bool force = false)
+        => CourseIdentity.Semester(date, Semesters) is { } term ? EnsureCatalogForSemesterAsync(term, force) : Task.CompletedTask;
+    Task EnsureCatalogForSemesterAsync(SchoolSemester term, bool force = false)
     {
-        var term = CourseIdentity.Semester(date, Semesters);
-        if (term is null || IsDemo || ActiveAccount is null || catalog is null || semesterCatalogs.ContainsKey(term.Id)) return Task.CompletedTask;
-        if (!CanRetry("identity:" + term.Id, force)) return Task.CompletedTask;
+        if (IsDemo || ActiveAccount is null) return Task.CompletedTask;
+        if (SelectedSemester?.Id == term.Id && CatalogUpdatedAt is { } updated
+            && (!identityUpdates.TryGetValue(term.Id, out var previous) || updated > previous))
+        { semesterCatalogs[term.Id] = CatalogCourses; identityUpdates[term.Id] = updated; }
+        if (!force && identityUpdates.TryGetValue(term.Id, out var at) && clock.GetUtcNow() >= at && clock.GetUtcNow() - at < TimeSpan.FromMinutes(30))
+        { identityErrors.Remove(term.Id); retryAt.Remove("identity:" + term.Id); return Task.CompletedTask; }
         if (identityReads.TryGetValue(term.Id, out var existing)) return existing;
-        var task = LoadIdentityCatalogAsync(term, ActiveAccount, Generation, lifetime.Token);
+        if (!CanRetry("identity:" + term.Id, force)) return Task.CompletedTask;
+        var task = LoadIdentityCatalogAsync(term, ActiveAccount, Generation, lifetime.Token, force);
         identityReads[term.Id] = task; return task;
     }
     void SelectScheduleCatalogSemester()
@@ -350,37 +380,45 @@ public sealed partial class AccountCoordinator
         var marked = Semesters.Where(s => s.IsCurrent).Take(2).ToArray();
         SelectedSemester = marked.Length == 1 ? marked[0] : CourseIdentity.Semester(CourseTime.Today(clock), Semesters);
     }
-    async Task LoadIdentityCatalogAsync(SchoolSemester term, StoredAccount account, Guid epoch, CancellationToken ct)
+    async Task LoadIdentityCatalogAsync(SchoolSemester term, StoredAccount account, Guid epoch, CancellationToken ct, bool force)
     {
         await Task.Yield();
         try
         {
-            var stored = await catalog!.LoadCatalogAsync(account.Id, term.Id, ct);
+            var stored = catalog is null ? null : await catalog.LoadCatalogAsync(account.Id, term.Id, ct);
             if (epoch != Generation) return;
             if (stored is not null && (stored.AccountId != account.Id || stored.SemesterId != term.Id
                 || stored.Version != CourseCatalogCache.CurrentVersion || stored.Courses.Any(c => c.SemesterId != term.Id))) stored = null;
+            if (stored is not null && !identityUpdates.ContainsKey(term.Id))
+            { semesterCatalogs[term.Id] = stored.Courses; identityUpdates[term.Id] = stored.UpdatedAt; IdentityVersion++; Notify(); }
+            if (force || stored is not null && (clock.GetUtcNow() < stored.UpdatedAt || clock.GetUtcNow() - stored.UpdatedAt >= TimeSpan.FromMinutes(30))) stored = null;
             var values = stored?.Courses ?? (await ScheduleRequestAsync(s => school.CatalogCoursesAsync(s, term.Id, ct), epoch)).ToList();
-            if (epoch != Generation || values.Any(c => c.SemesterId != term.Id)) return;
-            semesterCatalogs[term.Id] = values; IdentityVersion++; layouts.Clear();
+            if (epoch != Generation) return;
+            if (values.Any(c => c.SemesterId != term.Id)) throw new IOException("学校返回了其他学期的课程");
+            semesterCatalogs[term.Id] = values; identityUpdates[term.Id] = stored?.UpdatedAt ?? clock.GetUtcNow(); identityErrors.Remove(term.Id); IdentityVersion++; layouts.Clear();
             retryAt.Remove("identity:" + term.Id); failures.Remove("identity:" + term.Id);
-            if (stored is null) await catalog.SaveCatalogAsync(account.Id, term.Id, new(CourseCatalogCache.CurrentVersion, account.Id, term.Id, clock.GetUtcNow(), values.ToList()), ct);
+            if (stored is null && catalog is not null) await catalog.SaveCatalogAsync(account.Id, term.Id, new(CourseCatalogCache.CurrentVersion, account.Id, term.Id, clock.GetUtcNow(), values.ToList()), ct);
             if (epoch == Generation) Notify();
         }
         catch (OperationCanceledException) { }
-        catch (Exception e) { if (epoch == Generation) { RetryLater("identity:" + term.Id); SetScheduleError("课程关联暂不可用：" + e.Message, term.Id); } }
+        catch (Exception e) { if (epoch == Generation) { RetryLater("identity:" + term.Id); identityErrors[term.Id] = "课程关联暂不可用：" + e.Message; SetScheduleError("课程关联暂不可用：" + e.Message, term.Id); } }
         finally { if (epoch == Generation) identityReads.Remove(term.Id); }
     }
-    void EnsureDemoSchedule()
+    void EnsureDemoSchedule(SchoolSemester? target = null)
     {
-        var term = ScheduleCalendar.DemoSemester(SelectedDate);
+        var term = target ?? ScheduleCalendar.DemoSemester(SelectedDate);
         var range = ScheduleCalendar.Range(term)!.Value;
         var begin = range.Begin; var end = range.End;
         if (Semesters.Count == 1 && Semesters[0] == term && Courses.Count > 10) return;
-        SetupDemoCatalog();
-        var examples = DemoCourses(SelectedDate);
+        SetupDemoCatalog(term);
+        var examples = DemoCourses(begin);
         CatalogCourses = CatalogCourses.Select((c, i) => c with { Teacher = i < examples.Count ? examples[i].Teacher : c.Teacher, Classroom = i < examples.Count ? examples[i].Classroom : c.Classroom }).ToArray();
         Courses = Dates(begin, end).Where(d => d.DayOfWeek is not (DayOfWeek.Saturday or DayOfWeek.Sunday))
-            .SelectMany(d => DemoCourses(d).Take(((d.DayNumber / 7) % 2) + 2).Select((c, i) => c with { Uuid = c.Id + "-" + c.Day, CourseNumber = $"DEMO{i + 1:000}" })).ToArray();
+            .SelectMany(d => DemoCourses(d).Take(((d.DayNumber / 7) % 2) + 2).Select((c, i) => c with { Id = c.Id + "-" + c.Day, Uuid = c.Id + "-" + c.Day, CourseNumber = $"DEMO{i + 1:000}" })).ToArray();
+        Courses = Courses.Select(c => c.CourseNumber == "DEMO001" && ScheduleCalendar.WeekNumber(CourseTime.Date(c.Day), term) % 3 == 0
+            ? c with { Classroom = "教学楼 B203", BeginTime = "13:30", EndTime = "16:10" } : c)
+            .SelectMany(c => c.CourseNumber == "DEMO001" && CourseTime.Date(c.Day).DayOfWeek == DayOfWeek.Wednesday
+                ? new[] { c, c with { Id = c.Id + "-teacher2", Uuid = c.Uuid + "-teacher2", Teacher = "王雅文", TeacherId = "demo-teacher2" } } : new[] { c }).ToArray();
         ArrangementVersion++; IdentityVersion++; layouts.Clear();
     }
 }

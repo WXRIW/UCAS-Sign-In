@@ -163,6 +163,9 @@ public sealed class MainActivity : AppCompatActivity
                 await Model.SelectDateAsync(CourseTime.Date(selected));
             if (savedInstanceState is not null && savedInstanceState.GetString("accountState") == (Model.IsDemo ? "demo" : Model.ActiveAccount?.Id))
             {
+                Vm.CourseSearch = savedInstanceState.GetString("courseSearch") ?? "";
+                if (savedInstanceState.GetString("scrollPositions") is { } positions)
+                    foreach (var item in System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, int>>(positions) ?? []) Vm.ScrollPositions[item.Key] = item.Value;
                 for (var index = 0; index < 4; index++)
                 {
                     Vm.Routes[index] = savedInstanceState.GetString("route" + index);
@@ -172,6 +175,7 @@ public sealed class MainActivity : AppCompatActivity
                     Vm.CatalogDetails[index] = catalogJson is null ? null : System.Text.Json.JsonSerializer.Deserialize<CatalogCourse>(catalogJson);
                 }
                 page?.Render();
+                page?.EnsureCatalogPage();
             }
             await OpenNotification(Intent);
             if (page is not null)
@@ -209,6 +213,7 @@ public sealed class MainActivity : AppCompatActivity
                 Array.Clear(Vm.Routes);
                 Array.Clear(Vm.Details);
                 Array.Clear(Vm.CatalogDetails);
+                Vm.ScrollPositions.Clear(); Vm.CourseSearch = "";
                 DetailCourseId = null;
                 DetailCourseDay = null;
                 renderedGeneration = Model.Generation;
@@ -332,8 +337,8 @@ public sealed class MainActivity : AppCompatActivity
         foreground?.Cancel();
         foreground = new();
         _ = Ticks(foreground.Token);
-        if (ready && Vm.Page == 2 && Vm.Routes[2] == "catalog-detail" && Vm.CatalogDetails[2] is { } course)
-            _ = Run(() => Model.RefreshAttendanceAsync(course.Id));
+        if (ready && Vm.Routes[Vm.Page] is "catalog-detail" or "course-schedule")
+            page?.EnsureCatalogPage();
         else if (ready && Vm.Page == 2)
             _ = Run(() => Model.RefreshCatalogAsync());
     }
@@ -360,6 +365,8 @@ public sealed class MainActivity : AppCompatActivity
     {
         outState.PutString("selectedDate", CourseTime.DayKey(Model.SelectedDate));
         outState.PutInt("page", Vm.Page);
+        outState.PutString("courseSearch", Vm.CourseSearch);
+        outState.PutString("scrollPositions", System.Text.Json.JsonSerializer.Serialize(Vm.ScrollPositions));
         outState.PutBoolean("demoState", Model.IsDemo);
         outState.PutString("accountState", Model.IsDemo ? "demo" : Model.ActiveAccount?.Id);
         for (var index = 0; index < 4; index++)

@@ -17,6 +17,7 @@ public sealed partial class MainWindow
     (string Section, string? Route, string? CourseId, string? Day, Guid Generation)? displayedPage;
     NavigationTransitionInfo? lastPageTransition;
     bool rendering;
+    readonly Dictionary<(string, string?, string?, string?, Guid), double> pageOffsets = [];
 
     void Render(NavigationMotion motion = NavigationMotion.Entrance)
     {
@@ -24,7 +25,7 @@ public sealed partial class MainWindow
         rendering = true;
         try
         {
-            var destination = (section, route, route == "detail" ? detail?.Id : route == "catalog-detail" ? catalogDetail?.Id : null,
+            var destination = (section, route, route == "detail" ? detail?.Id : route is "catalog-detail" or "course-schedule" ? catalogDetail?.SemesterId + ":" + catalogDetail?.Id : null,
                 route == "detail" ? detail?.Day : null, Model.Generation);
             if (displayedPage == destination)
             {
@@ -42,6 +43,12 @@ public sealed partial class MainWindow
                         ? SlideNavigationTransitionEffect.FromLeft
                         : SlideNavigationTransitionEffect.FromRight
                 };
+            if (displayedPage is { } previousPage && PageScroll is not null)
+            {
+                if (previousPage.Route == "course-schedule") saveCourseSchedulePosition?.Invoke();
+                else pageOffsets[previousPage] = PageScroll.VerticalOffset;
+            }
+            if (pageOffsets.Count > 32) pageOffsets.Remove(pageOffsets.Keys.First());
             displayedPage = destination;
 
             // The app already owns each section's route. Keep Frame history disabled
@@ -64,6 +71,11 @@ public sealed partial class MainWindow
                 var gutter = ContentSurface.ActualWidth < 600 ? 16 : 32;
                 Page.Padding = new(gutter, 8, gutter, 24);
                 RenderCurrentPage();
+                if (route != "course-schedule")
+                {
+                    var offset = pageOffsets.GetValueOrDefault(destination);
+                    scroller.Loaded += (_, _) => scroller.ChangeView(null, offset, null, true);
+                }
             }), new FrameNavigationOptions
             {
                 IsNavigationStackEnabled = false,

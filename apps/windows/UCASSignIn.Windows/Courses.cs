@@ -221,8 +221,6 @@ public sealed partial class MainWindow
 
     void RenderCatalogDetail(CatalogCourse course)
     {
-        if (Model.ShouldRefreshAttendance(course.Id) && !Model.IsAttendanceRefreshing(course.Id))
-            _ = Run(() => Model.RefreshAttendanceAsync(course.Id));
         var values = Model.CoursePreferencesFor(course.Id);
         string Missing(string? value) => string.IsNullOrWhiteSpace(value) ? "暂未提供" : value;
         var information = new StackPanel { Spacing = 14 };
@@ -232,6 +230,7 @@ public sealed partial class MainWindow
         information.Children.Add(CourseInfoRow("\uE787", "学期", Missing(Model.Semesters.FirstOrDefault(s => s.Id == course.SemesterId)?.Name ?? course.SemesterId)));
         information.Children.Add(CourseInfoRow("\uE823", "课程日期", DisplayLongDay(course.BeginDate) + "–" + DisplayLongDay(course.EndDate)));
         Page.Children.Add(CourseInformationSection(information));
+        RenderCourseScheduleSummary(course);
         if (string.IsNullOrWhiteSpace(course.Id)) { Page.Children.Add(Text("课程身份尚未唯一关联，设置与学校考勤暂不可用。", 14, color: Secondary)); return; }
 
         var reminder = OverridePicker("课前提醒", values.Reminders, Model.Preferences.RemindersEnabled,

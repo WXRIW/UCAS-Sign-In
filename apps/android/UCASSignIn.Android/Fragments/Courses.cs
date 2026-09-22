@@ -78,8 +78,13 @@ public sealed partial class MainPageFragment
         searchBox.AddView(search, new LinearLayout.LayoutParams(-1, -2));
         Add(searchBox, 16);
         var list = Column(); Add(list, 0);
+        object? listVersion = null;
         void UpdateList()
         {
+            var version = (Model.CatalogCourses, Model.Preferences, Model.ArrangementVersion, Model.IdentityVersion, courseSearch,
+                Loading: Model.IsCatalogRefreshing && Model.CatalogCourses.Count == 0);
+            if (Equals(listVersion, version)) return;
+            listVersion = version;
             list.RemoveAllViews();
             var values = Model.CatalogCourses.Where(c => courseSearch.Length == 0 || new[] { c.Name, c.Number, c.Teacher }
                 .Any(x => x.Contains(courseSearch, StringComparison.OrdinalIgnoreCase))).ToList();
@@ -218,10 +223,23 @@ public sealed partial class MainPageFragment
         return icon;
     }
 
+    object CatalogContentKey(CatalogCourse course) => (course, Model.CoursePreferencesFor(course.Id), Model.Preferences,
+        Model.Records,
+        Model.Records.Count > 0 ? (Model.ArrangementVersion, Model.IdentityVersion) : (0L, 0L),
+        Model.Semesters.FirstOrDefault(s => s.Id == course.SemesterId)?.Name, Model.CanChangeAccount, Dark);
+    bool RetainCatalogDetail()
+    {
+        if (Route != "catalog-detail" || CurrentCatalogDetail is not { } target || activeScene is not { } scene) return false;
+        var course = Model.AllCatalogCourses.FirstOrDefault(c => CourseSchedule.SameCourse(c, target)) ?? target;
+        if (!Equals(scene.CatalogContentKey, CatalogContentKey(course))) return false;
+        scene.UpdateAttendanceSection?.Invoke();
+        scene.UpdateScheduleSummary?.Invoke();
+        return true;
+    }
     public void RenderCatalogDetail(CatalogCourse course)
     {
-        if (Model.ShouldRefreshAttendance(course.Id) && !Model.IsAttendanceRefreshing(course.Id))
-            _ = Host.Run(() => Model.RefreshAttendanceAsync(course.Id));
+        activeScene!.CatalogContentKey = CatalogContentKey(course);
+        activeScene.UpdateAttendanceSection = null;
         var values = Model.CoursePreferencesFor(course.Id);
         string Missing(string? value) => string.IsNullOrWhiteSpace(value) ? "暂未提供" : value;
         var information = new LinearLayout(Ui) { Orientation = Orientation.Vertical };
@@ -243,6 +261,7 @@ public sealed partial class MainPageFragment
             last.LayoutParameters = layout;
         }
         Add(MaterialSettingsSection("课程信息", information));
+        RenderCourseScheduleSummary(course);
         if (string.IsNullOrWhiteSpace(course.Id)) { Add(Text("课程身份尚未唯一关联，设置与学校考勤暂不可用。", 14, color: Secondary)); return; }
 
         var notification = Column(OverrideSettingRow(Resource.Drawable.ic_bell, "课前提醒", "在上课前发送本地通知",
@@ -281,9 +300,56 @@ public sealed partial class MainPageFragment
         sign.AddView(SettingRow(Resource.Drawable.ic_eye_off, "禁用本课程签到", "暂停本课程的手动签到和自动签到", disabled));
         Add(MaterialSettingsSection("签到", sign));
 
+        // Attendance arrives independently of the schedule. Keep the other sections attached.
+        var attendanceSection = Column();
+        Add(attendanceSection);
+        object? attendanceState = null;
+        Action? updateAttendanceRefresh = null;
+        activeScene.UpdateAttendanceSection = () =>
+        {
+            var state = (Model.AttendanceFor(course.Id), Model.AttendanceUpdatedAt(course.Id), Model.AttendanceError(course.Id));
+            if (!Equals(attendanceState, state))
+            {
+                attendanceState = state;
+                var section = CourseAttendanceSection(course, out var updateRefresh);
+                attendanceSection.RemoveAllViews();
+                attendanceSection.AddView(section);
+                updateAttendanceRefresh = updateRefresh;
+            }
+            updateAttendanceRefresh?.Invoke();
+        };
+        activeScene.UpdateAttendanceSection();
+
+        var local = Column();
+        var records = Model.RecordsForCourse(course.Id).ToList();
+        if (records.Count == 0)
+        {
+            var empty = Text("本机尚无这门课程的签到操作记录", 12, color: Secondary);
+            empty.SetPadding(0, D(12), 0, D(12));
+            local.AddView(empty);
+        }
+        for (var index = 0; index < records.Count; index++)
+        {
+            if (index > 0) local.AddView(SettingsRule());
+            var record = records[index];
+            var row = Across(Column(Text(record.Message, 13, true), Text(record.Date.ToLocalTime().ToString("M月d日 HH:mm"), 11, color: Secondary)),
+                OperationStatus(record.Succeeded));
+            row.SetPadding(0, D(8), 0, D(8));
+            local.AddView(row);
+        }
+        Add(MaterialSettingsSection("本机操作记录", local, "仅保存在本机，与学校返回的考勤状态分开显示。"));
+    }
+
+    View CourseAttendanceSection(CatalogCourse course, out Action updateRefresh)
+    {
         var attendance = Column();
         var refreshButton = Button(Model.IsAttendanceRefreshing(course.Id) ? "正在刷新…" : "刷新", () => Model.RefreshAttendanceAsync(course.Id, true));
-        refreshButton.Enabled = !Model.IsAttendanceRefreshing(course.Id);
+        updateRefresh = () =>
+        {
+            var refreshing = Model.IsAttendanceRefreshing(course.Id);
+            refreshButton.Text = refreshing ? "正在刷新…" : "刷新";
+            refreshButton.Enabled = !refreshing && Model.CanChangeAccount;
+        };
         refreshButton.SetMinHeight(D(36));
         refreshButton.SetMinimumHeight(D(36));
         attendance.AddView(SettingRow(Resource.Drawable.ic_history, "考勤统计与明细", "学校记录的签到次数及每次上课的签到状态", refreshButton));
@@ -323,26 +389,7 @@ public sealed partial class MainPageFragment
         var attendanceFooter = Model.AttendanceUpdatedAt(course.Id) is { } at
             ? $"学校数据同步于 {at.ToLocalTime():M月d日 HH:mm}。"
             : "考勤数据来自学校接口，进入页面后按缓存有效期自动更新，也可手动刷新。";
-        Add(MaterialSettingsSection("学校考勤", attendance, attendanceFooter));
-
-        var local = Column();
-        var records = Model.RecordsForCourse(course.Id).ToList();
-        if (records.Count == 0)
-        {
-            var empty = Text("本机尚无这门课程的签到操作记录", 12, color: Secondary);
-            empty.SetPadding(0, D(12), 0, D(12));
-            local.AddView(empty);
-        }
-        for (var index = 0; index < records.Count; index++)
-        {
-            if (index > 0) local.AddView(SettingsRule());
-            var record = records[index];
-            var row = Across(Column(Text(record.Message, 13, true), Text(record.Date.ToLocalTime().ToString("M月d日 HH:mm"), 11, color: Secondary)),
-                OperationStatus(record.Succeeded));
-            row.SetPadding(0, D(8), 0, D(8));
-            local.AddView(row);
-        }
-        Add(MaterialSettingsSection("本机操作记录", local, "仅保存在本机，与学校返回的考勤状态分开显示。"));
+        return MaterialSettingsSection("学校考勤", attendance, attendanceFooter);
     }
 
     static string DisplayDay(string day) => day.Length == 8 ? $"{day[..4]}-{day.Substring(4, 2)}-{day[6..]}" : string.IsNullOrWhiteSpace(day) ? "暂未提供" : day;

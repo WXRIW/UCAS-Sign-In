@@ -77,13 +77,12 @@ public sealed partial class AccountCoordinator
         catalogFailures = 0; catalogRetryAt = null; attendanceFailures.Clear(); attendanceRetryAt.Clear();
     }
 
-    void SetupDemoCatalog()
+    void SetupDemoCatalog(SchoolSemester term)
     {
-        var term = ScheduleCalendar.DemoSemester(SelectedDate);
-        Semesters = [term]; SelectedSemester = term;
+        semesters = [term]; UpdateScheduleMetadata(false); SelectedSemester ??= term;
         var names = new[] { "矩阵分析", "高级人工智能", "学术英语写作", "计算机体系结构", "模式识别", "自然语言处理", "现代密码学", "软件工程", "并行计算", "数据科学导论", "机器学习", "数字图像处理", "科技伦理", "创新创业", "学术交流英语", "随机过程", "高等数值分析", "跨学科前沿专题（长课程名称演示）" };
         CatalogCourses = names.Select((name, i) => new CatalogCourse(i switch { 0 => "demo-matrix", 1 => "demo-ai", 2 => "demo-english", _ => "demo-" + (i + 1) },
-            $"DEMO{i + 1:000}", name, i % 5 == 0 ? "" : $"演示教师{i % 6 + 1}", i % 4 == 0 ? null : $"教学楼 {(char)('A' + i % 4)}{101 + i}", "demo", term.BeginDate, term.EndDate, 16, i % 12)).ToArray();
+            $"DEMO{i + 1:000}", name, i % 5 == 0 ? "" : $"演示教师{i % 6 + 1}", i % 4 == 0 ? null : $"教学楼 {(char)('A' + i % 4)}{101 + i}", term.Id, term.BeginDate, term.EndDate, 16, i % 12)).ToArray();
         CatalogUpdatedAt = clock.GetUtcNow(); CatalogError = null;
     }
 

@@ -35,7 +35,8 @@ public sealed partial class MainWindow : Window
                 CloseSchedulePickers();
                 if (!Model.IsBusy)
                     activeDialog?.Hide();
-                paths.Clear();
+                paths.Clear(); pageOffsets.Clear(); courseSchedulePositions.Clear(); renderedCourseSchedule = null;
+                saveCourseSchedulePosition = null;
                 route = null;
                 detail = null;
                 catalogDetail = null;
@@ -54,7 +55,7 @@ public sealed partial class MainWindow : Window
             if (Model.IsForeground)
             {
                 ShowPendingSignInError(); _ = Run(Tick);
-                if (section == "courses" && route == "catalog-detail" && catalogDetail is { } course) _ = Run(() => Model.RefreshAttendanceAsync(course.Id));
+                if (route is "catalog-detail" or "course-schedule") EnsureCatalogPage();
                 else if (section == "courses") _ = Run(() => Model.RefreshCatalogAsync());
             }
         };
@@ -127,6 +128,7 @@ public sealed partial class MainWindow : Window
         paths[section] = (route, detail, catalogDetail);
         section = (args.SelectedItem as NavigationViewItem)?.Tag?.ToString() ?? "today";
         (route, detail, catalogDetail) = paths.GetValueOrDefault(section);
+        EnsureCatalogPage();
         qrCancellation?.Cancel();
         if (section == "schedule" && route is null) _ = Run(Model.EnterScheduleAsync);
         if (PageFrame is not null)

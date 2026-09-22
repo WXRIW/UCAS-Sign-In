@@ -13,6 +13,16 @@ public sealed partial class MainPageFragment
     sealed record Scene(string Key, int Tab, string? Route, LinearLayout Root, MaterialToolbar Toolbar, LinearLayout Brand, ScrollView Scroll, LinearLayout Body, SwipeRefreshLayout Refresh)
     {
         public TextView? LargeTitle { get; set; }
+        public UCASSignIn.Core.CourseSchedulePresentation? ScheduleData { get; set; }
+        public string? ScheduleStatus { get; set; }
+        public string? ScheduleError { get; set; }
+        public bool ScheduleDark { get; set; }
+        public long ContentVersion { get; set; }
+        public TaskCompletionSource? ContentReady { get; set; }
+        public bool EnsuringCatalog { get; set; }
+        public object? CatalogContentKey { get; set; }
+        public Action? UpdateScheduleSummary { get; set; }
+        public Action? UpdateAttendanceSection { get; set; }
     }
     readonly Dictionary<string, Scene> scenes = [];
     FrameLayout? sceneHost;
@@ -21,8 +31,8 @@ public sealed partial class MainPageFragment
     bool scenePrivacy, backPreview;
     ITransitionSeekController? backSeek;
     bool AnimationsEnabled => !OperatingSystem.IsAndroidVersionAtLeast(26) || ValueAnimator.AreAnimatorsEnabled();
-    static int Depth(string? route) => route is null ? 0 : route == "source" ? 2 : 1;
-    static string? ParentRoute(string? route) => route == "source" ? "about" : null;
+    static int Depth(string? route) => route is null ? 0 : route is "source" or "course-schedule" ? 2 : 1;
+    static string? ParentRoute(string? route) => route == "source" ? "about" : route == "course-schedule" ? "catalog-detail" : null;
     string SceneKey(string? route) => Host.Vm.Page + ":" + (route ?? "root");
     public MaterialToolbar ActiveToolbar => activeScene!.Toolbar;
 
@@ -56,6 +66,7 @@ public sealed partial class MainPageFragment
         {
             try
             {
+                if (route == "course-schedule") return;
                 if (route == "catalog-detail" && CurrentCatalogDetail is { } course)
                     await Host.Run(() => Model.RefreshAttendanceAsync(course.Id, true));
                 else if (Host.Vm.Page == 2)
@@ -104,6 +115,7 @@ public sealed partial class MainPageFragment
         qrCancellation?.Cancel();
         var previous = activeScene;
         var next = GetScene(Route);
+        if (previous != next) next.ContentReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
         UseScene(next);
         if (previous != next && Host.Vm.Page == 1 && Route is null) _ = Host.Run(Model.EnterScheduleAsync);
         RenderContent();
@@ -111,11 +123,13 @@ public sealed partial class MainPageFragment
         if (previous != next) PresentScene(previous, next);
         else if (next.Root.Parent is null) sceneHost.AddView(next.Root, new FrameLayout.LayoutParams(-1, -1));
         ShowPendingSignInError();
+        if (previous != next) EnsureCatalogPage();
     }
     void ClearScenes()
     {
         if (sceneHost is not null) TransitionManager.EndTransitions(sceneHost);
         sceneHost?.RemoveAllViews();
+        foreach (var scene in scenes.Values) { scene.ContentVersion++; scene.ContentReady?.TrySetResult(); }
         scenes.Clear();
         coursePageBody = null;
         updateCoursePage = null;
@@ -136,13 +150,23 @@ public sealed partial class MainPageFragment
     void PresentScene(Scene? previous, Scene next)
     {
         TransitionManager.EndTransitions(sceneHost!);
+        // A transition removed before its first frame may never notify its listener.
+        previous?.ContentReady?.TrySetResult();
         if (previous is not null && previous.Tab == next.Tab && AnimationsEnabled)
         {
             var forward = Depth(next.Route) >= Depth(previous.Route);
-            TransitionManager.BeginDelayedTransition(sceneHost!, PageTransition(previous, next, forward));
+            var transition = PageTransition(previous, next, forward);
+            transition.AddListener(new SceneReadyListener(next.ContentReady!));
+            TransitionManager.BeginDelayedTransition(sceneHost!, transition);
         }
+        else next.ContentReady?.TrySetResult();
         sceneHost!.RemoveAllViews();
         sceneHost.AddView(next.Root, new FrameLayout.LayoutParams(-1, -1));
+    }
+    sealed class SceneReadyListener(TaskCompletionSource ready) : TransitionListenerAdapter
+    {
+        public override void OnTransitionEnd(Transition? transition) => ready.TrySetResult();
+        public override void OnTransitionCancel(Transition? transition) => ready.TrySetResult();
     }
     public void BeginBackPreview(int edge)
     {
@@ -151,6 +175,7 @@ public sealed partial class MainPageFragment
         var route = Route;
         var parent = ParentRoute(route);
         TransitionManager.EndTransitions(sceneHost!);
+        current.ContentReady?.TrySetResult();
         qrCancellation?.Cancel();
         var preview = GetScene(parent);
         Route = parent;
@@ -192,7 +217,7 @@ public sealed partial class MainPageFragment
         if (!backPreview || previewScene is null) { Back(); return; }
         Route = previewScene.Route;
         CurrentDetail = null;
-        CurrentCatalogDetail = null;
+        if (Route != "catalog-detail") CurrentCatalogDetail = null;
         Host.DetailCourseId = Host.DetailCourseDay = null;
         UseScene(previewScene);
         backSeek?.AnimateToEnd();
@@ -204,6 +229,7 @@ public sealed partial class MainPageFragment
     void UpdatePageToolbar()
     {
         Host.SetBackEnabled(Route is not null);
+        if (Route is not null && activeScene is { } current) current.Toolbar.Title = PageTitle(Route);
         UpdateScheduleNavigation();
         if (activeScene is { } scene) UpdateScrolledTitle(scene);
     }
@@ -241,6 +267,7 @@ public sealed partial class MainPageFragment
     {
         "detail" => "课程签到",
         "catalog-detail" => CurrentCatalogDetail?.Name ?? "课程详情",
+        "course-schedule" => "排课信息",
         "settings" => "设置",
         "records" => Model.IsDemo ? "演示签到记录" : "本机签到记录",
         "about" => "关于",

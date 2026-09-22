@@ -187,6 +187,7 @@ public sealed partial class MainWindow
         {
             "detail" => "课程签到",
             "catalog-detail" => catalogDetail?.Name ?? "课程详情",
+            "course-schedule" => "排课信息",
             "settings" => "设置",
             "records" => Model.IsDemo ? "演示签到记录" : "本机签到记录",
             "about" => "关于",
@@ -198,6 +199,9 @@ public sealed partial class MainWindow
         Status.IsOpen = !string.IsNullOrWhiteSpace(Model.Message);
         Status.Severity = InfoBarSeverity.Informational;
         if (section == "schedule" && route is null && UpdateExistingWeek()) return;
+        if (RetainCourseSchedule()) return;
+        if (route == "course-schedule" && renderedCourseSchedule is { } prior && prior.Panel == Page)
+            saveCourseSchedulePosition?.Invoke();
         ScheduleHeader.Children.Clear();
         Page.Children.Clear();
         Page.Spacing = section == "account" || route is "settings" or "catalog-detail" ? 24 : 20;
@@ -206,9 +210,11 @@ public sealed partial class MainWindow
             RenderDetail(Model.Courses.FirstOrDefault(x => x.Id == c.Id && x.Day == c.Day) ?? c);
             return;
         }
+        if (route == "course-schedule" && catalogDetail is { } scheduledCourse)
+        { RenderCourseSchedule(scheduledCourse); return; }
         if (route == "catalog-detail" && catalogDetail is { } catalogCourse)
         {
-            RenderCatalogDetail(Model.CatalogCourses.FirstOrDefault(x => x.Id == catalogCourse.Id) ?? catalogCourse);
+            RenderCatalogDetail(Model.AllCatalogCourses.FirstOrDefault(x => CourseSchedule.SameCourse(x, catalogCourse)) ?? catalogCourse);
             return;
         }
         if (route is not null)
@@ -572,14 +578,16 @@ public sealed partial class MainWindow
     {
         route = page;
         Render(NavigationMotion.Forward);
+        EnsureCatalogPage();
         return Task.CompletedTask;
     }
     void GoBack(object sender, RoutedEventArgs e)
     {
-        route = route == "source" ? "about" : null;
+        route = route == "source" ? "about" : route == "course-schedule" ? "catalog-detail" : null;
         detail = null;
-        catalogDetail = null;
+        if (route != "catalog-detail") catalogDetail = null;
         Render(NavigationMotion.Back);
+        EnsureCatalogPage();
     }
     async void PickDate(CalendarDatePicker sender, CalendarDatePickerDateChangedEventArgs e)
     {

@@ -34,7 +34,7 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
     {
         get => Host.Vm.CatalogDetails[Host.Vm.Page]; set => Host.Vm.CatalogDetails[Host.Vm.Page] = value;
     }
-    string courseSearch = "";
+    string courseSearch { get => Host.Vm.CourseSearch; set => Host.Vm.CourseSearch = value; }
     bool Dark => (Resources!.Configuration!.UiMode & UiMode.NightMask) == UiMode.NightYes;
     Color Ink => C(Dark ? "EDF3ED" : "1C342B");
     Color Secondary => C(Dark ? "A0ADA4" : "7B8780");
@@ -176,7 +176,7 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
     string Metadata(Course c, bool showMissingClassroom = false) => string.Join("   ·   ", new[] { c.Classroom ?? (showMissingClassroom ? "教室暂未提供" : null), c.Teacher }.Where(s => !string.IsNullOrWhiteSpace(s)));
     void RenderContent()
     {
-        var y = scroll!.ScrollY;
+        var y = scroll!.IsLaidOut ? scroll.ScrollY : Host.Vm.ScrollPositions.GetValueOrDefault(SceneKey(Route));
         if (Host.Vm.Page == 1 && Route is null && UpdateExistingWeek()) return;
         if (Host.Vm.Page == 2 && Route is null && ReferenceEquals(coursePageBody, body) && updateCoursePage is not null)
         {
@@ -185,6 +185,9 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
             existingScroll.Post(() => existingScroll.ScrollTo(0, y));
             return;
         }
+        if (RetainCourseSchedule()) return;
+        if (RetainCatalogDetail()) return;
+        if (activeScene is not null) activeScene.ContentVersion++;
         body!.RemoveAllViews();
         if (activeScene is not null) activeScene.LargeTitle = null;
         scroll!.SetBackgroundColor(C(Dark ? "111A16" : "F6F7F2"));
@@ -195,9 +198,12 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
             RenderDetail(Model.Courses.FirstOrDefault(c => c.Id == d.Id && c.Day == d.Day) ?? d);
             return;
         }
+        if (Route == "course-schedule" && CurrentCatalogDetail is { } scheduledCourse)
+        { RenderCourseSchedule(scheduledCourse); return; }
         if (Route == "catalog-detail" && CurrentCatalogDetail is { } catalog)
         {
-            RenderCatalogDetail(Model.CatalogCourses.FirstOrDefault(c => c.Id == catalog.Id) ?? catalog);
+            RenderCatalogDetail(Model.AllCatalogCourses.FirstOrDefault(c => CourseSchedule.SameCourse(c, catalog)) ?? catalog);
+            var detailScroll = scroll; detailScroll.Post(() => detailScroll.ScrollTo(0, y));
             return;
         }
         if (Route is not null)
@@ -648,9 +654,9 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
     {
         if (Route is null)
             return false;
-        Route = Route == "source" ? "about" : null;
+        Route = ParentRoute(Route);
         CurrentDetail = null;
-        CurrentCatalogDetail = null;
+        if (Route != "catalog-detail") CurrentCatalogDetail = null;
         Host.DetailCourseId = null;
         Host.DetailCourseDay = null;
         Render();
@@ -665,11 +671,15 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
     }
     public void CatalogDetail(CatalogCourse course)
     {
+        if (CurrentCatalogDetail is not { } prior || !CourseSchedule.SameCourse(prior, course))
+            foreach (var childRoute in new[] { "catalog-detail", "course-schedule" })
+            { var key = SceneKey(childRoute); scenes.Remove(key); Host.Vm.ScrollPositions.Remove(key); }
         CurrentCatalogDetail = course;
         _ = Navigate("catalog-detail");
     }
     public void ToolbarAction(int id)
     {
+        if (Route == "course-schedule") return;
         if (id == 10)
             QuickAccounts();
         else if (id == 11)

@@ -15,7 +15,7 @@ public sealed partial class MainWindow
     {
         if (RefreshButton is null) return;
         var date = RefreshDate;
-        var visible = section is "today" or "schedule" || section == "courses" && route is null;
+        var visible = route != "course-schedule" && (section is "today" or "schedule" || section == "courses" && route is null);
         var refreshing = route == "catalog-detail" && catalogDetail is { } detailCourse ? Model.IsAttendanceRefreshing(detailCourse.Id)
             : section == "courses" ? Model.IsCatalogRefreshing : Model.IsLoadingCourses(date) || Model.IsScheduleRefreshing || requestedRefreshes.Contains((Model.Generation, section, date));
         var title = route == "catalog-detail" ? "刷新学校考勤" : section == "schedule" ? "刷新课表" : section == "courses" ? "刷新课程目录" : "刷新课程";
@@ -32,6 +32,7 @@ public sealed partial class MainWindow
 
     async Task RefreshCurrentCoursesAsync()
     {
+        if (route == "course-schedule") return;
         var model = Model;
         if (route == "catalog-detail" && catalogDetail is { } linked) { await model.RefreshAttendanceAsync(linked.Id, true); return; }
         if (section == "schedule" && route is null) { if (Model.ScheduleMode == ScheduleMode.Week) await Model.RefreshScheduleAsync(); else await Model.CheckDayAsync(Model.SelectedDate, true); return; }
