@@ -5,18 +5,19 @@
     <ApplicationId Condition="'$(ActionsBuild)' == 'true'">cn.ucas.signin.githubactions</ApplicationId>
     <ApplicationTitle>果壳签到</ApplicationTitle>
     <AndroidManifest>AndroidManifest.xml</AndroidManifest><AndroidPackageFormats>apk</AndroidPackageFormats>
-    <AndroidEnableMarshalMethods>false</AndroidEnableMarshalMethods><EmbedAssembliesIntoApk>true</EmbedAssembliesIntoApk>
+    <AndroidEnableMarshalMethods>false</AndroidEnableMarshalMethods>
     <JsonSerializerIsReflectionEnabledByDefault>true</JsonSerializerIsReflectionEnabledByDefault>
     <NuGetLockFilePath>packages.$(Configuration).lock.json</NuGetLockFilePath>
     <AndroidManifestPlaceholders>debuggable=false;applicationLabel=$(ApplicationTitle)</AndroidManifestPlaceholders>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
-    <!-- With embedded assemblies, optimization disables the Android debug runtime and packaged symbols. -->
+    <!-- Fast deployment sends changed assemblies to the device without rebuilding and reinstalling the APK. -->
     <Optimize>false</Optimize>
+    <EmbedAssembliesIntoApk>false</EmbedAssembliesIntoApk>
     <RuntimeIdentifiers>android-arm64;android-x64</RuntimeIdentifiers>
     <AndroidManifestPlaceholders>debuggable=true;applicationLabel=$(ApplicationTitle)</AndroidManifestPlaceholders>
   </PropertyGroup>
-  <PropertyGroup Condition="'$(Configuration)' == 'Release'"><RuntimeIdentifiers>android-arm;android-arm64</RuntimeIdentifiers><AndroidPackageFormats>apk;aab</AndroidPackageFormats></PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'"><RuntimeIdentifiers>android-arm;android-arm64</RuntimeIdentifiers><AndroidPackageFormats>apk;aab</AndroidPackageFormats><EmbedAssembliesIntoApk>true</EmbedAssembliesIntoApk></PropertyGroup>
   <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''"><RuntimeIdentifiers>$(RuntimeIdentifier)</RuntimeIdentifiers></PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../../packages/dotnet/UCASSignIn.Core/UCASSignIn.Core.csproj" GlobalPropertiesToRemove="RuntimeIdentifier;RuntimeIdentifiers;SelfContained" />

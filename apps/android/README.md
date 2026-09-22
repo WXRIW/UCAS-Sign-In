@@ -14,7 +14,9 @@ C# / .NET 10 for Android，原生 Material 3，无 MAUI、无 WebView。最低 A
 
 打开 `UCASSignIn.Android.slnx`，将 `UCASSignIn.Android` 设为启动项目，选择 `Debug | Any CPU` 和已连接的 Android 真机或模拟器，然后按 F5。解决方案已启用应用项目的“部署”，VS 会构建、安装应用并附加托管调试器；共享核心与测试项目不参与部署。真机需开启 USB 调试并授权当前电脑。
 
-Debug 配置关闭代码优化，使 Android SDK 启用调试运行时并将调试符号打包到 APK；仅设置清单中的 `android:debuggable=true` 不能替代这两项。APK 仍嵌入全部程序集，可单独安装。若 VS 已打开旧配置，重新加载解决方案后再启动调试，并在“配置管理器”确认 Android 应用的“生成”和“部署”均已勾选。
+Debug 配置关闭代码优化并启用程序集快速部署：首次 F5 会安装 APK，之后仅改动 C# 时，VS 可将变化的程序集直接部署到手机，避免每次重新打包、安装整个 APK。首次构建、资源或清单改动仍可能需要完整打包。Debug 仍保留托管调试运行时和调试符号；仅设置清单中的 `android:debuggable=true` 不能替代这些配置。若 VS 已打开旧配置，重新加载解决方案后再启动调试，并在“配置管理器”确认 Android 应用的“生成”和“部署”均已勾选。
+
+快速部署要求设备允许 `run-as`；本项目最低 API 23 已满足系统版本要求。个别设备若报 XA0129、XA0133 等快速部署错误，可在 VS 的 Android 项目属性中关闭“快速部署”，或临时传入 `-p:EmbedAssembliesIntoApk=true` 构建。快速部署的 Debug APK 依赖 VS 部署的程序集，不能作为独立安装包分发；需要单独安装调试包时也使用此覆盖参数。
 
 ### 命令行
 
@@ -26,7 +28,7 @@ dotnet build apps/android/UCASSignIn.Android/UCASSignIn.Android.csproj -c Debug
 dotnet build apps/android/UCASSignIn.Android/UCASSignIn.Android.csproj -c Release
 ```
 
-Debug 输出包含 ARM64 与 x86_64 的开发密钥签名 APK，既可安装到真机，也可用于模拟器。Debug 与 Release 分别维护依赖锁文件，可在还原命令中加入 `--locked-mode -p:Configuration=Debug` 或 `Release` 验证。普通构建输出位于应用的 `bin/<配置>/net10.0-android/`。
+Debug 默认支持 ARM64 真机与 x86_64 模拟器；命令行只针对 ARM64 真机构建时可加 `-r android-arm64`，减少另一架构的构建工作。Debug 与 Release 分别维护依赖锁文件，可在还原命令中加入 `--locked-mode -p:Configuration=Debug` 或 `Release` 验证。普通构建输出位于应用的 `bin/<配置>/net10.0-android/`。
 
 ## 界面与系统能力
 
