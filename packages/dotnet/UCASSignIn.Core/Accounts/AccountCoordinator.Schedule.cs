@@ -121,6 +121,7 @@ public sealed partial class AccountCoordinator
                 if (stored is { Version: CourseCatalogCache.CurrentVersion } && stored.AccountId == account.Id && stored.SemesterId == term.Id
                     && stored.Courses.All(c => c.SemesterId == term.Id)) { semesterCatalogs[term.Id] = stored.Courses; identityUpdates[term.Id] = stored.UpdatedAt; }
             }
+            if (SelectedSemester is { } selected) UpdateSelectedCatalog(selected.Id);
             IdentityVersion++;
         }
         var days = await scheduleStore.CachedDaysAsync(account.Id, lifetime.Token);
@@ -367,6 +368,7 @@ public sealed partial class AccountCoordinator
         if (SelectedSemester?.Id == term.Id && CatalogUpdatedAt is { } updated
             && (!identityUpdates.TryGetValue(term.Id, out var previous) || updated > previous))
         { semesterCatalogs[term.Id] = CatalogCourses; identityUpdates[term.Id] = updated; }
+        UpdateSelectedCatalog(term.Id);
         if (!force && identityUpdates.TryGetValue(term.Id, out var at) && CachePolicy.Fresh(at, clock.GetUtcNow()))
         { identityErrors.Remove(term.Id); retryAt.Remove("identity:" + term.Id); return Task.CompletedTask; }
         if (identityReads.TryGetValue(term.Id, out var existing)) return existing;
@@ -379,6 +381,13 @@ public sealed partial class AccountCoordinator
         var marked = Semesters.Where(s => s.IsCurrent).Take(2).ToArray();
         SelectedSemester = marked.Length == 1 ? marked[0] : CourseIdentity.Semester(CourseTime.Today(clock), Semesters);
     }
+    void UpdateSelectedCatalog(string semesterId)
+    {
+        // The schedule and course page share cached data, including valid empty catalogs.
+        if (SelectedSemester?.Id == semesterId && semesterCatalogs.TryGetValue(semesterId, out var values)
+            && identityUpdates.TryGetValue(semesterId, out var updated))
+        { CatalogCourses = values; CatalogUpdatedAt = updated; }
+    }
     async Task LoadIdentityCatalogAsync(SchoolSemester term, StoredAccount account, Guid epoch, CancellationToken ct, bool force)
     {
         await Task.Yield();
@@ -389,13 +398,13 @@ public sealed partial class AccountCoordinator
             if (stored is not null && (stored.AccountId != account.Id || stored.SemesterId != term.Id
                 || stored.Version != CourseCatalogCache.CurrentVersion || stored.Courses.Any(c => c.SemesterId != term.Id))) stored = null;
             if (stored is not null && !identityUpdates.ContainsKey(term.Id))
-            { semesterCatalogs[term.Id] = stored.Courses; identityUpdates[term.Id] = stored.UpdatedAt; IdentityVersion++; Notify(); }
+            { semesterCatalogs[term.Id] = stored.Courses; identityUpdates[term.Id] = stored.UpdatedAt; UpdateSelectedCatalog(term.Id); IdentityVersion++; Notify(); }
             if (force || stored is not null && !CachePolicy.Fresh(stored.UpdatedAt, clock.GetUtcNow())) stored = null;
             var values = stored?.Courses ?? (await ScheduleRequestAsync(s => school.CatalogCoursesAsync(s, term.Id, ct), epoch)).ToList();
             if (epoch != Generation) return;
             if (values.Any(c => c.SemesterId != term.Id)) throw new IOException("学校返回了其他学期的课程");
             semesterCatalogs[term.Id] = values; identityUpdates[term.Id] = stored?.UpdatedAt ?? clock.GetUtcNow(); identityErrors.Remove(term.Id); IdentityVersion++; layouts.Clear();
-            if (SelectedSemester?.Id == term.Id) { CatalogCourses = values; CatalogUpdatedAt = identityUpdates[term.Id]; }
+            UpdateSelectedCatalog(term.Id);
             retryAt.Remove("identity:" + term.Id); failures.Remove("identity:" + term.Id);
             if (stored is null && catalog is not null) await catalog.SaveCatalogAsync(account.Id, term.Id, new(CourseCatalogCache.CurrentVersion, account.Id, term.Id, clock.GetUtcNow(), values.ToList()), ct);
             if (epoch == Generation) Notify();

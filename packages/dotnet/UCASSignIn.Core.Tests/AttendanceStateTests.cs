@@ -287,6 +287,51 @@ public sealed class AttendanceStateTests
         Assert.Null(await h.Model.LoadReminderCourseAsync(account, h.Course.Id, day));
         Assert.Equal(before, h.School.Reads); Assert.Equal(selected, h.Model.SelectedDate);
     }
+    [Theory] [InlineData(false, false)] [InlineData(false, true)] [InlineData(true, false)] [InlineData(true, true)]
+    public async Task ColdStartRestoresCatalogWithoutManualRefresh(bool offline, bool empty)
+    {
+        var h = new Harness();
+        if (empty) h.School.CatalogQuery = _ => Task.FromResult<IReadOnlyList<CatalogCourse>>([]);
+        await h.Model.InitializeAsync();
+        var expected = h.Model.CatalogCourses.ToArray();
+        if (!empty) Assert.NotEmpty(expected);
+        var updated = h.Model.CatalogUpdatedAt;
+        var reads = (h.School.SemesterReads, h.School.CatalogReads);
+        if (offline)
+        {
+            h.School.Query = (_, _) => throw new IOException("offline");
+            h.School.SemesterQuery = () => throw new IOException("offline");
+            h.School.CatalogQuery = _ => throw new IOException("offline");
+        }
+        var restarted = new AccountCoordinator(h.School, h.Accounts, h.Data, h.Data, new FakeReminders(), h.Clock);
+        await restarted.InitializeAsync();
+        Assert.Equal(expected, restarted.CatalogCourses);
+        Assert.Equal(updated, restarted.CatalogUpdatedAt);
+        await restarted.RefreshCatalogAsync();
+        Assert.Equal(expected, restarted.CatalogCourses);
+        Assert.Equal(updated, restarted.CatalogUpdatedAt);
+        Assert.Null(restarted.CatalogError);
+        Assert.Equal(reads, (h.School.SemesterReads, h.School.CatalogReads));
+    }
+    [Fact] public async Task ColdStartKeepsExpiredCatalogVisibleWhenRefreshFails()
+    {
+        var h = new Harness(); await h.Model.InitializeAsync();
+        var expected = h.Model.CatalogCourses.ToArray(); Assert.NotEmpty(expected);
+        var stored = h.Data.Catalogs["a|fall"];
+        var updated = h.Clock.Now.AddDays(-7);
+        h.Data.Catalogs["a|fall"] = stored with { UpdatedAt = updated };
+        h.School.CatalogQuery = _ => throw new IOException("offline");
+        var restarted = new AccountCoordinator(h.School, h.Accounts, h.Data, h.Data, new FakeReminders(), h.Clock);
+        await restarted.InitializeAsync();
+        Assert.Equal(expected, restarted.CatalogCourses);
+        Assert.Equal(updated, restarted.CatalogUpdatedAt);
+        var reads = h.School.CatalogReads;
+        await restarted.RefreshCatalogAsync();
+        Assert.Equal(expected, restarted.CatalogCourses);
+        Assert.Equal(updated, restarted.CatalogUpdatedAt);
+        Assert.NotNull(restarted.CatalogError);
+        Assert.Equal(reads, h.School.CatalogReads);
+    }
     [Fact] public async Task CatalogAndDetailShareSevenDayCacheAndInFlightRequest()
     {
         var h = new Harness(); await h.Model.InitializeAsync(); var before = h.School.CatalogReads;
