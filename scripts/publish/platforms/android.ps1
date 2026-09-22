@@ -69,8 +69,8 @@ try {
     if ($ActionsBuild) { $arguments += '-p:ActionsBuild=true' }
     & dotnet @arguments
     if ($LASTEXITCODE -ne 0) { throw 'Android publish failed.' }
-    $signedPackages = @(Get-ChildItem -LiteralPath $stagingDirectory -Filter '*-Signed.apk' -File -Recurse)
-    if ($signedPackages.Count -ne 1) { throw "Expected one signed APK, found $($signedPackages.Count)." }
+    $signedPackages = @(Get-ChildItem -LiteralPath $stagingDirectory -Filter "$expectedApplicationId-Signed.apk" -File -Recurse)
+    if ($signedPackages.Count -ne 1) { throw "Expected one signed APK for $expectedApplicationId, found $($signedPackages.Count)." }
     $signedApk = $signedPackages[0].FullName
 
     $verification = & $java -jar $apkSigner verify --verbose --print-certs $signedApk 2>&1
