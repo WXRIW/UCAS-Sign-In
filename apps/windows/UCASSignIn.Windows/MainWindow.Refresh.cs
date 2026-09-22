@@ -9,13 +9,14 @@ public sealed partial class MainWindow
 {
     readonly HashSet<(Guid Generation, string Section, DateOnly Date)> requestedRefreshes = [];
 
-    DateOnly RefreshDate => section == "schedule" ? Model.SelectedDate : CourseTime.Today();
+    DateOnly RefreshDate => route == "detail" && detail is { } current ? CourseTime.Date(current.Day)
+        : section == "schedule" ? Model.SelectedDate : CourseTime.Today();
 
     void UpdateRefreshButton()
     {
         if (RefreshButton is null) return;
         var date = RefreshDate;
-        var visible = route != "course-schedule" && (section is "today" or "schedule" || section == "courses" && route is null);
+        var visible = route != "course-schedule" && (section is "today" or "schedule" || section == "courses" && route is null or "catalog-detail");
         var refreshing = route == "catalog-detail" && catalogDetail is { } detailCourse ? Model.IsAttendanceRefreshing(detailCourse.Id)
             : section == "courses" ? Model.IsCatalogRefreshing : Model.IsLoadingCourses(date) || Model.IsScheduleRefreshing || requestedRefreshes.Contains((Model.Generation, section, date));
         var title = route == "catalog-detail" ? "刷新学校考勤" : section == "schedule" ? "刷新课表" : section == "courses" ? "刷新课程目录" : "刷新课程";

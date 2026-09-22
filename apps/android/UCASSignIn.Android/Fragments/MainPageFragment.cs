@@ -668,7 +668,6 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
         Host.DetailCourseId = course.Id;
         Host.DetailCourseDay = course.Day;
         _ = Navigate("detail");
-        _ = Host.Run(() => Model.EnterDayAsync(CourseTime.Date(course.Day)));
     }
     public void CatalogDetail(CatalogCourse course)
     {

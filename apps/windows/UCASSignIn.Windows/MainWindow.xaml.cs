@@ -55,11 +55,7 @@ public sealed partial class MainWindow : Window
             if (Model.IsForeground)
             {
                 ShowPendingSignInError(); _ = Run(Tick);
-                if (ready && route == "detail" && detail is { } current) _ = Run(() => Model.EnterDayAsync(CourseTime.Date(current.Day)));
-                else if (ready && route is null && (section == "today" || section == "schedule" && Model.ScheduleMode == ScheduleMode.Day))
-                    _ = Run(() => Model.EnterDayAsync(section == "today" ? CourseTime.Today() : Model.SelectedDate));
-                if (route is "catalog-detail" or "course-schedule") EnsureCatalogPage();
-                else if (section == "courses") _ = Run(() => Model.RefreshCatalogAsync());
+                if (ready) EnsureCurrentPage();
             }
         };
         Closed += (_, _) => { closed = true; Model.ScheduleProgressChanged -= UpdateWeekProgress; motionSettings.TextScaleFactorChanged -= ScheduleTextScaleChanged; Model.IsForeground = false; timer.Stop(); qrCancellation?.Cancel(); activeDialog?.Hide(); };
@@ -131,12 +127,22 @@ public sealed partial class MainWindow : Window
         paths[section] = (route, detail, catalogDetail);
         section = (args.SelectedItem as NavigationViewItem)?.Tag?.ToString() ?? "today";
         (route, detail, catalogDetail) = paths.GetValueOrDefault(section);
-        EnsureCatalogPage();
-        if (section == "today" && route is null) _ = Run(() => Model.EnterDayAsync(CourseTime.Today()));
+        EnsureCurrentPage();
         qrCancellation?.Cancel();
-        if (section == "schedule" && route is null) _ = Run(Model.EnterScheduleAsync);
         if (PageFrame is not null)
             Render();
+    }
+    void EnsureCurrentPage()
+    {
+        if (route == "detail" && detail is { } current)
+            _ = Run(() => Model.EnterDayAsync(CourseTime.Date(current.Day)));
+        else if (route is null)
+        {
+            if (section == "today") _ = Run(() => Model.EnterDayAsync(CourseTime.Today()));
+            else if (section == "schedule") _ = Run(Model.EnterScheduleAsync);
+            else if (section == "courses") _ = Run(() => Model.RefreshCatalogAsync());
+        }
+        EnsureCatalogPage();
     }
     void NavigationDisplayModeChanged(NavigationView sender, NavigationViewDisplayModeChangedEventArgs args)
     {
@@ -180,16 +186,14 @@ public sealed partial class MainWindow : Window
         await Run(async () =>
         {
             var values = ToastArguments.Parse(args);
-            if (!values.Contains("account") || Model.ActiveAccount?.Id != values["account"] || Model.IsDemo)
+            if (!values.Contains("account") || !values.Contains("course") || !values.Contains("day")
+                || Model.ActiveAccount?.Id != values["account"] || Model.IsDemo)
                 return;
-            if (values.Contains("day")) {
-                await Model.SelectDateAsync(CourseTime.Date(values["day"]));
-                await Model.EnterDayAsync(CourseTime.Date(values["day"]));
-            }
+            var course = await Model.LoadReminderCourseAsync(values["account"], values["course"], values["day"]);
+            if (course is null) return;
+            paths["schedule"] = ("detail", course, null);
             await Select(1);
-            var course = Model.Courses.FirstOrDefault(c => c.Id == values["course"] && c.Day == values["day"]);
-            if (course is not null)
-                await Detail(course);
+            await Detail(course);
         });
     }
 }

@@ -117,8 +117,6 @@ public sealed partial class MainPageFragment
         }
         void UpdatePage()
         {
-            if (Model.ShouldRefreshCatalog && !Model.IsCatalogRefreshing)
-                _ = Host.Run(() => Model.RefreshCatalogAsync());
             semesterLabel.Text = Model.SelectedSemester?.Name ?? "";
             semesterLabel.Visibility = Model.SelectedSemester is null ? ViewStates.Gone : ViewStates.Visible;
             updatedLabel.Text = Model.CatalogUpdatedAt is { } updated ? $"课程目录 · 最后更新 {updated.ToLocalTime():M-d HH:mm}" : "";

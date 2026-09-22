@@ -228,6 +228,65 @@ public sealed class AttendanceStateTests
         await h.Model.InitializeAsync(); Assert.Equal(AttendanceStatus.Unknown, h.Model.AttendanceStatusFor(h.Display));
         Assert.Equal("状态待同步", h.Model.AttendanceLabel(h.Display)); Assert.False(h.Model.CanSign(h.Display));
     }
+    [Fact] public async Task DemoSignShowsSuccessWithoutWaitingForSchoolVerification()
+    {
+        var h = new Harness(); await h.Model.InitializeDemoAsync();
+        var course = h.Model.Courses.First(c => c.Day == "20260916" && !c.Signed);
+        await h.Model.SignAsync(course, h.Model.Generation);
+        var signed = h.Model.Courses.Single(c => c.Id == course.Id && c.Day == course.Day);
+        Assert.True(signed.Signed); Assert.Equal("已签到", h.Model.AttendanceLabel(signed));
+        Assert.True(Assert.Single(h.Model.Records).Succeeded); Assert.Equal(0, h.School.Reads);
+        await h.Model.RefreshScheduleAsync(); await h.Model.TickAsync();
+        Assert.Equal("已签到", h.Model.AttendanceLabel(signed));
+    }
+    [Theory] [InlineData(ScheduleMode.Day)] [InlineData(ScheduleMode.Week)]
+    public async Task ReminderLoadsTargetDayOnceAndDoesNotSubmit(ScheduleMode mode)
+    {
+        var h = new Harness(); await h.Model.InitializeAsync();
+        h.Model.ScheduleMode = mode; h.Clock.Now += TimeSpan.FromSeconds(31);
+        var before = h.School.Reads;
+        var course = await h.Model.LoadReminderCourseAsync("a", h.Course.Id, "20260916");
+        Assert.Equal(h.Course.Id, course?.Id); Assert.Equal(before + 1, h.School.Reads);
+        await h.Model.EnterDayAsync(new(2026, 9, 16));
+        Assert.Equal(before + 1, h.School.Reads); Assert.Empty(h.Model.Records);
+    }
+    [Theory] [InlineData(ScheduleMode.Day)] [InlineData(ScheduleMode.Week)]
+    public async Task FailedReminderReadDoesNotOpenCachedCourseOrRetry(ScheduleMode mode)
+    {
+        var h = new Harness(); await h.Model.InitializeAsync();
+        h.Model.ScheduleMode = mode; h.Clock.Now += TimeSpan.FromSeconds(31);
+        h.School.Query = (_, _) => throw new IOException("offline"); var before = h.School.Reads;
+        Assert.Null(await h.Model.LoadReminderCourseAsync("a", h.Course.Id, "20260916"));
+        Assert.Equal(before + 1, h.School.Reads); Assert.NotEmpty(h.Model.Courses);
+    }
+    [Fact] public async Task ReminderCannotOpenAnotherAccountAfterPendingRead()
+    {
+        var h = new Harness(); h.Accounts.Vault = new(1, [TestData.Account(), TestData.Account("b")], "a");
+        await h.Model.InitializeAsync(); h.Clock.Now += TimeSpan.FromSeconds(31);
+        var release = new TaskCompletionSource<CourseQueryResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        h.School.Query = (session, _) => session.StudentNo == "a" ? release.Task : Task.FromResult(new CourseQueryResult([h.Course], ""));
+        var pending = h.Model.LoadReminderCourseAsync("a", h.Course.Id, "20260916");
+        await h.Model.SwitchAsync("b");
+        release.SetResult(new([h.Course], ""));
+        Assert.Null(await pending); Assert.Equal("b", h.Model.ActiveAccount?.Id);
+    }
+    [Fact] public async Task ReminderCannotOverrideNewerDateSelection()
+    {
+        var h = new Harness(); await h.Model.InitializeAsync(); h.Clock.Now += TimeSpan.FromSeconds(31);
+        var release = new TaskCompletionSource<CourseQueryResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        h.School.Query = (_, _) => release.Task;
+        var pending = h.Model.LoadReminderCourseAsync("a", h.Course.Id, "20260916");
+        await h.Model.SelectDateAsync(new(2026, 9, 17));
+        release.SetResult(new([h.Course], ""));
+        Assert.Null(await pending); Assert.Equal(new DateOnly(2026, 9, 17), h.Model.SelectedDate);
+    }
+    [Theory] [InlineData("old-account", "20260916")] [InlineData("a", "invalid")]
+    public async Task InvalidReminderDoesNotQueryOrChangeSelection(string account, string day)
+    {
+        var h = new Harness(); await h.Model.InitializeAsync(); var before = h.School.Reads; var selected = h.Model.SelectedDate;
+        Assert.Null(await h.Model.LoadReminderCourseAsync(account, h.Course.Id, day));
+        Assert.Equal(before, h.School.Reads); Assert.Equal(selected, h.Model.SelectedDate);
+    }
     [Fact] public async Task CatalogAndDetailShareSevenDayCacheAndInFlightRequest()
     {
         var h = new Harness(); await h.Model.InitializeAsync(); var before = h.School.CatalogReads;

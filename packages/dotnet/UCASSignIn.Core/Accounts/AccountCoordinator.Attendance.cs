@@ -14,7 +14,7 @@ public sealed partial class AccountCoordinator
     public string AttendanceLabel(Course c)
     {
         var key = AttendanceKey(c);
-        if (attendanceStates.TryGetValue(key, out var state) && state.PendingVerification)
+        if (!IsDemo && attendanceStates.TryGetValue(key, out var state) && state.PendingVerification)
             return "已签到 · 待核验";
         return AttendanceStatusFor(c) switch { AttendanceStatus.Signed => "已签到", AttendanceStatus.Unsigned => "未签到", _ => "状态待同步" };
     }

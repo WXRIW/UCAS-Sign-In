@@ -587,7 +587,7 @@ public sealed partial class MainWindow
         detail = null;
         if (route != "catalog-detail") catalogDetail = null;
         Render(NavigationMotion.Back);
-        EnsureCatalogPage();
+        EnsureCurrentPage();
     }
     async void PickDate(CalendarDatePicker sender, CalendarDatePickerDateChangedEventArgs e)
     {

@@ -151,6 +151,7 @@ public sealed class MainActivity : AppCompatActivity
         {
             var demoLaunch = Model.IsDemo || Intent?.GetBooleanExtra("demo", false) == true || savedInstanceState?.GetBoolean("demoState", false) == true;
             if (demoLaunch) { if (!Model.IsDemo) await Model.InitializeDemoAsync(); } else await Model.InitializeAsync();
+            if (IsDestroyed || IsFinishing) return;
             if (!demoLaunch) AndroidAutoSignService.Sync(UiContext, Model);
             if (Intent?.GetBooleanExtra("demo", false) == true)
             {
@@ -159,10 +160,12 @@ public sealed class MainActivity : AppCompatActivity
             ready = true;
             // The retained view model already owns this date after rotation/theme changes.
             // Restoring the same selection must not act like an explicit date selection.
-            if (savedInstanceState?.GetString("selectedDate") is { } selected && CourseTime.Date(selected) != Model.SelectedDate)
-                await Model.SelectDateAsync(CourseTime.Date(selected));
             if (savedInstanceState is not null && savedInstanceState.GetString("accountState") == (Model.IsDemo ? "demo" : Model.ActiveAccount?.Id))
             {
+                var generation = Model.Generation;
+                if (savedInstanceState.GetString("selectedDate") is { } selected && CourseTime.Date(selected) != Model.SelectedDate)
+                    await Model.SelectDateAsync(CourseTime.Date(selected));
+                if (IsDestroyed || IsFinishing || generation != Model.Generation) return;
                 Vm.CourseSearch = savedInstanceState.GetString("courseSearch") ?? "";
                 if (savedInstanceState.GetString("scrollPositions") is { } positions)
                     foreach (var item in System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, int>>(positions) ?? []) Vm.ScrollPositions[item.Key] = item.Value;
@@ -337,14 +340,7 @@ public sealed class MainActivity : AppCompatActivity
         foreground?.Cancel();
         foreground = new();
         _ = Ticks(foreground.Token);
-        if (ready && Vm.Routes[Vm.Page] == "detail" && DetailCourseDay is { } detailDay)
-            _ = Run(() => Model.EnterDayAsync(CourseTime.Date(detailDay)));
-        else if (ready && Vm.Routes[Vm.Page] is null && (Vm.Page == 0 || Vm.Page == 1 && Model.ScheduleMode == ScheduleMode.Day))
-            _ = Run(() => Model.EnterDayAsync(Vm.Page == 0 ? CourseTime.Today() : Model.SelectedDate));
-        if (ready && Vm.Routes[Vm.Page] is "catalog-detail" or "course-schedule")
-            page?.EnsureCatalogPage();
-        else if (ready && Vm.Page == 2)
-            _ = Run(() => Model.RefreshCatalogAsync());
+        if (ready) page?.EnsureCurrentPage();
     }
     async Task Ticks(CancellationToken ct)
     {
@@ -404,17 +400,17 @@ public sealed class MainActivity : AppCompatActivity
         if (intent?.Action != "cn.ucas.signin.OPEN_COURSE" || intent.GetStringExtra("account") != Model.ActiveAccount?.Id || Model.IsDemo)
             return;
         var day = intent.GetStringExtra("day");
-        if (day is null)
+        if (day is null || intent.GetStringExtra("course") is not { } courseId)
             return;
-        await Model.SelectDateAsync(CourseTime.Date(day));
-        await Model.EnterDayAsync(CourseTime.Date(day));
+        intent.SetAction("");
+        var course = await Model.LoadReminderCourseAsync(intent.GetStringExtra("account")!, courseId, day);
+        if (course is null || IsDestroyed || IsFinishing) return;
+        Vm.Routes[1] = "detail";
+        Vm.Details[1] = course;
         Vm.Page = 1;
         navigation!.SelectedItemId = 2;
         ShowPage();
-        var course = Model.Courses.FirstOrDefault(c => c.Id == intent.GetStringExtra("course") && c.Day == day);
-        if (course is not null)
-            page?.Detail(course);
-        intent.SetAction("");
+        page?.Detail(course);
     }
     Task<bool> RequestNotificationPermission()
     {

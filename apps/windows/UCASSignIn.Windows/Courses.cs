@@ -51,8 +51,6 @@ public sealed partial class MainWindow
             Page.Children.Add(Card(Column(Text("连接账户后查看课程", 20, true), Text("课程目录来自学校当前学期，不会由日课表拼接。", 13, color: Secondary), Button("连接账户", () => Login(), true)), 24));
             return;
         }
-        if (Model.ShouldRefreshCatalog && !Model.IsCatalogRefreshing)
-            _ = Run(() => Model.RefreshCatalogAsync());
         if (Model.SelectedSemester is { } semester)
             Page.Children.Add(Text(semester.Name, 14, true));
         if (Model.CatalogUpdatedAt is { } updated)

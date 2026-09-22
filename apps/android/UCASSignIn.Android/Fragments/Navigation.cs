@@ -5,6 +5,7 @@ using Google.Android.Material.Transition;
 using Android.Widget;
 using AndroidX.SwipeRefreshLayout.Widget;
 using Google.Android.Material.AppBar;
+using UCASSignIn.Core;
 
 namespace UCASSignIn.Android.Fragments;
 
@@ -117,14 +118,24 @@ public sealed partial class MainPageFragment
         var next = GetScene(Route);
         if (previous != next) next.ContentReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
         UseScene(next);
-        if (previous != next && Host.Vm.Page == 1 && Route is null) _ = Host.Run(Model.EnterScheduleAsync);
-        if (previous != next && Host.Vm.Page == 0 && Route is null) _ = Host.Run(() => Model.EnterDayAsync(CourseTime.Today()));
         RenderContent();
         UpdatePageToolbar();
         if (previous != next) PresentScene(previous, next);
         else if (next.Root.Parent is null) sceneHost.AddView(next.Root, new FrameLayout.LayoutParams(-1, -1));
         ShowPendingSignInError();
-        if (previous != next) EnsureCatalogPage();
+        if (previous != next) EnsureCurrentPage();
+    }
+    public void EnsureCurrentPage()
+    {
+        if (Route == "detail" && CurrentDetail is { } current)
+            _ = Host.Run(() => Model.EnterDayAsync(CourseTime.Date(current.Day)));
+        else if (Route is null)
+        {
+            if (Host.Vm.Page == 0) _ = Host.Run(() => Model.EnterDayAsync(CourseTime.Today()));
+            else if (Host.Vm.Page == 1) _ = Host.Run(Model.EnterScheduleAsync);
+            else if (Host.Vm.Page == 2) _ = Host.Run(() => Model.RefreshCatalogAsync());
+        }
+        EnsureCatalogPage();
     }
     void ClearScenes()
     {
@@ -226,6 +237,7 @@ public sealed partial class MainPageFragment
         previewScene = null;
         backPreview = false;
         UpdatePageToolbar();
+        EnsureCurrentPage();
     }
     void UpdatePageToolbar()
     {
