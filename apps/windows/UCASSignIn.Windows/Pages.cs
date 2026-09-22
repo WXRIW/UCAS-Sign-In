@@ -343,10 +343,10 @@ public sealed partial class MainWindow
         foreach (var c in courses)
         {
             var line = new Border { Width = 3, Height = 38, CornerRadius = new(2), Background = c.Signed ? Pale : Green };
-            var badge = Text(c.Signed ? "已签到" : "未签到", 12, color: c.Signed ? Secondary : Green);
+            var badge = Text(Model.AttendanceLabel(c), 12, color: c.Signed ? Secondary : Green);
             var content = Across(Leading(line, Column(Text(c.Name, 16, true), Text(Metadata(c), 12, color: Secondary))), Row(badge, new FontIcon { Glyph = "\uE76C", FontSize = 10, Foreground = Secondary }));
             var open = ActionCard(content, () => Detail(c));
-            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(open, $"{c.Name}，{c.TimeRange}，{(c.Signed ? "已签到" : "未签到")}");
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(open, $"{c.Name}，{c.TimeRange}，{(Model.AttendanceLabel(c))}");
             var grid = new Grid { ColumnSpacing = 12 };
             grid.ColumnDefinitions.Add(new()
             {
@@ -595,10 +595,11 @@ public sealed partial class MainWindow
             await Run(() => Model.SelectScheduleDateAsync(DateOnly.FromDateTime(d.DateTime), datePickerGeneration, datePickerSemester));
     }
     async void RefreshClicked(object sender, RoutedEventArgs e) => await Run(RefreshCurrentCoursesAsync);
-    Task Detail(Course course)
+    async Task Detail(Course course)
     {
         detail = course;
-        return Navigate("detail");
+        await Navigate("detail");
+        await Model.EnterDayAsync(CourseTime.Date(course.Day));
     }
     Task CatalogDetail(CatalogCourse course)
     {

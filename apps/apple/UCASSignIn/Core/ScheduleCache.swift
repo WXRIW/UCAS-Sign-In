@@ -24,7 +24,7 @@ public struct SemesterScheduleCache: Codable, Sendable {
     }
 
     public func needsRefresh(at date: Date) -> Bool {
-        courseIdentityVersion != 1 || date.timeIntervalSince(updatedAt) >= 7 * 24 * 60 * 60 || updatedAt > date
+        courseIdentityVersion != 1 || !CachePolicy.isFresh(updatedAt, at: date)
     }
 }
 

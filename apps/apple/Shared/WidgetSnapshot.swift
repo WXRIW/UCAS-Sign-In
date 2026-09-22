@@ -8,6 +8,7 @@ struct WidgetCourse: Codable, Identifiable, Equatable {
     var startTime: Date
     var endTime: Date
     var isCheckedIn: Bool
+    var attendanceLabel: String? = nil
 }
 
 struct WidgetSnapshot: Codable, Equatable {

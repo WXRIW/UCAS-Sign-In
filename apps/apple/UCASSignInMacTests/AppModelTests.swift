@@ -1345,10 +1345,152 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(weeks, 1)
     }
 
+    func testLaterSemesterSyncCannotDowngradeConfirmedAttendance() async throws {
+        let signed = courseResponse("课程").replacingOccurrences(of: "\"signStatus\":\"0\"", with: "\"signStatus\":\"1\"")
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(signed)],
+            "semesters:session-a": [.init(scheduleSemesterResponse())],
+            "weekly:session-a": [.init(scheduleWeekResponse())]
+        ])
+        let store = MemoryAccountStore(accounts: [accountA], active: accountA.id)
+        let model = makeModel(store, transport)
+        await model.restore(); XCTAssertTrue(try XCTUnwrap(model.todayCourses.first).signed)
+        await model.synchronizeSchedules()
+        XCTAssertTrue(try XCTUnwrap(model.todayCourses.first).signed)
+        XCTAssertNotNil(defaults.data(forKey: "attendance-state-\(accountA.id)"))
+        let offline = makeModel(store, PlannedTransport([:]))
+        await offline.restore()
+        XCTAssertTrue(try XCTUnwrap(offline.todayCourses.first).signed)
+    }
+
+    func testSuccessfulSignConflictWaitsForEntryWithoutPolling() async throws {
+        let schoolNow = CourseTime.parse(day: SchoolDate.key(.now), time: "08:30")!
+        let signed = courseResponse("课程").replacingOccurrences(of: "\"signStatus\":\"0\"", with: "\"signStatus\":\"1\"")
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("课程")), .init(courseResponse("课程")), .init(signed)],
+            "clock": [.init("{\"STATUS\":\"0\",\"timestamp\":\(Int64(schoolNow.timeIntervalSince1970 * 1000))}")],
+            "sign": [.init(#"{"STATUS":"0","ERRCODE":"0","result":{"stuSignStatus":"1","stuSignId":"record"}}"#)]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), transport)
+        await model.restore()
+        await model.sign(try XCTUnwrap(model.todayCourses.first))
+        let course = try XCTUnwrap(model.todayCourses.first)
+        XCTAssertTrue(course.signed)
+        XCTAssertEqual(model.attendanceLabel(for: course), "已签到 · 待核验")
+        for second in [5, 30, 120, 150, 3600] {
+            model.attendanceNow = { schoolNow.addingTimeInterval(Double(second)) }
+            await model.foregroundTick()
+            XCTAssertEqual(model.attendanceLabel(for: course), "已签到 · 待核验")
+        }
+        let reads = await transport.count("courses:session-a")
+        let details = await transport.count("attendance:session-a")
+        let signs = await transport.count("sign")
+        XCTAssertEqual(reads, 2); XCTAssertEqual(details, 0); XCTAssertEqual(signs, 1)
+        await model.enterDay(.now)
+        let after = await transport.count("courses:session-a")
+        XCTAssertEqual(after, 3)
+        XCTAssertEqual(model.attendanceLabel(for: course), "已签到")
+    }
+
+    func testConcurrentPostSignDayReadersShareFailureWithoutAutomaticRetry() async throws {
+        let schoolNow = CourseTime.parse(day: SchoolDate.key(.now), time: "08:30")!
+        let gate = ResponseGate()
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("课程")), .init("invalid response", gate: gate)],
+            "clock": [.init("{\"STATUS\":\"0\",\"timestamp\":\(Int64(schoolNow.timeIntervalSince1970 * 1000))}")],
+            "sign": [.init(#"{"STATUS":"0","ERRCODE":"0","result":{"stuSignStatus":"1","stuSignId":"record"}}"#)]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), transport)
+        await model.restore()
+        let course = try XCTUnwrap(model.todayCourses.first)
+        let signing = Task { await model.sign(course) }
+        await assertEventually { await transport.count("courses:session-a") == 2 }
+        var joined = false
+        let reading = Task { joined = true; await model.refresh(on: .now) }
+        await assertEventually { joined }
+        await gate.open(); await signing.value; await reading.value
+        let reads = await transport.count("courses:session-a")
+        XCTAssertEqual(reads, 2)
+        XCTAssertEqual(model.attendanceLabel(for: course), "已签到 · 待核验")
+    }
+
+    func testConcurrentDetailReadersShareFailureWithoutAutomaticRetry() async throws {
+        let schoolNow = CourseTime.parse(day: SchoolDate.key(.now), time: "08:30")!
+        let gate = ResponseGate()
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("课程")), .init(courseResponse("课程"))],
+            "clock": [.init("{\"STATUS\":\"0\",\"timestamp\":\(Int64(schoolNow.timeIntervalSince1970 * 1000))}")],
+            "sign": [.init(#"{"STATUS":"0","ERRCODE":"0","result":{"stuSignStatus":"1","stuSignId":"record"}}"#)],
+            "attendance:session-a": [.init("invalid response", gate: gate)]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), transport)
+        await model.restore()
+        let course = try XCTUnwrap(model.todayCourses.first)
+        await model.sign(course)
+        let first = Task { await model.refreshAttendance(for: "stable-course") }
+        await assertEventually { await transport.count("attendance:session-a") == 1 }
+        var joined = false
+        let second = Task { joined = true; await model.refreshAttendance(for: "stable-course", force: true) }
+        await assertEventually { joined }
+        await gate.open(); await first.value; await second.value
+        let reads = await transport.count("attendance:session-a")
+        XCTAssertEqual(reads, 1)
+        XCTAssertEqual(model.attendanceLabel(for: course), "已签到 · 待核验")
+    }
+
+    func testManualSignUsesPageStateWithoutAnotherPreflightRead() async throws {
+        let schoolNow = CourseTime.parse(day: SchoolDate.key(.now), time: "08:32")!
+        let gate = ResponseGate()
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("课程")), .init(courseResponse("课程"))],
+            "clock": [.init("{\"STATUS\":\"0\",\"timestamp\":\(Int64(schoolNow.timeIntervalSince1970 * 1000))}")],
+            "sign": [.init(#"{"STATUS":"0","ERRCODE":"0","result":{"stuSignStatus":"1","stuSignId":"record"}}"#, gate: gate)]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), transport)
+        await model.restore()
+        model.setConfirmation(false)
+        model.attendanceNow = { schoolNow }
+        let course = try XCTUnwrap(model.todayCourses.first)
+        let signing = Task { await model.signManually(course) }
+        await assertEventually { await transport.count("sign") == 1 }
+        let before = await transport.count("courses:session-a")
+        XCTAssertEqual(before, 1)
+        await gate.open(); await signing.value
+        let after = await transport.count("courses:session-a")
+        XCTAssertEqual(after, 2)
+        model.attendanceNow = { schoolNow.addingTimeInterval(120) }
+        await model.signManually(course)
+        let repeated = await transport.count("courses:session-a")
+        let signs = await transport.count("sign")
+        XCTAssertEqual(repeated, 2); XCTAssertEqual(signs, 1)
+    }
+
+    func testWeekNavigationDoesNotReadHiddenDayAndEnteringDayIsThrottled() async throws {
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("课程")), .init(#"{"STATUS":"0","result":[]}"#)],
+            "semesters:session-a": [.init(scheduleSemesterResponse())],
+            "weekly:session-a": [.init(scheduleWeekResponse())]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), transport)
+        await model.restore(); await model.synchronizeSchedules()
+        let date = try XCTUnwrap(SchoolDate.week(containing: .now).first { SchoolDate.key($0) != SchoolDate.key(.now) })
+        model.scheduleMode = .week
+        await model.selectDate(date); await model.foregroundTick()
+        let before = await transport.count("courses:session-a")
+        XCTAssertEqual(before, 1)
+        model.scheduleMode = .day
+        await model.openScheduleDate(date); await model.openScheduleDate(date)
+        let after = await transport.count("courses:session-a")
+        XCTAssertEqual(after, 2)
+    }
+
     private func makeModel(_ store: MemoryAccountStore, _ transport: PlannedTransport,
                            notifications: TestNotifications? = nil, widgets: TestWidgets? = nil) -> AppModel {
-        AppModel(service: QingxinService(transport: transport), accountStore: store, defaults: defaults,
-                 notifications: notifications ?? TestNotifications(), widgets: widgets ?? TestWidgets())
+        let model = AppModel(service: QingxinService(transport: transport), accountStore: store, defaults: defaults,
+                             notifications: notifications ?? TestNotifications(), widgets: widgets ?? TestWidgets())
+        let now = CourseTime.parse(day: SchoolDate.key(.now), time: "08:30")!
+        model.attendanceNow = { now }
+        return model
     }
 
     private func assertEventually(_ predicate: @escaping @MainActor () async -> Bool,

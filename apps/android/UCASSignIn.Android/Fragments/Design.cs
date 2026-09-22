@@ -36,10 +36,10 @@ public sealed partial class MainPageFragment
         badge.Background = shape;
         return badge;
     }
-    View StatusBadge(bool signed)
+    View StatusBadge(bool signed, string? status = null)
     {
         var color = signed ? Secondary : Green;
-        var label = Text(signed ? "已签到" : "未签到", 11, color: color);
+        var label = Text(status ?? (signed ? "已签到" : "未签到"), 11, color: color);
         // The status column wraps its contents; the badge must contribute its own text width.
         label.LayoutParameters = new LinearLayout.LayoutParams(-2, -2);
         label.SetSingleLine(true);

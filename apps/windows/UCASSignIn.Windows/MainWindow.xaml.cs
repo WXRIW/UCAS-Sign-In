@@ -55,6 +55,9 @@ public sealed partial class MainWindow : Window
             if (Model.IsForeground)
             {
                 ShowPendingSignInError(); _ = Run(Tick);
+                if (ready && route == "detail" && detail is { } current) _ = Run(() => Model.EnterDayAsync(CourseTime.Date(current.Day)));
+                else if (ready && route is null && (section == "today" || section == "schedule" && Model.ScheduleMode == ScheduleMode.Day))
+                    _ = Run(() => Model.EnterDayAsync(section == "today" ? CourseTime.Today() : Model.SelectedDate));
                 if (route is "catalog-detail" or "course-schedule") EnsureCatalogPage();
                 else if (section == "courses") _ = Run(() => Model.RefreshCatalogAsync());
             }
@@ -129,6 +132,7 @@ public sealed partial class MainWindow : Window
         section = (args.SelectedItem as NavigationViewItem)?.Tag?.ToString() ?? "today";
         (route, detail, catalogDetail) = paths.GetValueOrDefault(section);
         EnsureCatalogPage();
+        if (section == "today" && route is null) _ = Run(() => Model.EnterDayAsync(CourseTime.Today()));
         qrCancellation?.Cancel();
         if (section == "schedule" && route is null) _ = Run(Model.EnterScheduleAsync);
         if (PageFrame is not null)
@@ -178,8 +182,10 @@ public sealed partial class MainWindow : Window
             var values = ToastArguments.Parse(args);
             if (!values.Contains("account") || Model.ActiveAccount?.Id != values["account"] || Model.IsDemo)
                 return;
-            if (values.Contains("day"))
+            if (values.Contains("day")) {
                 await Model.SelectDateAsync(CourseTime.Date(values["day"]));
+                await Model.EnterDayAsync(CourseTime.Date(values["day"]));
+            }
             await Select(1);
             var course = Model.Courses.FirstOrDefault(c => c.Id == values["course"] && c.Day == values["day"]);
             if (course is not null)

@@ -337,6 +337,10 @@ public sealed class MainActivity : AppCompatActivity
         foreground?.Cancel();
         foreground = new();
         _ = Ticks(foreground.Token);
+        if (ready && Vm.Routes[Vm.Page] == "detail" && DetailCourseDay is { } detailDay)
+            _ = Run(() => Model.EnterDayAsync(CourseTime.Date(detailDay)));
+        else if (ready && Vm.Routes[Vm.Page] is null && (Vm.Page == 0 || Vm.Page == 1 && Model.ScheduleMode == ScheduleMode.Day))
+            _ = Run(() => Model.EnterDayAsync(Vm.Page == 0 ? CourseTime.Today() : Model.SelectedDate));
         if (ready && Vm.Routes[Vm.Page] is "catalog-detail" or "course-schedule")
             page?.EnsureCatalogPage();
         else if (ready && Vm.Page == 2)
@@ -403,6 +407,7 @@ public sealed class MainActivity : AppCompatActivity
         if (day is null)
             return;
         await Model.SelectDateAsync(CourseTime.Date(day));
+        await Model.EnterDayAsync(CourseTime.Date(day));
         Vm.Page = 1;
         navigation!.SelectedItemId = 2;
         ShowPage();

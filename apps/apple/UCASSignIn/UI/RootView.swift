@@ -25,9 +25,10 @@ struct RootView: View {
     var body: some View {
         navigation
         .onChange(of: selection) { index in
-            guard index == 0, refreshTodayOnSelection else { return }
+            guard index == 0 else { return }
+            let force = refreshTodayOnSelection
             refreshTodayOnSelection = false
-            Task { await model.refresh(on: .now) }
+            Task { if force { await model.refresh(on: .now) } else { await model.enterDay(.now) } }
         }
         .onChange(of: model.accountGeneration) { _ in
             resetNavigation()
@@ -71,6 +72,8 @@ struct RootView: View {
         .task(id: model.accountGeneration) { await model.maintainScheduleCache() }
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
+            if selection == 0 { await model.enterDay(.now) }
+            else if selection == 1, model.scheduleMode == .day { await model.enterDay(model.selectedDate) }
             while !Task.isCancelled {
                 #if os(iOS)
                 await model.foregroundTick()
@@ -521,6 +524,7 @@ struct FeaturedCourseCard: View {
 }
 
 struct CourseRow: View {
+    @EnvironmentObject private var model: AppModel
     let course: Course
     let index: Int
     var action: () -> Void
@@ -543,7 +547,7 @@ struct CourseRow: View {
                     }
                     Spacer(minLength: 0)
                     VStack(alignment: .trailing, spacing: 11) {
-                        StatusPill(title: course.signed ? "已签到" : "未签到", symbol: course.signed ? "checkmark" : nil,
+                        StatusPill(title: model.attendanceLabel(for: course), symbol: course.signed ? "checkmark" : nil,
                                    tint: course.signed ? Palette.secondary : Palette.green)
                         Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)).foregroundStyle(Palette.secondary.opacity(0.7))
                     }

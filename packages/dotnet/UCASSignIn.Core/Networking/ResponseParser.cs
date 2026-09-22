@@ -51,7 +51,7 @@ public static class ResponseParser
             var name = Text(e, "courseName");
             courses.Add(new(id, Text(e, "uuid"), name.Length > 0 ? name : "未命名课程", Text(e, "teacherName"), room.Length == 0 ? null : room,
                 Text(e, "classBeginTime"), Text(e, "classEndTime"), day, Text(e, "signStatus") == "1", EmptyToNull(Text(e, "courseId")),
-                EmptyToNull(Text(e, "courseNum")), EmptyToNull(Text(e, "teacherId"))));
+                EmptyToNull(Text(e, "courseNum")), EmptyToNull(Text(e, "teacherId")), Text(e, "signStatus") is "0" or "1"));
         }
         return courses.OrderBy(c => c.Start ?? DateTimeOffset.MaxValue).ToList();
     }
@@ -116,10 +116,10 @@ public static class ResponseParser
             var day = CourseTime.NormalizeDay(Text(entry, "teachTime"));
             if (id.Length == 0 || returnedCourse != courseId || scheduled.Length == 0 || day is null)
                 throw new SchoolException("ATTENDANCE_BAD_RESPONSE", "学校课程考勤数据不完整，请稍后重试");
-            result.Add(new(id, returnedCourse, scheduled, day, Text(entry, "classBeginTime"), Text(entry, "classEndTime"), Text(entry, "signStatus") == "1"));
+            result.Add(new(id, returnedCourse, scheduled, day, Text(entry, "classBeginTime"), Text(entry, "classEndTime"), Text(entry, "signStatus") == "1", Text(entry, "signStatus") is "0" or "1"));
         }
         var signed = OptionalInt(json, "mySignNum") ?? result.Count(x => x.Signed);
-        var unsigned = OptionalInt(json, "myNoSignNum") ?? result.Count(x => !x.Signed);
+        var unsigned = OptionalInt(json, "myNoSignNum") ?? result.Count(x => !x.Signed && x.SignStatusKnown == true);
         return new(signed, unsigned, result);
     }
     public static CourseQueryResult Week(JsonElement json, string day)

@@ -327,7 +327,7 @@ public sealed partial class MainWindow
     }
     void RenderDetail(Course course)
     {
-        var title = Column(Text(course.Name, 25, true), Text($"{CourseTime.Date(course.Day):M 月 d 日} · {course.TimeRange}", 13, color: Secondary), Text(Metadata(course, true), 12, color: Secondary), Text(course.Signed ? "✓ 已签到" : "未签到", 12, color: Green));
+        var title = Column(Text(course.Name, 25, true), Text($"{CourseTime.Date(course.Day):M 月 d 日} · {course.TimeRange}", 13, color: Secondary), Text(Metadata(course, true), 12, color: Secondary), Text(Model.AttendanceLabel(course), 12, color: Green));
         foreach (FrameworkElement item in title.Children)
             item.HorizontalAlignment = HorizontalAlignment.Center;
         Page.Children.Add(title);

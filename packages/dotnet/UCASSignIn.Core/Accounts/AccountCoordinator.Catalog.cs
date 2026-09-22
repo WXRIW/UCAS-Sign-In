@@ -4,7 +4,13 @@ public sealed partial class AccountCoordinator
 {
     readonly object catalogGate = new();
     Task? catalogRead;
-    readonly Dictionary<string, Task> attendanceReads = [];
+    sealed class AttendanceRead(long revision)
+    {
+        public readonly long Revision = revision;
+        public bool Queried;
+        public readonly TaskCompletionSource Completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+    readonly Dictionary<string, AttendanceRead> attendanceReads = [];
     readonly Dictionary<string, CourseAttendanceSummary> attendance = [];
     readonly Dictionary<string, DateTimeOffset> attendanceUpdates = [];
     readonly Dictionary<string, string> attendanceErrors = [];
@@ -22,10 +28,10 @@ public sealed partial class AccountCoordinator
     public DateTimeOffset? CatalogUpdatedAt { get; private set; }
     public string? CatalogError { get; private set; }
     public bool IsCatalogRefreshing { get { lock (catalogGate) return catalogRead is not null; } }
-    public bool IsCatalogStale => CatalogUpdatedAt is null || clock.GetUtcNow() - CatalogUpdatedAt >= TimeSpan.FromMinutes(30);
+    public bool IsCatalogStale => !CachePolicy.Fresh(CatalogUpdatedAt, clock.GetUtcNow());
     public bool ShouldRefreshCatalog => IsCatalogStale && (catalogRetryAt is null || clock.GetUtcNow() >= catalogRetryAt);
     public bool IsAttendanceRefreshing(string courseId) { lock (catalogGate) return attendanceReads.ContainsKey(courseId); }
-    public bool IsAttendanceStale(string courseId) => !attendanceUpdates.TryGetValue(courseId, out var updated) || clock.GetUtcNow() - updated >= TimeSpan.FromMinutes(5);
+    public bool IsAttendanceStale(string courseId) => invalidatedAttendance.Contains(courseId) || !attendanceUpdates.TryGetValue(courseId, out var updated) || !CachePolicy.Fresh(updated, clock.GetUtcNow(), TimeSpan.FromMinutes(5));
     public bool ShouldRefreshAttendance(string courseId) => IsAttendanceStale(courseId)
         && (!attendanceRetryAt.TryGetValue(courseId, out var retryAt) || clock.GetUtcNow() >= retryAt);
     public CourseAttendanceSummary? AttendanceFor(string courseId) => attendance.GetValueOrDefault(courseId);
@@ -72,6 +78,7 @@ public sealed partial class AccountCoordinator
     void ResetCatalogState()
     {
         lock (catalogGate) { catalogRead = null; attendanceReads.Clear(); }
+        semesterRead = null; semesterValues = []; semestersUpdatedAt = null;
         Semesters = []; SelectedSemester = null; CatalogCourses = []; CatalogUpdatedAt = null; CatalogError = null;
         attendance.Clear(); attendanceUpdates.Clear(); attendanceErrors.Clear();
         catalogFailures = 0; catalogRetryAt = null; attendanceFailures.Clear(); attendanceRetryAt.Clear();
@@ -125,68 +132,52 @@ public sealed partial class AccountCoordinator
 
     async Task RefreshCatalogCoreAsync(StoredAccount account, Guid epoch, bool force)
     {
-        var now = clock.GetUtcNow();
-        if (Semesters.Count == 0)
+        if (!force && catalogRetryAt is { } retry && clock.GetUtcNow() < retry) return;
+        var values = await ReadSemestersAsync(force);
+        if (epoch != Generation) return;
+        Semesters = values; SelectedSemester = SelectCurrentSemester(values, clock.GetUtcNow());
+        await EnsureCatalogForSemesterAsync(SelectedSemester, force);
+        if (epoch != Generation) return;
+        if (identityErrors.TryGetValue(SelectedSemester.Id, out var error)) throw new IOException(error);
+        CatalogError = null; catalogFailures = 0; catalogRetryAt = null;
+    }
+
+    Task<IReadOnlyList<SchoolSemester>>? semesterRead;
+    DateTimeOffset? semestersUpdatedAt;
+    IReadOnlyList<SchoolSemester> semesterValues = [];
+    async Task<IReadOnlyList<SchoolSemester>> ReadSemestersAsync(bool force = false)
+    {
+        if (semesterRead is { } existing) return await existing;
+        if (!force && semesterValues.Count > 0 && CachePolicy.Fresh(semestersUpdatedAt, clock.GetUtcNow())) return semesterValues;
+        var epoch = Generation;
+        var task = ReadSemestersCoreAsync(force, epoch);
+        semesterRead = task;
+        try { return await task; }
+        finally { if (epoch == Generation) semesterRead = null; }
+    }
+    async Task<IReadOnlyList<SchoolSemester>> ReadSemestersCoreAsync(bool force, Guid epoch)
+    {
+        await Task.Yield();
+        if (ActiveAccount is not { } account) throw new OperationCanceledException();
+        var ct = lifetime.Token;
+        if (!force && catalog is not null)
         {
-            var cached = await catalog!.LoadSemestersAsync(account.Id, lifetime.Token);
-            if (epoch != Generation) return;
-            if (cached is { Version: SemesterCache.CurrentVersion } && cached.AccountId == account.Id && cached.Semesters.Count > 0)
+            var stored = await catalog.LoadSemestersAsync(account.Id, ct);
+            if (epoch != Generation) throw new OperationCanceledException();
+            if (stored is { Version: SemesterCache.CurrentVersion } && stored.AccountId == account.Id
+                && stored.Semesters.Count > 0 && stored.Semesters.All(t => ScheduleCalendar.Range(t) is not null))
             {
-                Semesters = cached.Semesters; SelectedSemester = SelectCurrentSemester(Semesters, now);
+                semesterValues = stored.Semesters; semestersUpdatedAt = stored.UpdatedAt;
+                if (Semesters.Count == 0) Semesters = stored.Semesters;
+                if (CachePolicy.Fresh(stored.UpdatedAt, clock.GetUtcNow())) return semesterValues;
             }
         }
-        if (SelectedSemester is { } cachedSemester)
-        {
-            var earlyCatalog = await catalog!.LoadCatalogAsync(account.Id, cachedSemester.Id, lifetime.Token);
-            if (epoch != Generation) return;
-            if (earlyCatalog is { Version: CourseCatalogCache.CurrentVersion } && earlyCatalog.AccountId == account.Id
-                && earlyCatalog.SemesterId == cachedSemester.Id && earlyCatalog.Courses.All(x => x.SemesterId == cachedSemester.Id))
-            { CatalogCourses = earlyCatalog.Courses; CatalogUpdatedAt = earlyCatalog.UpdatedAt; }
-        }
-        if (!force && catalogRetryAt is { } retryAt && now < retryAt) return;
-        var semestersFresh = false;
-        var semesterCache = await catalog!.LoadSemestersAsync(account.Id, lifetime.Token);
-        if (semesterCache is { Version: SemesterCache.CurrentVersion } && semesterCache.AccountId == account.Id)
-            semestersFresh = now - semesterCache.UpdatedAt < TimeSpan.FromHours(24);
-        if (force || Semesters.Count == 0 || !semestersFresh)
-        {
-            var session = account.Session;
-            IReadOnlyList<SchoolSemester> values;
-            try { values = await school.SemestersAsync(session, lifetime.Token); }
-            catch (SchoolException e) when (e.IsSessionExpired)
-            {
-                var recovered = await RecoverAsync(session, epoch);
-                if (recovered is null) throw;
-                session = recovered; values = await school.SemestersAsync(session, lifetime.Token);
-            }
-            if (epoch != Generation) return;
-            Semesters = values; SelectedSemester = SelectCurrentSemester(values, now);
-            await catalog.SaveSemestersAsync(account.Id, new(SemesterCache.CurrentVersion, account.Id, now, values.ToList()), lifetime.Token);
-            account = ActiveAccount ?? account;
-        }
-        if (SelectedSemester is not { } semester) throw new SchoolException("SEMESTER_CURRENT_UNKNOWN", "无法确定当前学期，请稍后重试");
-        var cachedCatalog = await catalog.LoadCatalogAsync(account.Id, semester.Id, lifetime.Token);
-        if (epoch != Generation) return;
-        if (cachedCatalog is { Version: CourseCatalogCache.CurrentVersion } && cachedCatalog.AccountId == account.Id && cachedCatalog.SemesterId == semester.Id
-            && cachedCatalog.Courses.All(x => x.SemesterId == semester.Id))
-        {
-            CatalogCourses = cachedCatalog.Courses; CatalogUpdatedAt = cachedCatalog.UpdatedAt;
-        }
-        if (!force && cachedCatalog is not null && now - cachedCatalog.UpdatedAt < TimeSpan.FromMinutes(30))
-        { CatalogError = null; catalogFailures = 0; catalogRetryAt = null; return; }
-        IReadOnlyList<CatalogCourse> courses;
-        try { courses = await school.CatalogCoursesAsync(account.Session, semester.Id, lifetime.Token); }
-        catch (SchoolException e) when (e.IsSessionExpired)
-        {
-            var session = await RecoverAsync(account.Session, epoch);
-            if (session is null) throw;
-            courses = await school.CatalogCoursesAsync(session, semester.Id, lifetime.Token);
-        }
-        if (epoch != Generation) return;
-        if (courses.Any(x => x.SemesterId != semester.Id)) throw new SchoolException("COURSE_CATALOG_SEMESTER_MISMATCH", "学校返回了其他学期的课程，请重新刷新");
-        CatalogCourses = courses; CatalogUpdatedAt = now; CatalogError = null;
-        catalogFailures = 0; catalogRetryAt = null;
-        await catalog.SaveCatalogAsync(account.Id, semester.Id, new(CourseCatalogCache.CurrentVersion, account.Id, semester.Id, now, courses.ToList()), lifetime.Token);
+        var values = await ScheduleRequestAsync(session => school.SemestersAsync(session, ct), epoch);
+        if (epoch != Generation) throw new OperationCanceledException();
+        semesterValues = values; semestersUpdatedAt = clock.GetUtcNow();
+        if (catalog is not null) await catalog.SaveSemestersAsync(account.Id,
+            new(SemesterCache.CurrentVersion, account.Id, semestersUpdatedAt.Value, values.ToList()), ct);
+        return values;
     }
 
     static SchoolSemester SelectCurrentSemester(IReadOnlyList<SchoolSemester> values, DateTimeOffset now)
@@ -210,26 +201,39 @@ public sealed partial class AccountCoordinator
         if (ActiveAccount is not { } account || catalog is null) return Task.CompletedTask;
         lock (catalogGate)
         {
-            if (attendanceReads.TryGetValue(courseId, out var existing)) return existing;
-            var task = CompleteAttendanceRefreshAsync(account, courseSemester, courseId, Generation, force);
-            attendanceReads[courseId] = task; Notify(); return task;
+            if (attendanceReads.TryGetValue(courseId, out var existing)) return JoinAttendanceAsync(existing, courseId, Generation, force);
+            var read = new AttendanceRead(attendanceRevisions.GetValueOrDefault(courseId));
+            attendanceReads[courseId] = read;
+            _ = CompleteAttendanceRefreshAsync(account, courseSemester, courseId, Generation, force, read);
+            Notify(); return read.Completion.Task;
         }
     }
 
-    async Task CompleteAttendanceRefreshAsync(StoredAccount account, string semesterId, string courseId, Guid epoch, bool force)
+    async Task JoinAttendanceAsync(AttendanceRead existing, string courseId, Guid epoch, bool force)
     {
+        await existing.Completion.Task;
+        if (epoch == Generation && (existing.Revision != attendanceRevisions.GetValueOrDefault(courseId)
+            || force && !existing.Queried)) await RefreshAttendanceAsync(courseId, force);
+    }
+
+    async Task CompleteAttendanceRefreshAsync(StoredAccount account, string semesterId, string courseId, Guid epoch, bool force, AttendanceRead read)
+    {
+        var revision = read.Revision;
+        var sequence = ++requestSequence;
         await Task.Yield();
         try
         {
             var now = clock.GetUtcNow(); var cached = await catalog!.LoadAttendanceAsync(account.Id, semesterId, courseId, lifetime.Token);
-            if (epoch != Generation) return;
+            if (epoch != Generation || revision != attendanceRevisions.GetValueOrDefault(courseId)) return;
+            if (cached is not null && (cached.Version != CourseAttendanceCache.CurrentVersion || cached.AccountId != account.Id || cached.SemesterId != semesterId || cached.CourseId != courseId || cached.Summary.Records.Any(x => x.CourseId != courseId))) cached = null;
             if (cached is { Version: CourseAttendanceCache.CurrentVersion } && cached.AccountId == account.Id && cached.SemesterId == semesterId && cached.CourseId == courseId
                 && cached.Summary.Records.All(x => x.CourseId == courseId))
-            { attendance[courseId] = cached.Summary; attendanceUpdates[courseId] = cached.UpdatedAt; }
-            if (!force && attendanceRetryAt.TryGetValue(courseId, out var retryAt) && now < retryAt) return;
-            if (!force && cached is not null && now - cached.UpdatedAt < TimeSpan.FromMinutes(5))
+            { attendance[courseId] = cached.Summary; if (!invalidatedAttendance.Contains(courseId)) attendanceUpdates[courseId] = cached.UpdatedAt; }
+            if (!force && !invalidatedAttendance.Contains(courseId) && attendanceRetryAt.TryGetValue(courseId, out var retryAt) && now < retryAt) return;
+            if (!force && !invalidatedAttendance.Contains(courseId) && cached is not null && CachePolicy.Fresh(cached.UpdatedAt, now, TimeSpan.FromMinutes(5)))
             { attendanceErrors.Remove(courseId); attendanceFailures.Remove(courseId); attendanceRetryAt.Remove(courseId); return; }
             CourseAttendanceSummary summary;
+            read.Queried = true;
             try { summary = await school.CourseAttendanceAsync(account.Session, courseId, lifetime.Token); }
             catch (SchoolException e) when (e.IsSessionExpired)
             {
@@ -237,15 +241,24 @@ public sealed partial class AccountCoordinator
                 if (session is null) throw;
                 summary = await school.CourseAttendanceAsync(session, courseId, lifetime.Token);
             }
-            if (epoch != Generation || summary.Records.Any(x => x.CourseId != courseId)) return;
-            attendance[courseId] = summary; attendanceUpdates[courseId] = now; attendanceErrors.Remove(courseId);
+            if (epoch != Generation || revision != attendanceRevisions.GetValueOrDefault(courseId) || summary.Records.Any(x => x.CourseId != courseId)) return;
+            foreach (var record in summary.Records)
+            {
+                var course = Courses.FirstOrDefault(c => c.Id == record.ScheduledCourseId && c.Day == CourseTime.NormalizeDay(record.Day));
+                if (course is not null) ObserveAttendance(course with { Signed = record.Signed, SignStatusKnown = record.SignStatusKnown }, AttendanceSource.Detail, sequence);
+            }
+            ProjectAttendance();
+            invalidatedAttendance.Remove(courseId);
+            await SaveAttendanceStateAsync(epoch);
+            if (epoch != Generation || revision != attendanceRevisions.GetValueOrDefault(courseId)) return;
+            attendance[courseId] = summary; attendanceUpdates[courseId] = clock.GetUtcNow(); attendanceErrors.Remove(courseId);
             attendanceFailures.Remove(courseId); attendanceRetryAt.Remove(courseId);
             await catalog.SaveAttendanceAsync(account.Id, semesterId, courseId, new(CourseAttendanceCache.CurrentVersion, account.Id, semesterId, courseId, now, summary), lifetime.Token);
         }
         catch (OperationCanceledException) { }
         catch (Exception e)
         {
-            if (epoch == Generation)
+            if (epoch == Generation && revision == attendanceRevisions.GetValueOrDefault(courseId))
             {
                 attendanceErrors[courseId] = e.Message;
                 if (!force)
@@ -256,12 +269,23 @@ public sealed partial class AccountCoordinator
                 }
             }
         }
-        finally { if (epoch == Generation) { lock (catalogGate) attendanceReads.Remove(courseId); Notify(); } }
+        finally
+        {
+            if (epoch == Generation)
+            {
+                lock (catalogGate) attendanceReads.Remove(courseId);
+                Notify();
+            }
+            read.Completion.TrySetResult();
+        }
     }
 
     void InvalidateAttendance(string? courseId)
     {
-        if (courseId is null) return; attendanceUpdates.Remove(courseId);
+        if (courseId is null) return;
+        attendanceUpdates.Remove(courseId); invalidatedAttendance.Add(courseId);
+        attendanceRevisions[courseId] = attendanceRevisions.GetValueOrDefault(courseId) + 1;
+        attendanceRetryAt.Remove(courseId);
     }
 
     public async Task SetCoursePreferencesAsync(string courseId, CoursePreferences preferences)

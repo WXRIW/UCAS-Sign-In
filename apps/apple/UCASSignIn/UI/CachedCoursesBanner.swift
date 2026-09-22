@@ -8,7 +8,7 @@ struct CachedCoursesBanner: View {
         VStack(alignment: .leading, spacing: 12) {
             Label("正在显示缓存课表", systemImage: "wifi.slash")
                 .font(.system(size: 13, weight: .semibold))
-            Text("同步最新课程状态后即可签到。软件在前台时会自动重试，也可以立即重新同步。")
+            Text("同步最新课程状态后即可签到。重新进入页面时会校验，也可以立即重新同步。")
                 .font(.system(size: 12)).foregroundStyle(Palette.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Button {

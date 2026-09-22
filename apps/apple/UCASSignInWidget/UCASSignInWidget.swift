@@ -127,7 +127,7 @@ struct CourseWidgetView: View {
                 Spacer(minLength: 0)
                 HStack(spacing: 3) {
                     Image(systemName: course.isCheckedIn ? "checkmark.circle.fill" : "calendar")
-                    Text(course.isCheckedIn ? "已签到" : "今日 \(entry.courses.count) 节课")
+                    Text(course.attendanceLabel ?? (course.isCheckedIn ? "已签到" : "今日 \(entry.courses.count) 节课"))
                 }
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(WidgetPalette.green)
@@ -164,7 +164,7 @@ struct CourseWidgetView: View {
                         Image(systemName: "checkmark.circle.fill")
                             .font(.system(size: 16))
                             .foregroundStyle(WidgetPalette.green)
-                            .accessibilityLabel("已签到")
+                            .accessibilityLabel(course.attendanceLabel ?? "已签到")
                     }
                 }
             }

@@ -99,7 +99,7 @@ public sealed class AccountCoordinatorTests
         Assert.Equal(selected, h.Model.SelectedDate);
     }
     [Fact]
-    public async Task SelectingSavedActiveAccountFromDemoReusesSuccessfulSessionCheck()
+    public async Task SelectingSavedActiveAccountFromDemoRechecksAttendance()
     {
         var h = new Harness();
         await h.Model.InitializeAsync();
@@ -107,7 +107,7 @@ public sealed class AccountCoordinatorTests
         var reads = h.School.Reads;
         await h.Model.SwitchAsync("a");
         Assert.False(h.Model.IsDemo);
-        Assert.Equal(reads, h.School.Reads);
+        Assert.Equal(reads + 1, h.School.Reads);
         Assert.Equal("a", h.Model.ActiveAccount?.Id);
         Assert.NotEmpty(h.Model.Courses);
     }

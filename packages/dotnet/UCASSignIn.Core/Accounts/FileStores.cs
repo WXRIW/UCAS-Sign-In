@@ -63,11 +63,16 @@ public static class AtomicFile
     public static void WriteJson<T>(string path, T value) => Write(path, JsonSerializer.SerializeToUtf8Bytes(value));
     public static T? ReadJson<T>(string path) => File.Exists(path) ? JsonSerializer.Deserialize<T>(File.ReadAllBytes(path)) : default;
 }
-public sealed class FileDataStore(string root) : ICourseStore, IRecordStore, ICourseCatalogStore, IScheduleStore
+public sealed class FileDataStore(string root) : ICourseStore, IRecordStore, ICourseCatalogStore, IScheduleStore, IAttendanceStateStore
 {
+    static T? ReadCache<T>(string path)
+    {
+        try { return AtomicFile.ReadJson<T>(path); }
+        catch (JsonException) { return default; } // Invalid cache is a miss; secure account data remains strict.
+    }
     string AccountPath(string id) => Path.Combine(root, Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(id))));
     public Task<CourseCache?> LoadAsync(string accountId, string day, CancellationToken ct = default)
-        => Task.FromResult(AtomicFile.ReadJson<CourseCache>(Path.Combine(AccountPath(accountId), CourseTime.NormalizeDay(day) + ".json")));
+        => Task.FromResult(ReadCache<CourseCache>(Path.Combine(AccountPath(accountId), CourseTime.NormalizeDay(day) + ".json")));
     public Task SaveAsync(string accountId, string day, CourseCache cache, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
@@ -91,19 +96,19 @@ public sealed class FileDataStore(string root) : ICourseStore, IRecordStore, ICo
     }
     string CatalogPath(string accountId, params string[] parts) => Path.Combine([AccountPath(accountId), "catalog", .. parts]);
     public Task<SemesterCache?> LoadSemestersAsync(string accountId, CancellationToken ct = default)
-        => Task.FromResult(AtomicFile.ReadJson<SemesterCache>(CatalogPath(accountId, "semesters.json")));
+        => Task.FromResult(ReadCache<SemesterCache>(CatalogPath(accountId, "semesters.json")));
     public Task SaveSemestersAsync(string accountId, SemesterCache cache, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested(); AtomicFile.WriteJson(CatalogPath(accountId, "semesters.json"), cache); return Task.CompletedTask;
     }
     public Task<CourseCatalogCache?> LoadCatalogAsync(string accountId, string semesterId, CancellationToken ct = default)
-        => Task.FromResult(AtomicFile.ReadJson<CourseCatalogCache>(CatalogPath(accountId, "courses-" + Safe(semesterId) + ".json")));
+        => Task.FromResult(ReadCache<CourseCatalogCache>(CatalogPath(accountId, "courses-" + Safe(semesterId) + ".json")));
     public Task SaveCatalogAsync(string accountId, string semesterId, CourseCatalogCache cache, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested(); AtomicFile.WriteJson(CatalogPath(accountId, "courses-" + Safe(semesterId) + ".json"), cache); return Task.CompletedTask;
     }
     public Task<CourseAttendanceCache?> LoadAttendanceAsync(string accountId, string semesterId, string courseId, CancellationToken ct = default)
-        => Task.FromResult(AtomicFile.ReadJson<CourseAttendanceCache>(CatalogPath(accountId, "attendance-" + Safe(semesterId) + "-" + Safe(courseId) + ".json")));
+        => Task.FromResult(ReadCache<CourseAttendanceCache>(CatalogPath(accountId, "attendance-" + Safe(semesterId) + "-" + Safe(courseId) + ".json")));
     public Task SaveAttendanceAsync(string accountId, string semesterId, string courseId, CourseAttendanceCache cache, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested(); AtomicFile.WriteJson(CatalogPath(accountId, "attendance-" + Safe(semesterId) + "-" + Safe(courseId) + ".json"), cache); return Task.CompletedTask;
@@ -118,7 +123,7 @@ public sealed class FileDataStore(string root) : ICourseStore, IRecordStore, ICo
     {
         ct.ThrowIfCancellationRequested(); var path = SchedulePath(accountId);
         IReadOnlyList<ScheduleSnapshot> result = Directory.Exists(path) ? Directory.EnumerateFiles(path, "semester-*.json")
-            .Select(AtomicFile.ReadJson<ScheduleSnapshot>).Where(x => x is not null && x.AccountId == accountId).Cast<ScheduleSnapshot>().ToArray() : [];
+            .Select(ReadCache<ScheduleSnapshot>).Where(x => x is not null && x.AccountId == accountId).Cast<ScheduleSnapshot>().ToArray() : [];
         return Task.FromResult(result);
     }
     public Task SaveScheduleAsync(ScheduleSnapshot snapshot, CancellationToken ct = default)
@@ -135,9 +140,18 @@ public sealed class FileDataStore(string root) : ICourseStore, IRecordStore, ICo
         return Task.FromResult(result);
     }
     public Task<ScheduleRetryTargets?> LoadScheduleRetriesAsync(string accountId, CancellationToken ct = default)
-        => Task.FromResult(AtomicFile.ReadJson<ScheduleRetryTargets>(Path.Combine(SchedulePath(accountId), "retries.json")));
+        => Task.FromResult(ReadCache<ScheduleRetryTargets>(Path.Combine(SchedulePath(accountId), "retries.json")));
     public Task SaveScheduleRetriesAsync(string accountId, ScheduleRetryTargets targets, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested(); AtomicFile.WriteJson(Path.Combine(SchedulePath(accountId), "retries.json"), targets); return Task.CompletedTask;
     }
+    public Task<AttendanceEvidenceCache?> LoadAttendanceStateAsync(string accountId, CancellationToken ct = default)
+        => Task.FromResult(ReadCache<AttendanceEvidenceCache>(Path.Combine(AccountPath(accountId), "attendance-state.json")));
+    public Task SaveAttendanceStateAsync(AttendanceEvidenceCache state, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        AtomicFile.WriteJson(Path.Combine(AccountPath(state.AccountId), "attendance-state.json"), state);
+        return Task.CompletedTask;
+    }
+
 }

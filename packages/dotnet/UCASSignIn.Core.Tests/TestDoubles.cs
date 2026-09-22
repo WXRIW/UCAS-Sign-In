@@ -49,8 +49,13 @@ public sealed class MemoryAccounts : IAccountStore
         return Task.CompletedTask;
     }
 }
-public class MemoryData : ICourseStore, IRecordStore, ICourseCatalogStore
+public class MemoryData : ICourseStore, IRecordStore, ICourseCatalogStore, IAttendanceStateStore
 {
+    public bool FailCacheWrites;
+    public Dictionary<string, AttendanceEvidenceCache> States = [];
+    public Task<AttendanceEvidenceCache?> LoadAttendanceStateAsync(string id, CancellationToken ct = default) => Task.FromResult(States.GetValueOrDefault(id));
+    public Task SaveAttendanceStateAsync(AttendanceEvidenceCache state, CancellationToken ct = default)
+    { if (FailCacheWrites) throw new IOException("simulated attendance cache failure"); States[state.AccountId] = state; return Task.CompletedTask; }
     public Dictionary<string, CourseCache> Cache = [];
     public int CourseCacheWrites;
     public Dictionary<string, List<AttendanceRecord>> Records = [];
@@ -62,6 +67,7 @@ public class MemoryData : ICourseStore, IRecordStore, ICourseCatalogStore
     public Task SaveAsync(string accountId, string day, CourseCache cache, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
+        if (FailCacheWrites) throw new IOException("simulated course cache failure");
         CourseCacheWrites++;
         Cache[accountId + "|" + day] = cache;
         return Task.CompletedTask;
@@ -69,6 +75,7 @@ public class MemoryData : ICourseStore, IRecordStore, ICourseCatalogStore
     Task<List<AttendanceRecord>> IRecordStore.LoadAsync(string accountId, CancellationToken ct) => Task.FromResult(Records.GetValueOrDefault(accountId) ?? []);
     public Task SaveAsync(string accountId, IReadOnlyList<AttendanceRecord> records, CancellationToken ct = default)
     {
+        if (FailCacheWrites) throw new IOException("simulated records failure");
         Records[accountId] = records.ToList();
         return Task.CompletedTask;
     }
@@ -76,7 +83,7 @@ public class MemoryData : ICourseStore, IRecordStore, ICourseCatalogStore
     {
         foreach (var key in Cache.Keys.Where(k => k.StartsWith(accountId + "|")).ToArray())
             Cache.Remove(key);
-        Records.Remove(accountId);
+        Records.Remove(accountId); States.Remove(accountId);
         return Task.CompletedTask;
     }
     public Task<SemesterCache?> LoadSemestersAsync(string accountId, CancellationToken ct = default) => Task.FromResult(Semesters.GetValueOrDefault(accountId));

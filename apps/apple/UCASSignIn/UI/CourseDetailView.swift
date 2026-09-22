@@ -43,7 +43,7 @@ struct CourseDetailView: View {
                     Text("\(formattedDay) · \(course.timeRange)").font(.system(size: 13)).foregroundStyle(Palette.secondary)
                     CourseMetadataView(course: currentCourse, showsMissingClassroom: true)
                         .font(.system(size: 12)).foregroundStyle(Palette.secondary)
-                    StatusPill(title: currentCourse.signed ? "已签到" : "未签到", symbol: currentCourse.signed ? "checkmark" : "clock")
+                    StatusPill(title: model.attendanceLabel(for: currentCourse), symbol: currentCourse.signed ? "checkmark" : "clock")
                 }.padding(.top, 15)
                 if model.needsCourseRefresh(currentCourse),
                    let date = CourseTime.parse(day: currentCourse.day, time: "00:00") {
@@ -80,6 +80,9 @@ struct CourseDetailView: View {
         .onDisappear {
             isVisible = false
             clearQR()
+        }
+        .task(id: canRefreshQR) {
+            if canRefreshQR, let date = CourseTime.parse(day: course.day, time: "00:00") { await model.enterDay(date) }
         }
         .onChange(of: model.accountGeneration) { _ in clearQR() }
         .task(id: RefreshID(active: canRefreshQR, retry: retry)) { await refreshQR() }

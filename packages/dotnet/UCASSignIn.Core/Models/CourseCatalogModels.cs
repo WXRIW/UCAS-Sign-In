@@ -6,7 +6,7 @@ public sealed record CatalogCourse(string Id, string Number, string Name, string
     string SemesterId, string BeginDate, string EndDate, int? TotalSessions = null, int? CompletedSessions = null);
 
 public sealed record CourseAttendance(string Id, string CourseId, string ScheduledCourseId, string Day,
-    string BeginTime, string EndTime, bool Signed);
+    string BeginTime, string EndTime, bool Signed, bool? SignStatusKnown = true);
 
 public sealed record CourseAttendanceSummary(int SignedCount, int UnsignedCount, IReadOnlyList<CourseAttendance> Records);
 

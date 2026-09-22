@@ -256,7 +256,7 @@ public sealed partial class MainPageFragment
     }
     void RenderDetail(Course course)
     {
-        var header = Column(Text(course.Name, 25, true), Text($"{CourseTime.Date(course.Day):M 月 d 日} · {course.TimeRange}", 13, color: Secondary), Text(Metadata(course, true), 12, color: Secondary), Text(course.Signed ? "✓ 已签到" : "未签到", 12, color: Green));
+        var header = Column(Text(course.Name, 25, true), Text($"{CourseTime.Date(course.Day):M 月 d 日} · {course.TimeRange}", 13, color: Secondary), Text(Metadata(course, true), 12, color: Secondary), Text(Model.AttendanceLabel(course), 12, color: Green));
         for (int i = 0; i < header.ChildCount; i++)
             ((TextView)header.GetChildAt(i)!).Gravity = GravityFlags.Center;
         Add(header);

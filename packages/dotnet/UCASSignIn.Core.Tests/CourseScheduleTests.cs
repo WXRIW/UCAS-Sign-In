@@ -173,10 +173,10 @@ public sealed class CourseScheduleTests
         var started = new TaskCompletionSource(); var release = new TaskCompletionSource();
         h.Clock.Now += TimeSpan.FromDays(7);
         h.School.WeekQuery = async (_, d) => { started.TrySetResult(); await release.Task; return Week(d, Course("20260304")); };
-        var detail = h.Model.EnsureCourseScheduleAsync(Catalog(History)); await started.Task;
+        var detail = h.Model.EnsureCourseScheduleAsync(Catalog(History)); await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
         h.School.Query = (_, _) => Task.FromResult(new CourseQueryResult([Course("20260304") with { Classroom = "LATEST", Signed = true }], ""));
-        await h.Model.CheckDayAsync(new(2026, 3, 4), true);
-        release.SetResult(); await detail;
+        await h.Model.CheckDayAsync(new(2026, 3, 4), true).WaitAsync(TimeSpan.FromSeconds(5));
+        release.SetResult(); await detail.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Equal("LATEST", Assert.Single(h.Model.CourseScheduleFor(Catalog(History)).Meetings).Classroom);
         Assert.True(h.Model.Courses.Single(c => c.Day == "20260304").Signed);
     }
@@ -205,6 +205,8 @@ public sealed class CourseScheduleTests
         await h.Model.CheckDayAsync(new(2026, 9, 16), true);
         Assert.Same(original, h.Model.CourseScheduleFor(Catalog(Current)));
         var reads = h.School.CatalogReads; h.Clock.Now += TimeSpan.FromMinutes(30);
+        await h.Model.EnsureCourseScheduleAsync(Catalog(Current)); Assert.Equal(reads, h.School.CatalogReads);
+        h.Clock.Now = TestData.Now.AddDays(7);
         await h.Model.EnsureCourseScheduleAsync(Catalog(Current)); Assert.Equal(reads + 1, h.School.CatalogReads);
     }
     [Fact] public async Task AccountSwitchRejectsLateDetailResponse()

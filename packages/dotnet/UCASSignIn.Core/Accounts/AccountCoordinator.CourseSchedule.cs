@@ -65,20 +65,29 @@ public sealed partial class AccountCoordinator
     {
         if (IsDemo) { EnsureDemoSchedule(CourseSemester(course.SemesterId)); return Task.CompletedTask; }
         if (ActiveAccount is not { } account || paused) return Task.CompletedTask;
-        if (courseScheduleReads.TryGetValue(course.SemesterId, out var existing)) return existing;
-        var task = LoadCourseScheduleAsync(course, account, Generation, lifetime.Token);
-        courseScheduleReads[course.SemesterId] = task;
-        return task;
+        lock (courseScheduleReads)
+        {
+            if (courseScheduleReads.TryGetValue(course.SemesterId, out var existing)) return existing;
+            // Register before starting: even a synchronous cache hit must be able to remove its entry.
+            var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            courseScheduleReads[course.SemesterId] = completion.Task;
+            _ = CompleteCourseScheduleReadAsync(completion, course, account, Generation, lifetime.Token);
+            return completion.Task;
+        }
+    }
+    async Task CompleteCourseScheduleReadAsync(TaskCompletionSource completion, CatalogCourse course, StoredAccount account, Guid epoch, CancellationToken ct)
+    {
+        try { await LoadCourseScheduleAsync(course, account, epoch, ct); completion.TrySetResult(); }
+        catch (Exception e) { completion.TrySetException(e); }
     }
     async Task LoadCourseMetadataAsync(StoredAccount account, Guid epoch, CancellationToken ct)
     {
         await Task.Yield();
         try
         {
-            var values = await ScheduleRequestAsync(s => school.SemestersAsync(s, ct), epoch);
+            var values = await ReadSemestersAsync(true);
             if (epoch != Generation) return;
             semesters = values; UpdateScheduleMetadata(false);
-            if (catalog is not null) await catalog.SaveSemestersAsync(account.Id, new(SemesterCache.CurrentVersion, account.Id, clock.GetUtcNow(), values.ToList()), ct);
         }
         finally { if (epoch == Generation) courseMetadataRead = null; }
     }
@@ -105,6 +114,8 @@ public sealed partial class AccountCoordinator
             if (epoch != Generation) return;
             await EnsureCatalogForSemesterAsync(term);
             if (epoch != Generation) return;
+            if (scheduleTask is { } running && syncingTargets.Contains(id)) await running;
+            if (epoch != Generation) return;
             if (NeedsSemesterSync(term))
             {
                 if (syncingSemester != id) pendingSemesters.Add(id);
@@ -122,7 +133,7 @@ public sealed partial class AccountCoordinator
         {
             if (epoch == Generation) { courseScheduleErrors[course.SemesterId] = e.Message; RetryLater("course:" + course.SemesterId); }
         }
-        finally { if (epoch == Generation) { courseScheduleReads.Remove(course.SemesterId); Notify(); } }
+        finally { if (epoch == Generation) { lock (courseScheduleReads) courseScheduleReads.Remove(course.SemesterId); Notify(); } }
     }
     void ResetCourseSchedules()
     {

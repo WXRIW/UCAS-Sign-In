@@ -3,7 +3,7 @@ namespace UCASSignIn.Core;
 public sealed record SchoolSession(string UserId, string SessionId, string StudentNo, string? Name = null);
 public sealed record Course(string Id, string Uuid, string Name, string Teacher, string? Classroom,
     string BeginTime, string EndTime, string Day, bool Signed = false, string? CourseId = null,
-    string? CourseNumber = null, string? TeacherId = null)
+    string? CourseNumber = null, string? TeacherId = null, bool? SignStatusKnown = true)
 {
     public DateTimeOffset? Start => CourseTime.Parse(Day, BeginTime);
     public DateTimeOffset? End => CourseTime.Parse(Day, EndTime);

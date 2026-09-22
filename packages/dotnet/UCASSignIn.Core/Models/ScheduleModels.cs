@@ -7,7 +7,7 @@ public sealed record ScheduleSnapshot(int Version, int IdentityVersion, string A
 {
     public const int CurrentVersion = 1, CurrentIdentityVersion = 1;
     public bool IsDue(DateTimeOffset now) => Version != CurrentVersion || IdentityVersion != CurrentIdentityVersion
-        || now < UpdatedAt || now - UpdatedAt >= TimeSpan.FromDays(7);
+        || !CachePolicy.Fresh(UpdatedAt, now);
 }
 public sealed record ScheduleRetryTargets(List<string> SemesterIds, List<string> Mondays, List<string>? DirtyMondays = null);
 public interface IScheduleStore

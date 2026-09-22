@@ -370,10 +370,10 @@ enum ResponseParser {
             return CourseAttendance(id: id, courseId: returnedCourseId, scheduledCourseId: scheduledId,
                                     day: day, beginTime: scalar(entry["classBeginTime"]),
                                     endTime: scalar(entry["classEndTime"]),
-                                    signed: scalar(entry["signStatus"]) == "1")
+                                    signed: scalar(entry["signStatus"]) == "1", signStatusKnown: ["0", "1"].contains(scalar(entry["signStatus"])))
         }
         return CourseAttendanceSummary(signedCount: Int(scalar(json["mySignNum"])) ?? records.filter(\.signed).count,
-                                       unsignedCount: Int(scalar(json["myNoSignNum"])) ?? records.filter { !$0.signed }.count,
+                                       unsignedCount: Int(scalar(json["myNoSignNum"])) ?? records.filter { !$0.signed && $0.signStatusKnown == true }.count,
                                        records: records)
     }
 
@@ -410,7 +410,7 @@ enum ResponseParser {
                                  name: name.isEmpty ? "未命名课程" : name,
                                  teacher: scalar(entry["teacherName"]), classroom: classroom,
                                  beginTime: scalar(entry["classBeginTime"]), endTime: scalar(entry["classEndTime"]),
-                                 day: day, signed: scalar(entry["signStatus"]) == "1"))
+                                 day: day, signed: scalar(entry["signStatus"]) == "1", signStatusKnown: ["0", "1"].contains(scalar(entry["signStatus"]))))
         }
         return result.sorted { ($0.startDate ?? .distantFuture) < ($1.startDate ?? .distantFuture) }
     }

@@ -118,6 +118,7 @@ public sealed partial class MainPageFragment
         if (previous != next) next.ContentReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
         UseScene(next);
         if (previous != next && Host.Vm.Page == 1 && Route is null) _ = Host.Run(Model.EnterScheduleAsync);
+        if (previous != next && Host.Vm.Page == 0 && Route is null) _ = Host.Run(() => Model.EnterDayAsync(CourseTime.Today()));
         RenderContent();
         UpdatePageToolbar();
         if (previous != next) PresentScene(previous, next);

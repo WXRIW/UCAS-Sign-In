@@ -108,18 +108,21 @@ public sealed class ScheduleTests
         var values = h.Model.CoursePreferencesFor("unified"); Assert.True(values.SignInDisabled); Assert.Equal(30, values.ReminderLeadMinutes);
         Assert.Equal(PreferenceOverride.Enabled, values.Confirmation); Assert.Equal(PreferenceOverride.Disabled, values.AutoSign);
         Assert.False(h.Model.CanSign(a)); await h.Model.SetCoursePreferencesAsync("unified", new(Confirmation: PreferenceOverride.Enabled));
-        Assert.False(h.Model.Preferences.Courses.ContainsKey("teacher2")); Assert.False(h.Model.Preferences.Courses.ContainsKey("teacher-record")); Assert.True(h.Model.CanSign(a));
+        Assert.False(h.Model.Preferences.Courses.ContainsKey("teacher2")); Assert.False(h.Model.Preferences.Courses.ContainsKey("teacher-record")); Assert.False(h.Model.CanSign(a)); // A weekly snapshot no longer grants attendance permission.
+        h.School.Query = (_, _) => Task.FromResult(new CourseQueryResult([a, b], ""));
+        await h.Model.RefreshAsync(new(2026, 9, 16));
+        Assert.True(h.Model.CanSign(a));
         h.School.Query = (_, _) => Task.FromResult(new CourseQueryResult([a with { Signed = true }, b], ""));
         await h.Model.SignAsync(a, h.Model.Generation);
         Assert.Equal(a.Id, h.School.LastSignedCourse?.Id); Assert.Equal(a.Uuid, h.School.LastSignedCourse?.Uuid); Assert.Equal(1, h.School.Signs);
         Assert.False(h.Model.Courses.Single(c => c.Id == b.Id).Signed);
     }
-    [Fact] public async Task AccountRoundTripReusesProcessChecksButNewCoordinatorRechecksDate()
+    [Fact] public async Task AccountRoundTripAndColdStartRecheckAttendance()
     {
         var h = new Harness(); await h.Model.InitializeAsync(); await h.Model.SwitchAsync("b"); var reads = h.School.Reads;
-        await h.Model.SwitchAsync("a"); Assert.Equal(reads, h.School.Reads);
+        await h.Model.SwitchAsync("a"); Assert.Equal(reads + 1, h.School.Reads);
         var next = new AccountCoordinator(h.School, h.Accounts, h.Data, h.Data, new FakeReminders(), h.Clock);
-        await next.InitializeAsync(); Assert.Equal(reads + 1, h.School.Reads);
+        await next.InitializeAsync(); Assert.Equal(reads + 2, h.School.Reads);
     }
     [Fact] public async Task FileStorePersistsEmptyDaysSnapshotsAndRetriesAndRemovesAccountOnly()
     {

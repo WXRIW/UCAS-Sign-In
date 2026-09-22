@@ -254,7 +254,7 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
             var syncing = Model.IsLoadingCourses(date);
             var retry = Button(syncing ? "正在同步…" : "重新同步", () => Model.RefreshAsync(date));
             retry.Enabled = !syncing && !Model.IsBusy;
-            Add(Card(Column(Text("正在显示缓存课表", 13, true, Green), Text("同步最新课程状态后即可签到。软件在前台时会自动重试，也可以立即重新同步。", 12, color: Secondary), retry), 16, Pale), 20);
+            Add(Card(Column(Text("正在显示缓存课表", 13, true, Green), Text("同步最新课程状态后即可签到。重新进入页面时会校验，也可以立即重新同步。", 12, color: Secondary), retry), 16, Pale), 20);
         }
     }
     void Welcome() => Add(Card(Column(Icon(Resource.Drawable.ic_book, 40), Text("一堂课，也不匆忙。", 25, true), Text("连接账户，查看当天课程、完成签到，\n让每一次到课都井井有条。", 14, color: Secondary), Button("连接账户", () => { Login(); return Task.CompletedTask; }, true), Button("先体验一下 →", Model.EnterDemoAsync)), 24));
@@ -424,7 +424,7 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
             bar.SetBackgroundColor(c.Signed ? Pale : Green);
             inside.AddView(bar, new LinearLayout.LayoutParams(D(3), D(38)) { MarginEnd = D(12) });
             inside.AddView(info, new LinearLayout.LayoutParams(0, -2, 1));
-            var badge = StatusBadge(c.Signed);
+            var badge = StatusBadge(c.Signed, Model.AttendanceLabel(c));
             var chevron = Icon(Resource.Drawable.ic_chevron_right, 9, Secondary);
             var status = Column(badge, chevron);
             status.SetGravity(GravityFlags.End);
@@ -433,7 +433,7 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
             inside.AddView(status, new LinearLayout.LayoutParams(-2, -2) { MarginStart = D(4) });
             var card = Card(inside, 0);
             inside.SetPadding(D(13), D(17), D(13), D(17));
-            Tap(card, () => { Detail(c); return Task.CompletedTask; }, c.Name + (c.Signed ? "，已签到" : "，未签到") + "，课程详情");
+            Tap(card, () => { Detail(c); return Task.CompletedTask; }, c.Name + "，" + Model.AttendanceLabel(c) + "，课程详情");
             row.AddView(card, new LinearLayout.LayoutParams(0, -2, 1));
             list.AddView(row, new LinearLayout.LayoutParams(-1, -2) { BottomMargin = D(16) });
         }
@@ -668,6 +668,7 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
         Host.DetailCourseId = course.Id;
         Host.DetailCourseDay = course.Day;
         _ = Navigate("detail");
+        _ = Host.Run(() => Model.EnterDayAsync(CourseTime.Date(course.Day)));
     }
     public void CatalogDetail(CatalogCourse course)
     {

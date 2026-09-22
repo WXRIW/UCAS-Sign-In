@@ -34,6 +34,16 @@ final class AppModel: ObservableObject {
             if !courseSchedulePresentations.isEmpty, !ScheduleCalendar.sameArrangements(oldValue, courses) { courseSchedulePresentations.removeAll() }
         }
     }
+    @Published private var attendanceStates: [String: AttendanceEvidence] = [:]
+    private var invalidatedAttendance = Set<String>()
+    private var attendanceVersions: [String: Int] = [:]
+    private var attendanceRevisions: [String: Int] = [:]
+    private var dayVerifiedAt: [String: Date] = [:]
+    private var syncingSemesterID: String?
+    var attendanceNow: () -> Date = Date.init
+    private var invalidatedDays = Set<String>()
+    private var semesterReadTask: Task<[SchoolSemester], Error>?
+    private var directoryReadTasks: [String: Task<[CatalogCourse], Error>] = [:]
     private var weekPresentations: [String: WeekSchedulePresentation] = [:]
     private var courseSchedulePresentations: [CatalogCourse: CourseSchedulePresentation] = [:]
     private var courseScheduleDirectories: [String: (courses: [CatalogCourse], updatedAt: Date)] = [:]
@@ -70,7 +80,7 @@ final class AppModel: ObservableObject {
     private var pendingScheduleWeeks = Set<String>()
     private var scheduleMonitoringStarted = false
     @Published private var isAuthenticating = false
-    @Published private var refreshTasks: [String: Task<Void, Never>] = [:]
+    @Published private var refreshTasks: [String: (task: Task<Void, Never>, revision: Int)] = [:]
     @Published var signingID: String?
     @Published var loginRequest: LoginRequest?
     @Published var showAccountManagement = false
@@ -136,7 +146,7 @@ final class AppModel: ObservableObject {
     private var restored = false
     private var automaticRefreshPaused = false
     private var catalogRefreshTask: Task<Void, Never>?
-    private var attendanceTasks: [String: Task<Void, Never>] = [:]
+    private var attendanceTasks: [String: (task: Task<Void, Never>, revision: Int)] = [:]
     private var catalogFailureCount = 0
     private var catalogRetryAfter: Date?
     private var semestersUpdatedAt: Date?
@@ -169,7 +179,7 @@ final class AppModel: ObservableObject {
         !isDemo && courseFreshness[SchoolDate.key(date)] == false
     }
     func needsCourseRefresh(_ course: Course) -> Bool {
-        !isDemo && courseFreshness[normalizedDay(course.day)] != true
+        !isDemo && (courseFreshness[normalizedDay(course.day)] != true || attendanceStatus(for: course) == .unknown)
     }
     func canSign(_ course: Course, accountGeneration expectedGeneration: UUID? = nil) -> Bool {
         guard expectedGeneration == nil || expectedGeneration == generation,
@@ -178,7 +188,7 @@ final class AppModel: ObservableObject {
         guard let current = courses.first(where: {
             $0.id == course.id && normalizedDay($0.day) == normalizedDay(course.day)
         }) else { return false }
-        return !current.signed && !isSignInDisabled(for: current) && signingID == nil && !needsCourseRefresh(current)
+        return attendanceStatus(for: current) == .unsigned && !isSignInDisabled(for: current) && signingID == nil && !needsCourseRefresh(current)
     }
 
     var isConnected: Bool { isDemo || session != nil }
@@ -351,6 +361,10 @@ final class AppModel: ObservableObject {
     /// Invalidate all work before exposing a new identity to any view or client.
     private func resetAccountState() {
         generation = UUID()
+        attendanceStates = [:]; invalidatedAttendance = []; syncingSemesterID = nil
+        attendanceVersions = [:]; attendanceRevisions = [:]; dayVerifiedAt = [:]; invalidatedDays = []
+        semesterReadTask?.cancel(); semesterReadTask = nil
+        directoryReadTasks.values.forEach { $0.cancel() }; directoryReadTasks = [:]
         cancelRefreshes()
         scheduleSyncTask?.cancel()
         scheduleSyncTask = nil
@@ -377,7 +391,7 @@ final class AppModel: ObservableObject {
         signingID = nil
         catalogRefreshTask?.cancel()
         catalogRefreshTask = nil
-        attendanceTasks.values.forEach { $0.cancel() }
+        attendanceTasks.values.forEach { $0.task.cancel() }
         attendanceTasks.removeAll()
         courses = []
         records = []
@@ -431,6 +445,7 @@ final class AppModel: ObservableObject {
         coursePreferences = account.preferences.courses
         automaticRefreshPaused = account.requiresLogin
         loadRecords()
+        loadAttendanceState()
         loadCatalogCache(for: account.id)
         loadSemesterSchedules(for: account.session)
         if loadCache(for: account.session, date: selectedDate) {
@@ -461,9 +476,12 @@ final class AppModel: ObservableObject {
 
     func refresh(on date: Date) async {
         let day = SchoolDate.key(date)
-        if let task = refreshTasks[day] {
-            // Every caller waits for the same request, including pull-to-refresh.
-            await task.value
+        if let read = refreshTasks[day] {
+            let token = generation
+            await read.task.value
+            if generation == token, invalidatedDays.contains(day), courseRefreshSequences[day] != read.revision {
+                await refresh(on: date)
+            }
             return
         }
         guard !Task.isCancelled else { return }
@@ -488,7 +506,7 @@ final class AppModel: ObservableObject {
         let task = Task {
             await performRefresh(on: date, session: session, accountToken: accountToken, requestSequence: requestSequence)
         }
-        refreshTasks[day] = task
+        refreshTasks[day] = (task, requestSequence)
         await task.value
         if generation == accountToken, scheduleMonitoringStarted, needsFullScheduleRefresh { await synchronizeSchedules() }
     }
@@ -518,13 +536,19 @@ final class AppModel: ObservableObject {
             guard courseRefreshSequences[queriedDay, default: 0] <= requestSequence else { return }
             let hadBaseline = courseUpdates[queriedDay] != nil
             let previous = courses.filter { normalizedDay($0.day) == queriedDay }
+            for value in result { observeAttendance(value, source: .daily, sequence: requestSequence) }
+            dayVerifiedAt[queriedDay] = attendanceNow()
+            invalidatedDays.remove(queriedDay)
+            saveAttendanceState()
             let incoming = result.map { value in
-                value.preservingIdentity(from: previous.first { $0.id == value.id })
+                projectAttendance(value.preservingIdentity(from: previous.first { $0.id == value.id }))
             }
             let changed = !ScheduleCalendar.sameArrangements(previous, incoming)
             let attendanceChanged = previous.contains { old in incoming.first(where: { $0.id == old.id })?.signed != old.signed }
             if hadBaseline && changed {
-                needsFullScheduleRefresh = true
+                if let syncingSemesterID, semesters.contains(where: { $0.id == syncingSemesterID && $0.beginDate <= queriedDay && queriedDay <= $0.endDate }) {
+                    pendingSemesterRefreshes.formUnion(semesterSchedules.keys.filter { $0 != syncingSemesterID })
+                } else { needsFullScheduleRefresh = true }
                 savePendingScheduleSync(for: session)
             }
             if changed || !hadBaseline {
@@ -535,6 +559,7 @@ final class AppModel: ObservableObject {
                 for index in courses.indices where normalizedDay(courses[index].day) == queriedDay {
                     if let value = incoming.first(where: { $0.id == courses[index].id }) {
                         updated[index].signed = value.signed
+                        updated[index].signStatusKnown = value.signStatusKnown
                     }
                 }
                 courses = updated
@@ -658,7 +683,7 @@ final class AppModel: ObservableObject {
     }
 
     private func cancelRefreshes() {
-        for task in refreshTasks.values { task.cancel() }
+        for read in refreshTasks.values { read.task.cancel() }
         refreshTasks.removeAll()
         refreshSequence = 0
         courseRefreshSequences.removeAll()
@@ -675,7 +700,11 @@ final class AppModel: ObservableObject {
     }
 
     func sign(_ course: Course, accountGeneration expectedGeneration: UUID? = nil, automatically: Bool = false) async {
+        guard canSign(course, accountGeneration: expectedGeneration) else { return }
         let token = generation
+        if automatically, !isDemo, !CachePolicy.isFresh(dayVerifiedAt[normalizedDay(course.day)], at: attendanceNow(), lifetime: 60),
+           let date = CourseTime.parse(day: course.day, time: "00:00") { await enterDay(date) }
+        guard token == generation else { return }
         await refreshCourseIdentityIfNeeded(for: [course])
         guard token == generation, !Task.isCancelled, canSign(course, accountGeneration: expectedGeneration) else { return }
         let attempt = attemptKey(for: course)
@@ -701,7 +730,8 @@ final class AppModel: ObservableObject {
             let result = try await service.sign(course: course, session: session) { [self] in
                 // School clock synchronization can suspend before the actual submission.
                 guard token == generation, !isSignInDisabled(for: course),
-                      !automatically || effectiveAutoSign(for: course) else {
+                      attendanceStatus(for: course) == .unsigned, !needsCourseRefresh(course),
+                      !automatically || (effectiveAutoSign(for: course) && CachePolicy.isFresh(dayVerifiedAt[normalizedDay(course.day)], at: attendanceNow(), lifetime: 60)) else {
                     throw APIError(code: "SIGN_NOT_ALLOWED", message: "签到已取消")
                 }
             }
@@ -709,7 +739,6 @@ final class AppModel: ObservableObject {
             let succeeded = result.outcome == .signed
             records.insert(AttendanceRecord(courseId: preferenceID(for: course), courseName: course.name, date: .now,
                                             message: result.message, succeeded: succeeded), at: 0)
-            saveRecords()
             if succeeded {
                 markSigned(course)
                 invalidateAttendance(for: preferenceID(for: course))
@@ -718,10 +747,11 @@ final class AppModel: ObservableObject {
                 publishWidget()
                 signInFeedback()
             } else { errorMessage = result.message }
+            saveRecords()
             // Only a read is allowed after an uncertain result; never automatically resubmit.
             if let date = CourseTime.parse(day: course.day, time: "00:00") {
                 // A request started before signing cannot confirm the new attendance state.
-                if let task = refreshTasks[SchoolDate.key(date)] { await task.value }
+                if let read = refreshTasks[SchoolDate.key(date)] { await read.task.value }
                 guard token == generation else { return }
                 await refresh(on: date)
             }
@@ -742,6 +772,7 @@ final class AppModel: ObservableObject {
     }
 
     func signManually(_ course: Course, accountGeneration expectedGeneration: UUID? = nil) async {
+        guard canSign(course, accountGeneration: expectedGeneration) else { return }
         let token = generation
         await refreshCourseIdentityIfNeeded(for: [course])
         guard token == generation, !Task.isCancelled, canSign(course, accountGeneration: expectedGeneration) else { return }
@@ -763,29 +794,21 @@ final class AppModel: ObservableObject {
         guard !Task.isCancelled, !isDemo, session != nil, !showLogin, !automaticRefreshPaused,
               !isLoading, signingID == nil else { return }
         let token = generation
-        // Cache recovery must also work when automatic attendance is turned off.
-        let today = Date()
-        if isCached(on: today), dayRetryAfter[SchoolDate.key(today)].map({ $0 > Date() }) != true {
-            await refresh(on: today)
-        }
-        guard !Task.isCancelled, generation == token, !showLogin, !automaticRefreshPaused else { return }
-        if SchoolDate.key(selectedDate) != SchoolDate.key(today), isCached,
-           dayRetryAfter[SchoolDate.key(selectedDate)].map({ $0 > Date() }) != true {
-            await refresh()
-        }
-        guard !Task.isCancelled, generation == token, !showLogin,
-              todayIsFresh, !isLoading, signingID == nil else { return }
-        await refreshCourseIdentityIfNeeded(for: todayCourses)
-        guard generation == token, !Task.isCancelled, !showLogin, !automaticRefreshPaused,
-              todayIsFresh, !isLoading, signingID == nil else { return }
+        let now = attendanceNow()
         let candidates = todayCourses.filter {
-            !$0.signed && effectiveAutoSign(for: $0) && !autoAttempts.contains(attemptKey(for: $0))
+            attendanceStatus(for: $0) != .signed && effectiveAutoSign(for: $0) && !autoAttempts.contains(attemptKey(for: $0))
+                && attendanceStates[attendanceKey($0)]?.lastSuccessfulSignAt == nil
+                && $0.startDate.map { now >= $0.addingTimeInterval(-30 * 60) } == true
+                && $0.endDate.map { now < $0.addingTimeInterval(5 * 60) } == true
         }
         guard !candidates.isEmpty else { return }
+        if !CachePolicy.isFresh(dayVerifiedAt[SchoolDate.key(now)], at: now, lifetime: 60) { await refresh(on: now) }
+        guard generation == token, !Task.isCancelled, todayIsFresh else { return }
+        await refreshCourseIdentityIfNeeded(for: todayCourses)
         guard let schoolNow = try? await service.schoolNow(), !Task.isCancelled, generation == token,
               todayIsFresh, !isLoading, signingID == nil else { return }
         guard let course = candidates.first(where: {
-            effectiveAutoSign(for: $0) && CourseTime.isWithinSignWindow($0, now: schoolNow)
+            canSign($0) && effectiveAutoSign(for: $0) && CourseTime.isWithinSignWindow($0, now: schoolNow)
         }) else { return }
         let key = attemptKey(for: course)
         guard autoAttempts.insert(key).inserted else { return }
@@ -969,7 +992,7 @@ final class AppModel: ObservableObject {
         await refreshCourseIdentityIfNeeded(for: courses)
         guard generation == accountToken, reminderGeneration == requestToken, !Task.isCancelled else { return }
         notifications.removeAll()
-        for course in courses.prefix(60) where !course.signed && !needsCourseRefresh(course) && effectiveReminders(for: course) {
+        for course in courses.prefix(60) where !course.signed && arrangementFresh(course) && effectiveReminders(for: course) {
             guard generation == accountToken, reminderGeneration == requestToken, hasEnabledReminders else { return }
             guard let start = course.startDate else { continue }
             let lead = effectiveReminderLead(for: course)
@@ -1007,8 +1030,8 @@ final class AppModel: ObservableObject {
             updated.remove(id: id)
             try commit(updated)
             for key in defaults.dictionaryRepresentation().keys
-                where key.hasPrefix("courses-\(id)-") || key == "semester-schedules-\(id)" || key == "schedule-pending-\(id)" || key.hasPrefix("catalog-\(id)") ||
-                      key.hasPrefix("attendance-\(id)-") || key == "records-\(id)" {
+                where key.hasPrefix("courses-\(id)-") || key == "semester-schedules-\(id)" || key == "schedule-pending-\(id)" || key == "catalog-\(id)" || key.hasPrefix("catalog-\(id)-") ||
+                      key.hasPrefix("attendance-\(id)-") || key == "records-\(id)" || key == "attendance-state-\(id)" {
                 defaults.removeObject(forKey: key)
             }
             checkedScheduleDays = checkedScheduleDays.filter { !$0.hasPrefix("\(id)|") }
@@ -1034,7 +1057,10 @@ final class AppModel: ObservableObject {
     private func markSigned(_ course: Course) {
         if let index = courses.firstIndex(where: { $0.id == course.id && $0.day == course.day }) {
             courses[index].signed = true
+            invalidatedDays.insert(normalizedDay(course.day))
             refreshSequence += 1
+            observeAttendance(course, source: .submission, sequence: refreshSequence)
+            saveAttendanceState()
             courseRefreshSequences[normalizedDay(course.day)] = refreshSequence
             scheduleWriteSequences[normalizedDay(course.day)] = refreshSequence
             courseUpdates[normalizedDay(course.day)] = .now
@@ -1050,7 +1076,7 @@ final class AppModel: ObservableObject {
             guard let start = course.startDate, let end = course.endDate else { return nil }
             let location = course.classroom.map { "教室 · \($0)" }
                 ?? (course.teacher.isEmpty ? "教室暂未提供" : "教师 · \(course.teacher)")
-            return WidgetCourse(id: course.id, name: course.name, location: location, startTime: start, endTime: end, isCheckedIn: course.signed)
+            return WidgetCourse(id: course.id, name: course.name, location: location, startTime: start, endTime: end, isCheckedIn: course.signed, attendanceLabel: attendanceLabel(for: course))
         }
         guard let updatedAt = lastUpdated(on: .now) else { return }
         widgets.save(WidgetSnapshot(courses: values, updatedAt: updatedAt))
@@ -1077,7 +1103,7 @@ final class AppModel: ObservableObject {
     private func mergeCourses(_ updated: [Course], replacingDays days: Set<String>) {
         let previous = Dictionary(courses.map { ("\(normalizedDay($0.day))|\($0.id)", $0) }, uniquingKeysWith: { first, _ in first })
         let updated = updated.map { value in
-            value.preservingIdentity(from: previous["\(normalizedDay(value.day))|\(value.id)"])
+            projectAttendance(value.preservingIdentity(from: previous["\(normalizedDay(value.day))|\(value.id)"]))
         }
         let merged = courses.filter { !days.contains(normalizedDay($0.day)) } + updated
         if courses != merged { courses = merged }
@@ -1136,8 +1162,8 @@ final class AppModel: ObservableObject {
         }
         guard let session else { return }
         let now = Date()
-        let semestersAreFresh = semestersUpdatedAt.map { now.timeIntervalSince($0) < 24 * 60 * 60 } == true
-        let catalogIsFresh = catalogUpdatedAt.map { now.timeIntervalSince($0) < 30 * 60 } == true
+        let semestersAreFresh = CachePolicy.isFresh(semestersUpdatedAt, at: now)
+        let catalogIsFresh = CachePolicy.isFresh(catalogUpdatedAt, at: now)
         if !force, semestersAreFresh, catalogIsFresh { return }
         if !force, let retryAfter = catalogRetryAfter, retryAfter > Date() { return }
         if let catalogRefreshTask { await catalogRefreshTask.value; return }
@@ -1155,44 +1181,14 @@ final class AppModel: ObservableObject {
                 catalogRefreshTask = nil
             }
         }
-        var requestSession = session
         do {
-            var semesterValues = semesters
-            var fetchedSemesters = false
-            if force || semesterValues.isEmpty || semestersUpdatedAt.map({ Date().timeIntervalSince($0) >= 24 * 60 * 60 }) != false {
-                do { semesterValues = try await service.semesters(session: requestSession) }
-                catch let error as APIError where error.isSessionExpired {
-                    guard let renewed = await recoverSession(requestSession, accountToken: accountToken) else { throw error }
-                    requestSession = renewed
-                    semesterValues = try await service.semesters(session: renewed)
-                }
-                fetchedSemesters = true
-            }
-            guard !Task.isCancelled, generation == accountToken else { return }
+            let semesterValues = try await readSemesters(force: force)
+            guard generation == accountToken, !Task.isCancelled else { return }
             let semester = try Self.currentSemester(from: semesterValues)
-            let semesterChanged = selectedSemester?.id != semester.id
-            let needsDirectory = force || semesterChanged || catalogCourses.isEmpty ||
-                catalogUpdatedAt.map { Date().timeIntervalSince($0) >= 30 * 60 } != false
-            let directory: [CatalogCourse]
-            if needsDirectory {
-                do { directory = try await service.catalogCourses(session: requestSession, semesterId: semester.id) }
-                catch let error as APIError where error.isSessionExpired {
-                    guard let renewed = await recoverSession(requestSession, accountToken: accountToken) else { throw error }
-                    requestSession = renewed
-                    directory = try await service.catalogCourses(session: renewed, semesterId: semester.id)
-                }
-            } else {
-                directory = catalogCourses
-            }
-            guard !Task.isCancelled, generation == accountToken,
-                  self.session?.sessionId == requestSession.sessionId else { return }
-            semesters = semesterValues
-            if fetchedSemesters || semestersUpdatedAt == nil { semestersUpdatedAt = .now }
             selectedSemester = semester
-            catalogCourses = directory.sorted {
-                $0.name.localizedStandardCompare($1.name) == .orderedAscending
-            }
-            if needsDirectory { catalogUpdatedAt = .now }
+            let directory = try await readDirectory(for: semester, force: force)
+            guard generation == accountToken, !Task.isCancelled else { return }
+            catalogCourses = directory.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             catalogIsCached = false
             catalogError = nil
             catalogFailureCount = 0
@@ -1217,7 +1213,7 @@ final class AppModel: ObservableObject {
         guard !courseId.isEmpty else { return }
         let courseId = canonicalCourseID(for: courseId)
         if isDemo {
-            if !force, let updated = attendanceUpdatedAt[courseId], Date().timeIntervalSince(updated) < 5 * 60 { return }
+            if !force, !invalidatedAttendance.contains(courseId), CachePolicy.isFresh(attendanceUpdatedAt[courseId], at: attendanceNow(), lifetime: 5 * 60) { return }
             let matching = courses.filter { preferenceID(for: $0) == courseId }
             let records = matching.map {
                 CourseAttendance(id: "\($0.day)|\($0.id)", courseId: courseId, scheduledCourseId: $0.id,
@@ -1231,16 +1227,26 @@ final class AppModel: ObservableObject {
         }
         guard let session else { return }
         if attendanceByCourse[courseId] == nil { loadAttendanceCache(accountId: session.studentNo, courseId: courseId) }
-        if !force, let updated = attendanceUpdatedAt[courseId], Date().timeIntervalSince(updated) < 5 * 60 { return }
-        if let task = attendanceTasks[courseId] { await task.value; return }
+        if !force, !invalidatedAttendance.contains(courseId), CachePolicy.isFresh(attendanceUpdatedAt[courseId], at: attendanceNow(), lifetime: 5 * 60) { return }
+        if let read = attendanceTasks[courseId] {
+            let token = generation
+            await read.task.value
+            if generation == token, read.revision != attendanceRevisions[courseId, default: 0] {
+                await refreshAttendance(for: courseId, force: force)
+            }
+            return
+        }
         let token = generation
-        let task = Task { await self.performAttendanceRefresh(courseId: courseId, session: session, accountToken: token) }
-        attendanceTasks[courseId] = task
+        let revision = attendanceRevisions[courseId, default: 0]
+        let task = Task { await self.performAttendanceRefresh(courseId: courseId, session: session, accountToken: token, revision: revision) }
+        attendanceTasks[courseId] = (task, revision)
         await task.value
     }
 
-    private func performAttendanceRefresh(courseId: String, session: SchoolSession, accountToken: UUID) async {
+    private func performAttendanceRefresh(courseId: String, session: SchoolSession, accountToken: UUID, revision: Int) async {
         attendanceRefreshing.insert(courseId)
+        refreshSequence += 1
+        let sequence = refreshSequence
         defer {
             if generation == accountToken {
                 attendanceRefreshing.remove(courseId)
@@ -1258,8 +1264,19 @@ final class AppModel: ObservableObject {
             }
             guard !Task.isCancelled, generation == accountToken,
                   self.session?.sessionId == requestSession.sessionId else { return }
+            guard attendanceRevisions[courseId, default: 0] == revision else { return }
+            for record in summary.records {
+                if let course = courses.first(where: { $0.id == record.scheduledCourseId && normalizedDay($0.day) == normalizedDay(record.day) }) {
+                    var value = course; value.signed = record.signed; value.signStatusKnown = record.signStatusKnown
+                    observeAttendance(value, source: .detail, sequence: sequence)
+                }
+            }
+            courses = courses.map(projectAttendance)
+            invalidatedAttendance.remove(courseId)
+            saveAttendanceState()
+            publishWidget()
             attendanceByCourse[courseId] = summary
-            attendanceUpdatedAt[courseId] = .now
+            attendanceUpdatedAt[courseId] = attendanceNow()
             attendanceErrors.removeValue(forKey: courseId)
             saveAttendanceCache(accountId: session.studentNo, courseId: courseId, summary: summary)
         } catch {
@@ -1269,6 +1286,7 @@ final class AppModel: ObservableObject {
                 requestLogin(for: session.studentNo)
                 return
             }
+            guard attendanceRevisions[courseId, default: 0] == revision else { return }
             attendanceErrors[courseId] = error.localizedDescription
         }
     }
@@ -1308,12 +1326,17 @@ final class AppModel: ObservableObject {
     }
 
     private func loadCatalogCache(for accountId: String) {
+        if let data = defaults.data(forKey: "catalog-\(accountId)-semesters"),
+           let metadata = try? JSONDecoder().decode(SemesterMetadataCache.self, from: data) {
+            semesters = metadata.values; semestersUpdatedAt = metadata.updatedAt
+        }
         guard let data = defaults.data(forKey: "catalog-\(accountId)"),
               let cache = try? JSONDecoder().decode(CatalogCache.self, from: data), cache.version == 1,
               let semester = cache.semesters.first(where: { $0.id == cache.selectedSemesterId }),
               cache.courses.allSatisfy({ $0.semesterId == semester.id }) else { return }
-        semesters = cache.semesters
-        semestersUpdatedAt = cache.semestersUpdatedAt
+        if semestersUpdatedAt == nil || cache.semestersUpdatedAt > semestersUpdatedAt! {
+            semesters = cache.semesters; semestersUpdatedAt = cache.semestersUpdatedAt
+        }
         selectedSemester = semester
         catalogCourses = cache.courses
         catalogUpdatedAt = cache.updatedAt
@@ -1338,6 +1361,9 @@ final class AppModel: ObservableObject {
         guard let id = courseId else { return }
         let courseId = canonicalCourseID(for: id)
         attendanceUpdatedAt.removeValue(forKey: courseId)
+        invalidatedAttendance.insert(courseId)
+        attendanceRevisions[courseId, default: 0] += 1
+        saveAttendanceState()
         if let accountId = activeAccountID { defaults.removeObject(forKey: "attendance-\(accountId)-\(courseId)") }
     }
 
@@ -1479,44 +1505,24 @@ extension AppModel {
 
     func openScheduleDate(_ date: Date) async {
         let token = generation
-        if scheduleMode == .week, isInitialWeekLoading {
-            await refreshSchedule()
+        if scheduleMode == .week {
+            await synchronizeSchedules()
             return
         }
         if let session, !hasSchedule(on: date) {
             if loadCache(for: session, date: date) { courseFreshness[SchoolDate.key(date)] = false }
         }
-        let key = "\(session?.studentNo ?? "demo")|\(SchoolDate.key(date))"
-        if !checkedScheduleDays.contains(key), dayRetryAfter[SchoolDate.key(date)].map({ $0 > Date() }) != true {
-            await refresh(on: date)
-        }
+        await enterDay(date)
         guard generation == token, !Task.isCancelled else { return }
         await synchronizeSchedules()
         guard generation == token, !Task.isCancelled, SchoolDate.key(date) == SchoolDate.key(selectedDate) else { return }
-        if scheduleMode == .week { await loadVisibleWeek(containing: date) }
-    }
-
-    private func loadVisibleWeek(containing date: Date, retryFailed: Bool = false) async {
-        let token = generation
-        for day in SchoolDate.week(containing: date) {
-            guard generation == token, !Task.isCancelled, scheduleMode == .week,
-                  SchoolDate.key(date) == SchoolDate.key(selectedDate) else { return }
-            let key = SchoolDate.key(day)
-            guard canSelectVisibleScheduleDate(day) else { continue }
-            guard !hasSchedule(on: day) || scheduleDayErrors[key] != nil else { continue }
-            if isDemo { populateDemoSemester(containing: day); continue }
-            if !retryFailed, dayRetryAfter[key].map({ $0 > Date() }) == true { continue }
-            await refresh(on: day)
-        }
     }
 
     func refreshSchedule() async {
         if scheduleMode == .week {
             let token = generation
-            let date = selectedDate
             await synchronizeSchedules(force: true)
             guard generation == token else { return }
-            await loadVisibleWeek(containing: date, retryFailed: true)
         } else {
             let token = generation
             await refresh(on: selectedDate)
@@ -1597,10 +1603,9 @@ extension AppModel {
         isSemesterSyncing = true
         scheduleSyncError = nil
         do {
-            var terms = try await scheduleRead(token: token) { try await self.service.semesters(session: $0) }
+            var terms = try await readSemesters(force: force)
             if let requestedSemester, !terms.contains(where: { $0.id == requestedSemester.id }) { terms.append(requestedSemester) }
             semesters = terms
-            semestersUpdatedAt = .now
             let date = requestedSemester.flatMap { requested in terms.first(where: { $0.id == requested.id }).flatMap { ScheduleCalendar.dateRange(in: $0)?.lowerBound } } ?? boundedScheduleDate(date)
             if requestedSemester == nil, SchoolDate.key(selectedDate) == selectedDay { selectedDate = date }
             let selectedDay = SchoolDate.key(date)
@@ -1669,6 +1674,8 @@ extension AppModel {
     }
 
     private func synchronizeSemester(_ term: SchoolSemester, token: UUID) async throws {
+        syncingSemesterID = term.id
+        defer { if generation == token { syncingSemesterID = nil } }
         let days = ScheduleCalendar.days(in: term)
         guard !days.isEmpty else { throw APIError(code: "SEMESTER_RANGE", message: "学期日期范围无效") }
         refreshSequence += 1
@@ -1698,14 +1705,12 @@ extension AppModel {
         mergeCourses(staged.filter { accepted.contains(normalizedDay($0.day)) }, replacingDays: accepted)
         let now = Date()
         for day in accepted {
-            courseRefreshSequences[day] = max(courseRefreshSequences[day, default: 0], sequence)
             scheduleWriteSequences[day] = sequence
-            courseFreshness[day] = true
+            if courseFreshness[day] == nil { courseFreshness[day] = false }
             courseUpdates[day] = now
             courseNotices[day] = nil
             scheduleDayErrors[day] = nil
             dayRetryAfter[day] = nil
-            checkedScheduleDays.insert("\(session.studentNo)|\(day)")
         }
         // Include newer daily checks and local attendance writes in the committed snapshot.
         let snapshot = SemesterScheduleCache(semester: term, courses: courses.filter { wanted.contains(normalizedDay($0.day)) }, updatedAt: now)
@@ -1723,6 +1728,8 @@ extension AppModel {
             let key = SchoolDate.key(day)
             let values = try await scheduleRead(token: token) { try await self.service.dailySchedule(session: $0, date: day) }
             guard courseRefreshSequences[key, default: 0] <= sequence, let session else { continue }
+            for value in values { observeAttendance(value, source: .daily, sequence: sequence) }
+            saveAttendanceState()
             mergeCourses(values, replacingDays: [key])
             courseRefreshSequences[key] = sequence
             scheduleWriteSequences[key] = sequence
@@ -1846,7 +1853,7 @@ extension AppModel {
         let token = generation
         if let task = courseScheduleTasks[id] { await task.value; return }
         if let snapshot = semesterSchedules[id], !snapshot.needsRefresh(at: .now),
-           isDemo || courseScheduleDirectories[id].map({ Date().timeIntervalSince($0.updatedAt) < 30 * 60 }) == true {
+           isDemo || CachePolicy.isFresh(courseScheduleDirectories[id]?.updatedAt, at: .now) {
             courseScheduleErrors[id] = nil
             courseScheduleRetryAfter[id] = nil
             return
@@ -1865,8 +1872,7 @@ extension AppModel {
         defer { if generation == token { courseScheduleLoading.remove(id) } }
         do {
             if courseScheduleSemester(for: course) == nil, !isDemo {
-                semesters = try await scheduleRead(token: token) { try await self.service.semesters(session: $0) }
-                semestersUpdatedAt = .now
+                semesters = try await readSemesters(force: true)
             }
             guard let term = courseScheduleSemester(for: course) else {
                 throw APIError(code: "COURSE_SCHEDULE_SEMESTER", message: "无法确定这门课所属学期的有效范围。")
@@ -1875,14 +1881,7 @@ extension AppModel {
                 populateDemoSemester(containing: ScheduleCalendar.dateRange(in: term)!.lowerBound)
                 return
             }
-            if courseScheduleDirectories[id] == nil, selectedSemester?.id == id, let updated = catalogUpdatedAt, !catalogCourses.isEmpty {
-                courseScheduleDirectories[id] = (catalogCourses, updated)
-            }
-            let directory = courseScheduleDirectories[id]
-            if directory == nil || Date().timeIntervalSince(directory!.updatedAt) >= 30 * 60 {
-                let values = try await scheduleRead(token: token) { try await self.service.catalogCourses(session: $0, semesterId: id) }
-                courseScheduleDirectories[id] = (values, .now)
-            }
+            _ = try await readDirectory(for: term)
             courseSchedulePresentations.removeAll()
             if semesterSchedules[id]?.needsRefresh(at: .now) != false {
                 await synchronizeSchedules(semester: term)
@@ -1897,5 +1896,108 @@ extension AppModel {
             courseScheduleErrors[id] = error.localizedDescription
             courseScheduleRetryAfter[id] = Date().addingTimeInterval(60)
         }
+    }
+}
+
+extension AppModel {
+    private func arrangementFresh(_ course: Course) -> Bool {
+        if isDemo || courseFreshness[normalizedDay(course.day)] == true { return true }
+        let day = normalizedDay(course.day)
+        return semesterSchedules.values.contains { !$0.needsRefresh(at: .now) && $0.semester.beginDate <= day && day <= $0.semester.endDate }
+    }
+    private func attendanceKey(_ course: Course) -> String { "\(normalizedDay(course.day))|\(course.id)" }
+    func attendanceStatus(for course: Course) -> AttendanceStatus {
+        if isDemo { return course.signed ? .signed : .unsigned }
+        return attendanceStates[attendanceKey(course)]?.status ?? (course.signed ? .signed : .unknown)
+    }
+    func attendanceLabel(for course: Course) -> String {
+        let key = attendanceKey(course)
+        if attendanceStates[key]?.pendingVerification == true {
+            return "已签到 · 待核验"
+        }
+        switch attendanceStatus(for: course) {
+        case .signed: return "已签到"
+        case .unsigned: return "未签到"
+        case .unknown: return "状态待同步"
+        }
+    }
+    private func projectAttendance(_ course: Course) -> Course {
+        guard !isDemo else { return course }
+        var value = course
+        value.signed = attendanceStatus(for: course) == .signed
+        return value
+    }
+    private func observeAttendance(_ course: Course, source: AttendanceSource, sequence: Int) {
+        let key = attendanceKey(course)
+        guard attendanceVersions[key, default: 0] < sequence else { return }
+        let value: AttendanceStatus = source == .submission ? .signed : course.signStatusKnown == true ? (course.signed ? .signed : .unsigned) : .unknown
+        let now = attendanceNow()
+        let previous = attendanceStates[key] ?? AttendanceEvidence(observedAt: now)
+        let state = previous.observing(value, source: source, now: now)
+        attendanceStates[key] = state; attendanceVersions[key] = sequence
+    }
+    private func loadAttendanceState() {
+        guard let id = activeAccountID, let data = defaults.data(forKey: "attendance-state-\(id)"),
+              let cache = try? JSONDecoder().decode(AttendanceEvidenceCache.self, from: data), cache.version == 1, cache.accountID == id else { return }
+        attendanceStates = cache.states; invalidatedAttendance = cache.invalidatedCourses
+    }
+    private func saveAttendanceState() {
+        guard !isDemo, let id = activeAccountID,
+              let data = try? JSONEncoder().encode(AttendanceEvidenceCache(accountID: id, states: attendanceStates, invalidatedCourses: invalidatedAttendance)) else { return }
+        defaults.set(data, forKey: "attendance-state-\(id)")
+    }
+    func enterDay(_ date: Date) async {
+        guard !isDemo else { return }
+        if courseFreshness[SchoolDate.key(date)] == true, CachePolicy.isFresh(dayVerifiedAt[SchoolDate.key(date)], at: attendanceNow(), lifetime: 30) { return }
+        await refresh(on: date)
+    }
+    private func readSemesters(force: Bool = false) async throws -> [SchoolSemester] {
+        if let task = semesterReadTask { return try await task.value }
+        if !force, !semesters.isEmpty, CachePolicy.isFresh(semestersUpdatedAt, at: .now) { return semesters }
+        let token = generation
+        let task = Task { try await self.scheduleRead(token: token) { try await self.service.semesters(session: $0) } }
+        semesterReadTask = task
+        defer { if generation == token { semesterReadTask = nil } }
+        let values = try await task.value
+        guard generation == token else { throw CancellationError() }
+        semesters = values; semestersUpdatedAt = .now
+        if let id = activeAccountID, let data = try? JSONEncoder().encode(SemesterMetadataCache(values: values, updatedAt: semestersUpdatedAt!)) {
+            defaults.set(data, forKey: "catalog-\(id)-semesters")
+        }
+        return values
+    }
+    private struct SemesterMetadataCache: Codable { let values: [SchoolSemester]; let updatedAt: Date }
+    private struct DirectoryCache: Codable { let version: Int; let courses: [CatalogCourse]; let updatedAt: Date }
+    private func readDirectory(for term: SchoolSemester, force: Bool = false) async throws -> [CatalogCourse] {
+        let id = term.id
+        if let task = directoryReadTasks[id] { return try await task.value }
+        if courseScheduleDirectories[id] == nil, selectedSemester?.id == id, let updated = catalogUpdatedAt {
+            courseScheduleDirectories[id] = (catalogCourses, updated)
+        }
+        if courseScheduleDirectories[id] == nil, let account = activeAccountID,
+           let data = defaults.data(forKey: "catalog-\(account)-directory-\(id)"),
+           let stored = try? JSONDecoder().decode(DirectoryCache.self, from: data), stored.version == 1,
+           stored.courses.allSatisfy({ $0.semesterId == id }) {
+            courseScheduleDirectories[id] = (stored.courses, stored.updatedAt)
+        }
+        if let cached = courseScheduleDirectories[id] {
+            if selectedSemester?.id == id { catalogCourses = cached.courses; catalogUpdatedAt = cached.updatedAt }
+            if !force, CachePolicy.isFresh(cached.updatedAt, at: .now) { return cached.courses }
+        }
+        let token = generation
+        let task = Task { try await self.scheduleRead(token: token) { try await self.service.catalogCourses(session: $0, semesterId: id) } }
+        directoryReadTasks[id] = task
+        defer { if token == generation { directoryReadTasks[id] = nil } }
+        let values = try await task.value
+        guard token == generation else { throw CancellationError() }
+        guard values.allSatisfy({ $0.semesterId == id }) else { throw APIError(code: "CATALOG_SEMESTER", message: "学校返回了其他学期的课程") }
+        let now = Date()
+        courseScheduleDirectories[id] = (values, now)
+        if selectedSemester?.id == id { catalogCourses = values; catalogUpdatedAt = now }
+        if let account = activeAccountID, let data = try? JSONEncoder().encode(DirectoryCache(version: 1, courses: values, updatedAt: now)) {
+            defaults.set(data, forKey: "catalog-\(account)-directory-\(id)")
+        }
+        courseSchedulePresentations.removeAll()
+        return values
     }
 }

@@ -28,8 +28,9 @@ public struct Course: Identifiable, Codable, Hashable, Sendable {
     public let endTime: String
     public let day: String
     public var signed: Bool
+    public var signStatusKnown: Bool?
 
-    public init(id: String, courseId: String? = nil, courseNumber: String? = nil, teacherId: String? = nil, uuid: String = "", name: String, teacher: String = "", classroom: String? = nil, beginTime: String, endTime: String, day: String, signed: Bool = false) {
+    public init(id: String, courseId: String? = nil, courseNumber: String? = nil, teacherId: String? = nil, uuid: String = "", name: String, teacher: String = "", classroom: String? = nil, beginTime: String, endTime: String, day: String, signed: Bool = false, signStatusKnown: Bool? = true) {
         self.id = id
         self.courseId = courseId?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         self.courseNumber = courseNumber?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
@@ -43,6 +44,7 @@ public struct Course: Identifiable, Codable, Hashable, Sendable {
         self.endTime = endTime
         self.day = day
         self.signed = signed
+        self.signStatusKnown = signStatusKnown
     }
 
     public var startDate: Date? { CourseTime.parse(day: day, time: beginTime) }
@@ -55,7 +57,7 @@ public struct Course: Identifiable, Codable, Hashable, Sendable {
               CourseTime.normalizeDay(previous.day) == CourseTime.normalizeDay(day) else { return self }
         return Course(id: id, courseId: courseId ?? previous.courseId, courseNumber: courseNumber ?? previous.courseNumber,
                       teacherId: teacherId ?? previous.teacherId, uuid: uuid, name: name, teacher: teacher,
-                      classroom: classroom, beginTime: beginTime, endTime: endTime, day: day, signed: signed)
+                      classroom: classroom, beginTime: beginTime, endTime: endTime, day: day, signed: signed, signStatusKnown: signStatusKnown)
     }
 }
 
@@ -114,9 +116,10 @@ public struct CourseAttendance: Identifiable, Codable, Hashable, Sendable {
     public let beginTime: String
     public let endTime: String
     public let signed: Bool
+    public let signStatusKnown: Bool?
 
     public init(id: String, courseId: String, scheduledCourseId: String, day: String,
-                beginTime: String, endTime: String, signed: Bool) {
+                beginTime: String, endTime: String, signed: Bool, signStatusKnown: Bool? = true) {
         self.id = id
         self.courseId = courseId
         self.scheduledCourseId = scheduledCourseId
@@ -124,6 +127,7 @@ public struct CourseAttendance: Identifiable, Codable, Hashable, Sendable {
         self.beginTime = beginTime
         self.endTime = endTime
         self.signed = signed
+        self.signStatusKnown = signStatusKnown
     }
 }
 
