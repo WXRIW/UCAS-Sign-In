@@ -12,11 +12,9 @@ public sealed partial class MainPageFragment
         var content = Column(Text("正在整理排课…", 13, color: Secondary));
         var generation = Model.Generation;
         var inside = Across(content, Icon(Resource.Drawable.ic_chevron_right, 18, Secondary));
-        var card = Card(inside, 0);
-        inside.SetPadding(D(21), D(12), D(21), D(12));
-        Tap(card, () => generation == Model.Generation ? Navigate("course-schedule") : Task.CompletedTask,
+        Tap(inside, () => generation == Model.Generation ? Navigate("course-schedule") : Task.CompletedTask,
             "排课信息，" + course.Name + "，查看按周排列的完整排课信息");
-        Add(Column(Text("排课信息", 14, true), card));
+        Add(MaterialSettingsSection("排课信息", inside));
         var scene = activeScene!;
         object? requested = null;
         scene.UpdateScheduleSummary = () =>
@@ -134,27 +132,55 @@ sealed class ScheduleFlowLayout(Context context, int gap, int lineGap, bool righ
 {
     protected override void OnMeasure(int widthMeasureSpec, int heightMeasureSpec)
     {
-        var width = MeasureSpec.GetSize(widthMeasureSpec); var x = 0; var y = 0; var height = 0;
+        var width = MeasureSpec.GetSize(widthMeasureSpec);
         for (var i = 0; i < ChildCount; i++)
         {
             var child = GetChildAt(i)!;
             child.Measure(MeasureSpec.MakeMeasureSpec(width, MeasureSpecMode.AtMost), MeasureSpec.MakeMeasureSpec(0, MeasureSpecMode.Unspecified));
-            if (x > 0 && x + child.MeasuredWidth > width) { y += height + lineGap; x = height = 0; }
-            x += child.MeasuredWidth + gap; height = Math.Max(height, child.MeasuredHeight);
         }
-        SetMeasuredDimension(width, ResolveSize(y + height, heightMeasureSpec));
+        var height = 0;
+        foreach (var row in Rows(width)) height += row.Height + (row.Start == 0 ? 0 : lineGap);
+        SetMeasuredDimension(width, ResolveSize(height, heightMeasureSpec));
     }
     protected override void OnLayout(bool changed, int left, int top, int right, int bottom)
     {
-        var width = right - left; var x = 0; var y = 0; var height = 0;
+        var width = right - left; var y = 0;
+        foreach (var row in Rows(width))
+        {
+            var x = 0;
+            for (var i = row.Start; i < row.End; i++)
+            {
+                var child = GetChildAt(i)!;
+                var start = rightAlignLast && i == ChildCount - 1 && x > 0 ? Math.Max(x, width - child.MeasuredWidth) : x;
+                var childTop = y + (child.Baseline >= 0 ? row.Baseline - child.Baseline : (row.Height - child.MeasuredHeight) / 2);
+                child.Layout(start, childTop, start + child.MeasuredWidth, childTop + child.MeasuredHeight);
+                x += child.MeasuredWidth + gap;
+            }
+            y += row.Height + lineGap;
+        }
+    }
+    // Numeric times and Chinese metadata can have different font metrics. Share a baseline
+    // within each wrapped row, and reserve enough space both above and below that baseline.
+    IEnumerable<(int Start, int End, int Height, int Baseline)> Rows(int width)
+    {
+        var start = 0; var x = 0; var height = 0; var baseline = 0; var descent = 0;
         for (var i = 0; i < ChildCount; i++)
         {
             var child = GetChildAt(i)!;
-            if (x > 0 && x + child.MeasuredWidth > width) { y += height + lineGap; x = height = 0; }
-            var start = rightAlignLast && i == ChildCount - 1 && x > 0 ? Math.Max(x, width - child.MeasuredWidth) : x;
-            child.Layout(start, y, start + child.MeasuredWidth, y + child.MeasuredHeight);
-            x += child.MeasuredWidth + gap; height = Math.Max(height, child.MeasuredHeight);
+            if (i > start && x + child.MeasuredWidth > width)
+            {
+                yield return (start, i, Math.Max(height, baseline + descent), baseline);
+                start = i; x = height = baseline = descent = 0;
+            }
+            x += child.MeasuredWidth + gap;
+            height = Math.Max(height, child.MeasuredHeight);
+            if (child.Baseline >= 0)
+            {
+                baseline = Math.Max(baseline, child.Baseline);
+                descent = Math.Max(descent, child.MeasuredHeight - child.Baseline);
+            }
         }
+        if (start < ChildCount) yield return (start, ChildCount, Math.Max(height, baseline + descent), baseline);
     }
     protected override LayoutParams GenerateDefaultLayoutParams() => new(LayoutParams.WrapContent, LayoutParams.WrapContent);
 }
