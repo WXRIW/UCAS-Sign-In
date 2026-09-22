@@ -16,8 +16,13 @@ public sealed partial class MainPageFragment
         link.SetMinimumHeight(D(48));
         Tap(link, () => generation == Model.Generation ? Navigate("course-schedule") : Task.CompletedTask,
             "查看完整排课信息，" + course.Name);
-        var inside = Column(content, Rule(), link);
-        Add(MaterialSettingsSection("排课信息", inside));
+        // The 48dp action row already provides enough vertical space around the link.
+        var divider = Rule();
+        ((LinearLayout.LayoutParams)divider.LayoutParameters!).BottomMargin = 0;
+        var inside = Column(content, divider, link);
+        var section = MaterialSettingsSection("排课信息", inside);
+        inside.SetPadding(inside.PaddingLeft, inside.PaddingTop, inside.PaddingRight, 0);
+        Add(section);
         var scene = activeScene!;
         object? requested = null;
         scene.UpdateScheduleSummary = () =>
@@ -157,7 +162,9 @@ public sealed partial class MainPageFragment
         AddCourseScheduleStatus(body!, course, data);
         foreach (var week in data.Meetings.GroupBy(m => m.Week))
         {
-            Add(Text($"第 {week.Key} 周", 14, true), 12);
+            var heading = Text($"第 {week.Key} 周", 14, true, Secondary);
+            heading.SetPadding(D(16), 0, D(16), 0);
+            Add(heading, 10);
             foreach (var meeting in week) Add(CourseScheduleCard(meeting), 12);
         }
         scene.ScheduleData = data; scene.ScheduleStatus = Model.CourseScheduleStatus(course, data);
