@@ -40,6 +40,7 @@ struct CourseDetailView: View {
             VStack(spacing: 23) {
                 VStack(spacing: 10) {
                     Text(course.name).font(.system(size: 25, weight: .semibold)).foregroundStyle(Palette.ink)
+                        .multilineTextAlignment(.center)
                     Text("\(formattedDay) · \(course.timeRange)").font(.system(size: 13)).foregroundStyle(Palette.secondary)
                     CourseMetadataView(course: currentCourse, showsMissingClassroom: true)
                         .font(.system(size: 12)).foregroundStyle(Palette.secondary)
