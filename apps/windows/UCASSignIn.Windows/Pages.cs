@@ -511,7 +511,7 @@ public sealed partial class MainWindow
             };
             preferenceCards.Children.Add(SettingRow("提醒时间", "课程可单独覆盖此默认值", "\uE823", lead));
         }
-        preferenceCards.Children.Add(SettingRow("手动签到二次确认", "提交前再次核对课程、日期和时间", "\uE9D5", confirmation));
+        preferenceCards.Children.Add(SettingRow("手动签到二次确认", "提交前弹窗确认，避免误触签到", "\uE9D5", confirmation));
         preferenceCards.Children.Add(SettingRow("自动签到", "果壳签到运行时，进入签到时段后尝试一次", "\uE73E", auto));
         preferences.Children.Add(SettingsNote("窗口可最小化，也可切换到其他应用；退出果壳签到或设备睡眠时会暂停。签到结果以学校返回状态为准。"));
         Page.Children.Add(preferences);

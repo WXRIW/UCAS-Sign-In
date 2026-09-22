@@ -286,7 +286,7 @@ public sealed partial class MainPageFragment
         var sign = Column();
         if (!values.SignInDisabled)
         {
-            sign.AddView(OverrideSettingRow(Resource.Drawable.ic_check_circle, "手动签到二次确认", "手动签到前显示课程与上课时间",
+            sign.AddView(OverrideSettingRow(Resource.Drawable.ic_check_circle, "手动签到二次确认", "提交前弹窗确认，避免误触签到",
                 values.Confirmation, Model.Preferences.ConfirmBeforeSign,
                 selected => Model.SetCoursePreferencesAsync(course.Id, values with { Confirmation = selected })));
             sign.AddView(SettingsRule());

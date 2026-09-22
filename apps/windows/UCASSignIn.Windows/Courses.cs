@@ -254,7 +254,7 @@ public sealed partial class MainWindow
         var signCards = (StackPanel)signRows.Children[1];
         if (!values.SignInDisabled)
         {
-            signCards.Children.Add(SettingRow("手动签到二次确认", "手动签到前显示课程与上课时间", "\uE9D5",
+            signCards.Children.Add(SettingRow("手动签到二次确认", "提交前弹窗确认，避免误触签到", "\uE9D5",
                 OverridePicker("手动签到二次确认", values.Confirmation, Model.Preferences.ConfirmBeforeSign,
                     selected => Model.SetCoursePreferencesAsync(course.Id, values with { Confirmation = selected }))));
             signCards.Children.Add(SettingRow("自动签到", "进入签到时段后自动尝试一次", "\uE73E",

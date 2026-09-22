@@ -338,7 +338,7 @@ struct CatalogCourseDetailView: View {
         VStack(spacing: 0) {
             if !preferences.signInDisabled {
                 preferencePicker("手动签到二次确认", symbol: "questionmark.circle",
-                                 description: "手动签到前显示课程与上课时间",
+                                 description: "提交前弹窗确认，避免误触签到",
                                  selection: $preferences.confirmation, inherited: model.confirmationEnabled)
                 PreferenceDivider()
                 preferencePicker("自动签到", symbol: "checkmark.circle", description: automaticSignDescription,

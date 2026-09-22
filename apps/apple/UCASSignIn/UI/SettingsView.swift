@@ -91,7 +91,7 @@ struct SettingsView: View {
                         }
                         PreferenceDivider()
                         Toggle(isOn: Binding(get: { model.confirmationEnabled }, set: { model.setConfirmation($0) })) {
-                            settingsLabel("签到前二次确认", subtitle: "手动签到前显示课程与上课时间", symbol: "questionmark.circle")
+                            settingsLabel("签到前二次确认", subtitle: "提交前弹窗确认，避免误触签到", symbol: "questionmark.circle")
                         }.toggleStyle(.switch).accessibilityIdentifier("settings.confirmation")
                             .padding(.vertical, 18)
                         PreferenceDivider()

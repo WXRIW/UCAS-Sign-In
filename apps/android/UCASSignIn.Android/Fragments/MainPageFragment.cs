@@ -602,7 +602,7 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
             classroom.AddView(lead);
         }
         classroom.AddView(SettingsRule());
-        classroom.AddView(Across(SettingLabel(Resource.Drawable.ic_check_circle, "手动签到二次确认", "提交前再次核对课程、日期和时间"), confirmation));
+        classroom.AddView(Across(SettingLabel(Resource.Drawable.ic_check_circle, "手动签到二次确认", "提交前弹窗确认，避免误触签到"), confirmation));
         classroom.AddView(SettingsRule());
         classroom.AddView(Across(SettingLabel(Resource.Drawable.ic_check, "后台自动签到", "无需保持 App 前台，进入签到时段后尝试一次"), auto));
         Add(MaterialSettingsSection("课堂偏好", classroom,
