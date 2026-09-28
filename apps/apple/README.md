@@ -1,6 +1,6 @@
 # Apple 客户端开发说明
 
-本目录包含 iOS、iPadOS 和 macOS 的 Swift + SwiftUI 工程。返回[仓库首页](../../README.md)。
+本目录包含 iOS、iPadOS、watchOS 和 macOS 的 Swift + SwiftUI 工程。返回[仓库首页](../../README.md)。
 
 下列命令均在本目录执行；从仓库根目录进入：
 
@@ -19,6 +19,20 @@ cd apps/apple
 2. 选择 `UCASSignIn` scheme 和一个 iPhone 或 iPad 模拟器，点击运行。
 
 在 **Product → Scheme → Edit Scheme → Run → Arguments Passed On Launch** 中添加 `--demo`，可在启动时直接进入演示模式。
+
+## Apple Watch 配套版
+
+`UCASSignIn` iPhone App 内嵌 `UCASSignInWatch` target。需要 watchOS 10 或更新版本，以及配对的 iPhone。先在 iPhone 上安装、打开并登录果壳签到，再通过 iPhone 的 Watch App 安装手表 App；开发时也可在 Xcode 中选择配对的 iPhone 与 Apple Watch 作为运行设备。真机上 iPhone 和 Apple Watch 都需要开发者模式及相应签名。
+
+手表可查看今日概览与下一节课、本周课表、课程时间地点和教师、最近 20 条签到记录及账户同步状态。手表每次进入前台时向 iPhone 请求一次课程摘要；后台不接收课程推送，打开某一天也不会自动刷新，可按需点“刷新这一天”。今日可签到课程提供快捷入口，提交前仍需二次确认。账户、会话和学校网络请求始终留在 iPhone；手表只保存最近一次课程与记录摘要。手表和 iPhone 暂时无法通信时，会显示上次同步内容，但不能提交签到。课程状态过期、账户切换或学校未明确返回“未签到”时，iPhone 会拒绝提交。手表暂不提供动态二维码和自动签到。
+
+使用免费 Apple 账号在真机自签安装时，配置描述文件通常 7 天到期，届时需要重新构建安装。长期在固定设备测试可使用付费开发者账号的设备注册与 Ad Hoc 签名；watchOS App 跟随已签名的 iPhone App 一起打包。
+
+自签 IPA 和配置描述文件含有签名及设备信息，仅供本机安装使用；仓库的 `.gitignore` 已排除 `artifacts/`、`*.ipa` 和配置描述文件，不要把它们加入源码提交。
+
+如果 iPhone 的 Watch App 在“可用 App”中反复提示无法安装，可双击仓库中的 `scripts/apple/安装手表.command`，或在仓库根目录运行 `scripts/apple/install-watch.sh`，直接把当前 `artifacts/ios` 中的手表包安装到已连接的 Apple Watch。先用同一 IPA 更新配对 iPhone；手表需解锁并开启开发者模式，Mac 与手表需要能建立设备连接。脚本也接受 IPA 路径作为第一个参数，以及 Apple Watch 设备 ID 作为第二个参数，并会在安装后核对版本。
+
+构建手表 target 前，Xcode 还需安装与 SDK 对应的 watchOS 运行时；若提示缺少 watchOS 运行时，请在 Xcode 的平台组件设置中安装。此工程的 iPhone App 和小组件使用 App Group，真机签名也需正确配置该能力。
 
 ## macOS 原生版
 
@@ -77,6 +91,7 @@ UCASSignIn/
 └── Resources/               图标、Info.plist、entitlement 与隐私声明
 UCASSignInMac/Resources/     macOS 配置、沙盒权限与原生 AppIcon
 UCASSignInWidget/            iOS / macOS 共享的 WidgetKit 扩展
+UCASSignInWatch/             配对 iPhone 的 watchOS App
 Shared/                     App 与 Widget 共享的课程快照
 Tests/UCASCoreTests/         核心逻辑单元测试
 UCASSignInMacTests/          AppModel 与账户切换单元测试

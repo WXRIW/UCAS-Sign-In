@@ -5,6 +5,10 @@ import UserNotifications
 
 @MainActor
 enum AppLaunchEnvironment {
+    #if os(iOS)
+    static let sharedModel = makeModel()
+    #endif
+
     static var isUnitTestHost: Bool {
         #if DEBUG
         ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
