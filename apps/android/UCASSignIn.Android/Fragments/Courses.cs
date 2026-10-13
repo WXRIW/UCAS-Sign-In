@@ -320,7 +320,7 @@ public sealed partial class MainPageFragment
                 i => autoRule with { RetryMinutes = i == 0 ? null : retryIntervals[i - 1] }));
             sign.AddView(SettingsRule());
             sign.AddView(RuleRow("结果通知", ["跟随账户", "仅异常", "成功与异常", "关闭"],
-                autoRule.Notification is { } notification ? (int)notification + 1 : 0,
+                autoRule.Notification is { } notificationMode ? (int)notificationMode + 1 : 0,
                 i => autoRule with { Notification = i == 0 ? null : (AutoSignNotification)(i - 1) }));
             sign.AddView(SettingsRule());
         }

@@ -2,6 +2,8 @@
 
 三端共用 `eng/version.json` 作为唯一版本源。正式产物直接写入 `artifacts/publish/<版本>/`，不再增加平台子目录；临时构建文件放在 `artifacts/.staging/` 或系统临时目录。
 
+Windows 与 Android 构建使用根目录 `global.json` 固定的 .NET SDK；GitHub Actions 从该文件安装 SDK，并将 SDK 安装到 runner 临时目录，以隔离预装的 Visual Studio 工作负载。Android 任务显式执行 `dotnet workload install android --version 10.0.303.1`；工作负载集不写入根目录 `global.json`，Windows 和版本工具无需安装它。升级工具链时应同步更新依赖锁文件并验证锁定还原，避免 SDK 隐式引用的 `Microsoft.NET.ILLink.Tasks` 版本变化导致 `NU1004`。
+
 ## 1. 设置版本
 
 在任意平台的仓库根目录执行：

@@ -30,12 +30,14 @@ jobs:
 
       - name: Set up .NET
         uses: actions/setup-dotnet@v6
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
         with:
-          dotnet-version: 10.0.111
+          global-json-file: global.json
 
-      - name: Restore Android workload
+      - name: Install Android workload
         shell: pwsh
-        run: dotnet workload restore apps/android/UCASSignIn.Android/UCASSignIn.Android.csproj --skip-manifest-update
+        run: dotnet workload install android --version 10.0.303.1
 
       - name: Package Actions Android APK
         shell: pwsh
@@ -121,8 +123,10 @@ jobs:
 
       - name: Set up .NET
         uses: actions/setup-dotnet@v6
+        env:
+          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
         with:
-          dotnet-version: 10.0.111
+          global-json-file: global.json
 
       - name: Package Windows portable apps
         shell: pwsh
