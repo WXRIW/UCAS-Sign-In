@@ -11,7 +11,13 @@ public static class TestData
 }
 public sealed class FakeClock(DateTimeOffset now) : TimeProvider
 {
-    public DateTimeOffset Now { get; set; } = now; public override DateTimeOffset GetUtcNow() => Now;
+    DateTimeOffset current = now;
+    long elapsedTicks;
+    public DateTimeOffset Now { get => current; set { elapsedTicks += (value - current).Ticks; current = value; } }
+    public void ShiftDeviceClock(TimeSpan delta) => current += delta;
+    public override DateTimeOffset GetUtcNow() => Now;
+    public override long GetTimestamp() => elapsedTicks;
+    public override long TimestampFrequency => TimeSpan.TicksPerSecond;
 }
 public sealed class FakeHttp : HttpMessageHandler
 {
@@ -49,10 +55,17 @@ public sealed class MemoryAccounts : IAccountStore
         return Task.CompletedTask;
     }
 }
-public class MemoryData : ICourseStore, IRecordStore, ICourseCatalogStore, IAttendanceStateStore
+public class MemoryData : ICourseStore, IRecordStore, ICourseCatalogStore, IAttendanceStateStore, IAutoSignStore
 {
     public bool FailCacheWrites;
     public Dictionary<string, AttendanceEvidenceCache> States = [];
+    public Dictionary<string, AutoSignLedger> AutoSign = [];
+    public int AutoSignWrites;
+    public bool FailAutoSignReads;
+    public Task<AutoSignLedger?> LoadAutoSignAsync(string id, CancellationToken ct = default)
+        => FailAutoSignReads ? throw new IOException("simulated corrupt auto-sign store") : Task.FromResult(AutoSign.GetValueOrDefault(id));
+    public Task SaveAutoSignAsync(AutoSignLedger ledger, CancellationToken ct = default)
+    { if (FailCacheWrites) throw new IOException("simulated auto-sign store failure"); AutoSignWrites++; AutoSign[ledger.AccountId] = ledger; return Task.CompletedTask; }
     public Task<AttendanceEvidenceCache?> LoadAttendanceStateAsync(string id, CancellationToken ct = default) => Task.FromResult(States.GetValueOrDefault(id));
     public Task SaveAttendanceStateAsync(AttendanceEvidenceCache state, CancellationToken ct = default)
     { if (FailCacheWrites) throw new IOException("simulated attendance cache failure"); States[state.AccountId] = state; return Task.CompletedTask; }
@@ -83,7 +96,7 @@ public class MemoryData : ICourseStore, IRecordStore, ICourseCatalogStore, IAtte
     {
         foreach (var key in Cache.Keys.Where(k => k.StartsWith(accountId + "|")).ToArray())
             Cache.Remove(key);
-        Records.Remove(accountId); States.Remove(accountId);
+        Records.Remove(accountId); States.Remove(accountId); AutoSign.Remove(accountId);
         return Task.CompletedTask;
     }
     public Task<SemesterCache?> LoadSemestersAsync(string accountId, CancellationToken ct = default) => Task.FromResult(Semesters.GetValueOrDefault(accountId));
@@ -102,6 +115,7 @@ public class MemoryData : ICourseStore, IRecordStore, ICourseCatalogStore, IAtte
 }
 public sealed class FakeSchool : ISchoolClient
 {
+    public DateTimeOffset Now = TestData.Now;
     public Func<SchoolSession, DateOnly, Task<WeeklyScheduleResult>>? WeekQuery;
     public int WeekReads;
     public async Task<CourseQueryResult> DailyScheduleAsync(SchoolSession session, DateOnly date, CancellationToken ct = default)
@@ -123,6 +137,7 @@ public sealed class FakeSchool : ISchoolClient
     public Func<SchoolSession, DateOnly, Task<CourseQueryResult>> Query = (_, date) => Task.FromResult(new CourseQueryResult([TestData.Course() with { Day = CourseTime.DayKey(date) }], "同步成功"));
     public Func<Task<SignResult>> Sign = () => Task.FromResult(new SignResult(SignOutcome.Signed, "成功"));
     public Func<Task> BeforeSignAuthorization = () => Task.CompletedTask;
+    public Func<Task<DateTimeOffset>>? SchoolClock;
     public Func<Task<IReadOnlyList<SchoolSemester>>> SemesterQuery = () => Task.FromResult<IReadOnlyList<SchoolSemester>>([new("2026", "2026 秋季", "20260901", "20270131", true)]);
     public Func<string, Task<IReadOnlyList<CatalogCourse>>> CatalogQuery = semester => Task.FromResult<IReadOnlyList<CatalogCourse>>([new("course-1", "CS001", "示例课程", "示例教师", null, semester, "20260901", "20270131")]);
     public Func<string, Task<CourseAttendanceSummary>> AttendanceQuery = course => Task.FromResult(new CourseAttendanceSummary(0, 0, []));
@@ -141,10 +156,13 @@ public sealed class FakeSchool : ISchoolClient
     public Task<IReadOnlyList<SchoolSemester>> SemestersAsync(SchoolSession session, CancellationToken ct = default) { SemesterReads++; return SemesterQuery(); }
     public Task<IReadOnlyList<CatalogCourse>> CatalogCoursesAsync(SchoolSession session, string semesterId, CancellationToken ct = default) { CatalogReads++; return CatalogQuery(semesterId); }
     public Task<CourseAttendanceSummary> CourseAttendanceAsync(SchoolSession session, string courseId, CancellationToken ct = default) { AttendanceReads++; return AttendanceQuery(courseId); }
-    public async Task<SignResult> SignAsync(Course course, SchoolSession session, CancellationToken ct = default, Func<bool>? authorize = null)
+    public async Task<SignResult> SignAsync(Course course, SchoolSession session, CancellationToken ct = default, Func<bool>? authorize = null,
+        Func<Task<bool>>? authorizeAsync = null, Func<DateTimeOffset, Task<bool>>? authorizeAt = null)
     {
         await BeforeSignAuthorization();
         if (authorize is not null && !authorize()) throw new OperationCanceledException();
+        if (authorizeAsync is not null && !await authorizeAsync()) throw new OperationCanceledException();
+        if (authorizeAt is not null && !await authorizeAt(Now)) throw new OperationCanceledException();
         Signs++;
         LastSignedCourse = course;
         return await Sign();
@@ -153,7 +171,7 @@ public sealed class FakeSchool : ISchoolClient
     public Task<DateTimeOffset> SchoolNowAsync(CancellationToken ct = default)
     {
         ClockReads++;
-        return Task.FromResult(TestData.Now);
+        return SchoolClock?.Invoke() ?? Task.FromResult(Now);
     }
     public void ClearClock()
     {

@@ -10,7 +10,7 @@ public sealed class SchoolClient : ISchoolClient, IDisposable
     const string VerificationUrl = "http://iclass.ucas.edu.cn:88/ve/webservices/mobileCheck.shtml?method=mobileLogin&username=${0}&password=${1}&lx=${2}";
     readonly HttpClient http; readonly TimeProvider clock; readonly object clockLock = new();
     ClockSample? sample; Task<ClockSample>? pending; int generation;
-    sealed record ClockSample(long Timestamp, DateTimeOffset Received);
+    sealed record ClockSample(long Timestamp, long Received);
     public SchoolClient(HttpMessageHandler? handler = null, TimeProvider? timeProvider = null)
     {
         // Redirects are rejected, so credentials can never leave the configured HTTPS origin.
@@ -81,13 +81,18 @@ public sealed class SchoolClient : ISchoolClient, IDisposable
             ["id"] = session.UserId,
             ["courseId"] = courseId
         }, ct: ct), courseId);
-    public async Task<SignResult> SignAsync(Course course, SchoolSession session, CancellationToken ct = default, Func<bool>? authorize = null)
+    public async Task<SignResult> SignAsync(Course course, SchoolSession session, CancellationToken ct = default, Func<bool>? authorize = null,
+        Func<Task<bool>>? authorizeAsync = null, Func<DateTimeOffset, Task<bool>>? authorizeAt = null)
     {
         if (!Regex.IsMatch(course.Id, "^[0-9]{7}$"))
             throw new SchoolException("COURSE_ID_INVALID", "课程缺少有效的 7 位签到 ID，请刷新课表");
         var reading = await ReadingAsync(ct);
         if (authorize is not null && !authorize())
             throw new OperationCanceledException("签到设置已改变，未向学校提交", ct);
+        if (authorizeAsync is not null && !await authorizeAsync())
+            throw new OperationCanceledException("自动签到记录未能保存，未向学校提交", ct);
+        if (authorizeAt is not null && !await authorizeAt(DateTimeOffset.FromUnixTimeMilliseconds(reading.Timestamp)))
+            throw new OperationCanceledException("自动签到计划已改变，未向学校提交", ct);
         var json = await ExecuteAsync("course/stu_scan_sign.action", session, query: new()
         {
             ["courseSchedId"] = course.Id,
@@ -129,7 +134,7 @@ public sealed class SchoolClient : ISchoolClient, IDisposable
         int epoch;
         lock (clockLock)
         {
-            var age = sample is null ? TimeSpan.MaxValue : clock.GetUtcNow() - sample.Received;
+            var age = sample is null ? TimeSpan.MaxValue : clock.GetElapsedTime(sample.Received);
             if (sample is not null && age >= TimeSpan.Zero && age < TimeSpan.FromSeconds(30))
                 return (sample.Timestamp + (long)age.TotalMilliseconds, age);
             epoch = generation;
@@ -144,7 +149,7 @@ public sealed class SchoolClient : ISchoolClient, IDisposable
                     throw new OperationCanceledException();
                 sample = result;
                 pending = null;
-                var age = clock.GetUtcNow() - result.Received;
+                var age = clock.GetElapsedTime(result.Received);
                 if (age < TimeSpan.Zero || age >= TimeSpan.FromSeconds(30))
                     throw new SchoolException("TIME_SYNC_EXPIRED", "学校校时已过期，请重试");
                 return (result.Timestamp + (long)age.TotalMilliseconds, age);
@@ -154,14 +159,14 @@ public sealed class SchoolClient : ISchoolClient, IDisposable
     }
     async Task<ClockSample> SyncAsync()
     {
-        var start = clock.GetUtcNow();
+        var start = clock.GetTimestamp();
         var json = await ExecuteAsync("common/get_timestamp.do", fields: [], query: new()
         {
             ["id"] = "0"
         }, timeout: 6);
         var timestamp = ResponseParser.Timestamp(json);
-        var received = clock.GetUtcNow();
-        var trip = received - start;
+        var received = clock.GetTimestamp();
+        var trip = clock.GetElapsedTime(start, received);
         if (trip < TimeSpan.Zero || trip >= TimeSpan.FromSeconds(30))
             throw new SchoolException("TIME_SYNC_EXPIRED", "学校校时已过期，请重试");
         return new(timestamp + (long)(trip.TotalMilliseconds / 2), received);

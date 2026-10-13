@@ -39,6 +39,7 @@ final class AppModel: ObservableObject {
     private var attendanceVersions: [String: Int] = [:]
     private var attendanceRevisions: [String: Int] = [:]
     private var dayVerifiedAt: [String: Date] = [:]
+    private var autoSignQueryStartedAt: [String: Date] = [:]
     private var syncingSemesterID: String?
     var attendanceNow: () -> Date = Date.init
     private var invalidatedDays = Set<String>()
@@ -104,6 +105,29 @@ final class AppModel: ObservableObject {
     @Published var records: [AttendanceRecord] = []
     @Published private(set) var remindersEnabled = false
     @Published private(set) var autoSignEnabled = false
+    @Published private(set) var autoSignRunning = false
+    private var autoSignRunningSince: Date?
+    private var autoSignDefaultSince: Date?
+    private var autoSignSchoolOffset: TimeInterval = 0
+    private var autoSignClockWallAt: Date?
+    private var autoSignClockSchoolAt: Date?
+    var autoSignMonotonicNow: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    private var autoSignClockUptimeAt: TimeInterval?
+    private var autoSignUncalibratedBoundaries = Set<Date>()
+    private var autoSignActivationUptimes: [Date: TimeInterval] = [:]
+    private var autoSignNotificationIssue: String?
+    private var autoSignQuerySchoolStartedAt: [String: Date] = [:]
+    private var autoSignVerifiedQuerySequence: [String: Int] = [:]
+    private var autoSignClockTask: Task<Void, Never>?
+    private var autoSignPermissionTask: Task<Void, Never>?
+    private var autoSignPermissionGeneration = UUID()
+    private var autoSignNotificationOutcomes: [String: Set<String>] = [:]
+    @Published private(set) var autoSignRule = AutoSignPolicy()
+    @Published private(set) var autoSignOccurrences: [String: AutoSignOccurrenceOverride] = [:]
+    @Published private(set) var autoSignPausedUntil: Date?
+    @Published private(set) var autoSignMigrationPending = false
+    @Published private(set) var autoSignExecutions: [String: AutoSignExecution] = [:]
+    @Published private(set) var autoSignError: String?
     @Published private(set) var confirmationEnabled = false
     @Published private(set) var reminderLeadMinutes = 10
     @Published private(set) var coursePreferences: [String: CoursePreferences] = [:]
@@ -126,6 +150,9 @@ final class AppModel: ObservableObject {
     @Published var pendingSignConfirmation: PendingSignConfirmation?
     let service: QingxinService
     private let accountStore: any AccountStore
+    private let autoSignStore: any AutoSignStore
+    private var autoSignStoreAvailable = true
+    private var autoSignNetworkIssue = false
     private let defaults: UserDefaults
     private let notifications: any NotificationClient
     private let widgets: any WidgetClient
@@ -166,6 +193,7 @@ final class AppModel: ObservableObject {
         let keychain = KeychainStore()
         #endif
         self.accountStore = accountStore ?? KeychainAccountStore(keychain: keychain, defaults: defaults)
+        self.autoSignStore = accountStore == nil ? FileAutoSignStore() : UserDefaultsAutoSignStore(defaults: defaults)
     }
 
     var isCached: Bool { isCached(on: selectedDate) }
@@ -210,17 +238,24 @@ final class AppModel: ObservableObject {
     func coursePreferences(for courseId: String) -> CoursePreferences {
         let canonical = canonicalCourseID(for: courseId)
         if let saved = coursePreferences[canonical] { return saved }
-        let legacy = coursePreferences.filter { canonicalCourseID(for: $0.key) == canonical }.map(\.value)
+        let legacy = coursePreferences.filter { canonicalCourseID(for: $0.key) == canonical }.sorted { $0.key < $1.key }.map(\.value)
         // Preserve restrictive legacy choices until the user explicitly saves the unified course setting.
         func override(_ values: [PreferenceOverride], preferred: PreferenceOverride) -> PreferenceOverride {
             if values.contains(preferred) { return preferred }
             return values.first { $0 != .inherit } ?? .inherit
         }
+        let autoRule = AutoSignPolicyOverride(offsetMinutes: legacy.compactMap { $0.autoSignRule?.offsetMinutes }.last,
+            missedAction: legacy.compactMap { $0.autoSignRule?.missedAction }.last,
+            maxSubmissions: legacy.compactMap { $0.autoSignRule?.maxSubmissions }.last,
+            retryMinutes: legacy.compactMap { $0.autoSignRule?.retryMinutes }.last,
+            notification: legacy.compactMap { $0.autoSignRule?.notification }.last)
         return CoursePreferences(confirmation: override(legacy.map(\.confirmation), preferred: .enabled),
                                  autoSign: override(legacy.map(\.autoSign), preferred: .disabled),
                                  reminders: override(legacy.map(\.reminders), preferred: .disabled),
                                  reminderLeadMinutes: legacy.compactMap(\.reminderLeadMinutes).max(),
-                                 signInDisabled: legacy.contains { $0.signInDisabled })
+                                 signInDisabled: legacy.contains { $0.signInDisabled },
+                                 autoSignRule: autoRule.hasValues ? autoRule : nil,
+                                 autoSignEnabledSince: legacy.compactMap(\.autoSignEnabledSince).max())
     }
 
     func isSignInDisabled(for course: Course) -> Bool { isSignInDisabled(for: preferenceID(for: course)) }
@@ -239,8 +274,8 @@ final class AppModel: ObservableObject {
     }
     func effectiveAutoSign(for courseId: String?) -> Bool {
         guard !isSignInDisabled(for: courseId) else { return false }
-        guard let courseId else { return autoSignEnabled }
-        return coursePreferences(for: courseId).autoSign.resolve(default: autoSignEnabled)
+        guard let courseId else { return autoSignRunning }
+        return autoSignRunning && coursePreferences(for: courseId).autoSign.resolve(default: true)
     }
     func effectiveReminders(for courseId: String?) -> Bool {
         guard let courseId else { return remindersEnabled }
@@ -360,9 +395,16 @@ final class AppModel: ObservableObject {
 
     /// Invalidate all work before exposing a new identity to any view or client.
     private func resetAccountState() {
+        autoSignClockTask?.cancel(); autoSignClockTask = nil
+        autoSignPermissionTask?.cancel(); autoSignPermissionTask = nil
+        autoSignPermissionGeneration = UUID()
+        autoSignSchoolOffset = 0
+        autoSignClockWallAt = nil; autoSignClockUptimeAt = nil; autoSignClockSchoolAt = nil
+        autoSignUncalibratedBoundaries = []; autoSignActivationUptimes = [:]; autoSignNotificationIssue = nil; autoSignQuerySchoolStartedAt = [:]; autoSignVerifiedQuerySequence = [:]
+        autoSignNotificationOutcomes = [:]
         generation = UUID()
         attendanceStates = [:]; invalidatedAttendance = []; syncingSemesterID = nil
-        attendanceVersions = [:]; attendanceRevisions = [:]; dayVerifiedAt = [:]; invalidatedDays = []
+        attendanceVersions = [:]; attendanceRevisions = [:]; dayVerifiedAt = [:]; autoSignQueryStartedAt = [:]; invalidatedDays = []
         semesterReadTask?.cancel(); semesterReadTask = nil
         directoryReadTasks.values.forEach { $0.cancel() }; directoryReadTasks = [:]
         cancelRefreshes()
@@ -384,7 +426,7 @@ final class AppModel: ObservableObject {
         recoveryTask?.cancel()
         recoveryTask = nil
         isRecovering = false
-        notifications.removeAll()
+        Task { await clearCourseReminderNotifications() }
         widgets.clear()
         courseFreshness.removeAll()
         automaticRefreshPaused = false
@@ -428,6 +470,17 @@ final class AppModel: ObservableObject {
         activeAccountID = nil
         isDemo = false
         autoSignEnabled = false
+        autoSignRunning = false
+        autoSignRunningSince = nil
+        autoSignDefaultSince = nil
+        autoSignRule = .init()
+        autoSignOccurrences = [:]
+        autoSignPausedUntil = nil
+        autoSignMigrationPending = false
+        autoSignExecutions = [:]
+        autoSignError = nil
+        autoSignStoreAvailable = true
+        autoSignNetworkIssue = false
         remindersEnabled = false
         confirmationEnabled = false
         reminderLeadMinutes = 10
@@ -436,15 +489,58 @@ final class AppModel: ObservableObject {
 
     private func activate(_ account: StoredAccount) {
         resetAccountState()
+        var account = account
+        let prior = account.preferences
+        autoSignUncalibratedBoundaries = Set(prior.autoSignPendingClockBoundaries)
+        if prior.autoSignSinceUsesSchoolTime != true && autoSignUncalibratedBoundaries.isEmpty {
+            autoSignUncalibratedBoundaries = Set([prior.autoSignRunningSince, prior.autoSignDefaultSince].compactMap { $0 }
+                + prior.courses.values.compactMap(\.autoSignEnabledSince) + prior.autoSignOccurrences.values.compactMap(\.enabledSince))
+        }
+        if prior.autoSignIsRunning && (prior.autoSignRunning == nil || !prior.autoSignEnabled)
+            || prior.autoSignRunning != nil && prior.autoSignEnabled != prior.autoSignIsRunning {
+            account.preferences = prior.unifyingAutoSign(at: attendanceNow())
+            if let since = account.preferences.autoSignDefaultSince, since != prior.autoSignDefaultSince { autoSignUncalibratedBoundaries.insert(since); autoSignActivationUptimes[since] = autoSignMonotonicNow() }
+            var updated = vault
+            if let index = updated.accounts.firstIndex(where: { $0.id == account.id }) {
+                updated.accounts[index].preferences = account.preferences
+                do { try commit(updated) }
+                catch {
+                    // Keep the safe participation boundary in memory while storage is unavailable.
+                    vault = updated
+                    updateAccountList()
+                    autoSignStoreAvailable = false
+                    autoSignError = "自动签到已暂停：设置升级未能保存：\(error.localizedDescription)"
+                }
+            }
+        }
         session = account.session
         activeAccountID = account.id
-        autoSignEnabled = account.preferences.autoSignEnabled
+        autoSignEnabled = account.preferences.autoSignIsRunning
+        autoSignRunning = account.preferences.autoSignIsRunning
+        autoSignRunningSince = account.preferences.autoSignRunningSince
+        autoSignDefaultSince = account.preferences.autoSignDefaultSince
+        autoSignRule = account.preferences.autoSignRule
+        autoSignOccurrences = account.preferences.autoSignOccurrences
+        autoSignPausedUntil = account.preferences.autoSignPausedUntil
+        autoSignMigrationPending = account.preferences.needsAutoSignMigrationNotice
         remindersEnabled = account.preferences.remindersEnabled
         confirmationEnabled = account.preferences.confirmationEnabled
         reminderLeadMinutes = account.preferences.reminderLeadMinutes
         coursePreferences = account.preferences.courses
         automaticRefreshPaused = account.requiresLogin
         loadRecords()
+        do {
+            autoSignExecutions = try autoSignStore.load(accountID: account.id)
+            for key in autoSignExecutions.keys where (autoSignExecutions[key]?.submissions ?? 0) > 0 && autoSignExecutions[key]?.lastSchoolSubmissionAt == nil {
+                autoSignExecutions[key]?.nextAt = attendanceNow()
+            }
+            for key in autoSignExecutions.keys where autoSignExecutions[key]?.stage == .submitting {
+                autoSignExecutions[key]?.transition(.verifying, now: .now, message: "上次提交结果未知，等待学校状态核实")
+            }
+        } catch {
+            autoSignStoreAvailable = false
+            autoSignError = "自动签到已暂停：\(error.localizedDescription)"
+        }
         loadAttendanceState()
         loadCatalogCache(for: account.id)
         loadSemesterSchedules(for: account.session)
@@ -454,6 +550,7 @@ final class AppModel: ObservableObject {
             courseNotices[SchoolDate.key(selectedDate)] = notice
             publishWidget()
         }
+        if autoSignRunning { warmAutoSignClock() }
     }
 
     func enterDemo() {
@@ -503,6 +600,8 @@ final class AppModel: ObservableObject {
         refreshSequence += 1
         let requestSequence = refreshSequence
         courseRefreshSequences[day] = requestSequence
+        autoSignQueryStartedAt[day] = attendanceNow()
+        autoSignQuerySchoolStartedAt[day] = autoSignSchoolNow
         let task = Task {
             await performRefresh(on: date, session: session, accountToken: accountToken, requestSequence: requestSequence)
         }
@@ -538,6 +637,8 @@ final class AppModel: ObservableObject {
             let previous = courses.filter { normalizedDay($0.day) == queriedDay }
             for value in result { observeAttendance(value, source: .daily, sequence: requestSequence) }
             dayVerifiedAt[queriedDay] = attendanceNow()
+            autoSignVerifiedQuerySequence[queriedDay] = requestSequence
+            reconcileAutoSignSuccesses(result)
             invalidatedDays.remove(queriedDay)
             saveAttendanceState()
             let incoming = result.map { value in
@@ -580,6 +681,7 @@ final class AppModel: ObservableObject {
             lastUpdated = updatedAt
             notice = nil
             publishWidget()
+            if autoSignRunning { warmAutoSignClock() }
             if hasEnabledReminders { await scheduleReminders() }
         } catch {
             guard !Task.isCancelled, generation == accountToken,
@@ -609,7 +711,7 @@ final class AppModel: ObservableObject {
         automaticRefreshPaused = true
         courseFreshness = courseFreshness.mapValues { _ in false }
         reminderGeneration = UUID()
-        notifications.removeAll()
+        Task { await clearCourseReminderNotifications() }
         var updated = vault
         if let index = updated.accounts.firstIndex(where: { $0.id == accountID }) {
             updated.accounts[index].requiresLogin = true
@@ -649,7 +751,7 @@ final class AppModel: ObservableObject {
         automaticRefreshPaused = true
         courseFreshness = courseFreshness.mapValues { _ in false }
         reminderGeneration = UUID()
-        notifications.removeAll()
+        Task { await clearCourseReminderNotifications() }
         let task = Task<SchoolSession?, Never> {
             defer {
                 if self.generation == accountToken {
@@ -708,6 +810,12 @@ final class AppModel: ObservableObject {
         await refreshCourseIdentityIfNeeded(for: [course])
         guard token == generation, !Task.isCancelled, canSign(course, accountGeneration: expectedGeneration) else { return }
         let attempt = attemptKey(for: course)
+        if !automatically, autoSignExecutions[attempt] != nil || autoSignPlans.contains(where: { $0.key == attempt && $0.isParticipating }) {
+            var existing = autoSignExecutions[attempt] ?? AutoSignExecution(key: attempt, now: attendanceNow())
+            existing.transition(.skipped, now: attendanceNow(), message: "用户已手动接管", kind: .manualTakeover)
+            autoSignExecutions[attempt] = existing
+            try? saveAutoSignExecutions()
+        }
         autoAttempts.insert(attempt)
         signingID = course.id
         defer { if token == generation { signingID = nil } }
@@ -726,15 +834,22 @@ final class AppModel: ObservableObject {
             return
         }
         guard let session else { return }
+        var autoSubmissionReserved = false
         do {
-            let result = try await service.sign(course: course, session: session) { [self] in
+            let result = try await service.sign(course: course, session: session, authorizeSynchronizedSubmission: { [self] schoolNow in
                 // School clock synchronization can suspend before the actual submission.
                 guard token == generation, !isSignInDisabled(for: course),
                       attendanceStatus(for: course) == .unsigned, !needsCourseRefresh(course),
-                      !automatically || (effectiveAutoSign(for: course) && CachePolicy.isFresh(dayVerifiedAt[normalizedDay(course.day)], at: attendanceNow(), lifetime: 60)) else {
+                      !automatically || (autoSignRunning && !hasLocalSignSuccess(course)
+                          && autoSignPlans.first(where: { $0.key == attempt })?.isParticipating == true
+                          && CachePolicy.isFresh(dayVerifiedAt[normalizedDay(course.day)], at: attendanceNow(), lifetime: 60)) else {
                     throw APIError(code: "SIGN_NOT_ALLOWED", message: "签到已取消")
                 }
-            }
+                if automatically {
+                    try reserveAutoSignSubmission(course, token: token, schoolNow: schoolNow)
+                    autoSubmissionReserved = true
+                }
+            })
             guard token == generation else { return }
             let succeeded = result.outcome == .signed
             records.insert(AttendanceRecord(courseId: preferenceID(for: course), courseName: course.name, date: .now,
@@ -747,6 +862,18 @@ final class AppModel: ObservableObject {
                 publishWidget()
                 signInFeedback()
             } else { errorMessage = result.message }
+            if automatically, var execution = autoSignExecutions[attempt], execution.stage != .signed {
+                execution.transition(succeeded ? .signed : result.outcome == .outsideSignWindow ? .needsAttention : .verifying,
+                                     now: attendanceNow(), message: result.message,
+                                     nextAt: succeeded || result.outcome == .outsideSignWindow ? nil
+                                         : nextAutoSignVerification(attempt))
+                if !succeeded && result.outcome != .outsideSignWindow && execution.submissions >= (autoSignPlans.first { $0.key == attempt }?.policy.maxSubmissions ?? autoSignRule.maxSubmissions) {
+                    execution.nextSchoolVerificationAt = autoSignSchoolNow.addingTimeInterval(30)
+                }
+                autoSignExecutions[attempt] = execution
+                try? saveAutoSignExecutions()
+            }
+            if automatically { await notifyAutoSign(course, message: result.message, succeeded: succeeded) }
             saveRecords()
             // Only a read is allowed after an uncertain result; never automatically resubmit.
             if let date = CourseTime.parse(day: course.day, time: "00:00") {
@@ -760,6 +887,24 @@ final class AppModel: ObservableObject {
             autoAttempts.remove(attempt)
         } catch {
             guard token == generation else { return }
+            if automatically && !autoSubmissionReserved {
+                autoAttempts.remove(attempt)
+                if autoSignStoreAvailable {
+                    autoSignNetworkIssue = true
+                    autoSignError = "自动签到等待网络：\(error.localizedDescription)"
+                }
+                return
+            }
+            if automatically, var execution = autoSignExecutions[attempt], execution.stage != .signed {
+                execution.transition(.verifying, now: attendanceNow(), message: "提交结果未知，等待学校状态核实",
+                                     nextAt: nextAutoSignVerification(attempt))
+                if execution.submissions >= (autoSignPlans.first { $0.key == attempt }?.policy.maxSubmissions ?? autoSignRule.maxSubmissions) {
+                    execution.nextSchoolVerificationAt = autoSignSchoolNow.addingTimeInterval(30)
+                }
+                autoSignExecutions[attempt] = execution
+                try? saveAutoSignExecutions()
+            }
+            if automatically { await notifyAutoSign(course, message: "提交结果未知，打开应用核实签到状态", succeeded: false) }
             invalidateAttendance(for: preferenceID(for: course))
             errorMessage = "未能确认签到结果：\(error.localizedDescription) 请先刷新课程状态，再决定是否重试。"
             if let error = error as? APIError, error.isSessionExpired {
@@ -790,33 +935,428 @@ final class AppModel: ObservableObject {
         await sign(request.course, accountGeneration: request.accountGeneration)
     }
 
+    private func hasLocalSignSuccess(_ course: Course) -> Bool {
+        attendanceStates[attendanceKey(course)]?.lastSuccessfulSignAt != nil
+    }
+
+    private func canVerifyExisting(_ course: Course) -> Bool {
+        guard autoSignRunning, autoSignPausedUntil.map({ autoSignSchoolNow >= $0 }) ?? true,
+              let execution = autoSignExecutions[attemptKey(for: course)], execution.submissions > 0,
+              ![.signed, .skipped].contains(execution.stage) else { return false }
+        let preferences = coursePreferences(for: preferenceID(for: course) ?? "")
+        return !preferences.signInDisabled
+            && (autoSignOccurrences[attemptKey(for: course)]?.enabled ?? preferences.autoSign.resolve(default: true))
+    }
+
+    private var autoSignSchoolNow: Date {
+        if let school = autoSignClockSchoolAt, let uptime = autoSignClockUptimeAt {
+            return school.addingTimeInterval(max(0, autoSignMonotonicNow() - uptime))
+        }
+        return attendanceNow().addingTimeInterval(autoSignSchoolOffset)
+    }
+
+    private func recordAutoSignClock(_ schoolNow: Date) {
+        autoSignSchoolOffset = schoolNow.timeIntervalSince(attendanceNow())
+        if !autoSignUncalibratedBoundaries.isEmpty, let index = vault.accounts.firstIndex(where: { $0.id == activeAccountID }) {
+            var updated = vault
+            func calibrated(_ value: Date?) -> Date? {
+                value.map { boundary in
+                    guard autoSignUncalibratedBoundaries.contains(boundary) else { return boundary }
+                    if let uptime = autoSignActivationUptimes[boundary] {
+                        return schoolNow.addingTimeInterval(-max(0, autoSignMonotonicNow() - uptime))
+                    }
+                    return max(boundary, schoolNow)
+                }
+            }
+            updated.accounts[index].preferences.autoSignRunningSince = calibrated(updated.accounts[index].preferences.autoSignRunningSince)
+            updated.accounts[index].preferences.autoSignDefaultSince = calibrated(updated.accounts[index].preferences.autoSignDefaultSince)
+            for key in updated.accounts[index].preferences.courses.keys {
+                let previous = updated.accounts[index].preferences.courses[key]?.autoSignEnabledSince
+                updated.accounts[index].preferences.courses[key]?.autoSignEnabledSince = calibrated(previous)
+            }
+            for key in updated.accounts[index].preferences.autoSignOccurrences.keys {
+                let previous = updated.accounts[index].preferences.autoSignOccurrences[key]?.enabledSince
+                updated.accounts[index].preferences.autoSignOccurrences[key]?.enabledSince = calibrated(previous)
+            }
+            updated.accounts[index].preferences.autoSignSinceUsesSchoolTime = true
+            updated.accounts[index].preferences.autoSignPendingClockBoundaries = []
+            do {
+                try commit(updated)
+                autoSignRunningSince = updated.accounts[index].preferences.autoSignRunningSince
+                autoSignDefaultSince = updated.accounts[index].preferences.autoSignDefaultSince
+                coursePreferences = updated.accounts[index].preferences.courses
+                autoSignOccurrences = updated.accounts[index].preferences.autoSignOccurrences
+                autoSignUncalibratedBoundaries = []; autoSignActivationUptimes = [:]
+            } catch {
+                autoSignStoreAvailable = false
+                autoSignError = "自动签到已暂停：启用时间校准未能保存：\(error.localizedDescription)"
+            }
+        }
+        autoSignClockWallAt = attendanceNow()
+        autoSignClockSchoolAt = schoolNow
+        autoSignClockUptimeAt = autoSignMonotonicNow()
+    }
+
+    private var autoSignClockNeedsWarm: Bool {
+        guard let wall = autoSignClockWallAt, let uptime = autoSignClockUptimeAt else { return true }
+        return abs(attendanceNow().timeIntervalSince(wall) - (autoSignMonotonicNow() - uptime)) > 5
+    }
+
+    private func warmAutoSignClock(force: Bool = false) {
+        guard !isDemo, autoSignRunning, autoSignStoreAvailable, !automaticRefreshPaused,
+              autoSignPausedUntil.map({ autoSignSchoolNow >= $0 }) ?? true,
+              autoSignClockTask == nil, force || autoSignClockNeedsWarm,
+              (courses + semesterSchedules.values.flatMap(\.courses)).contains(where: { course in
+                  let preference = coursePreferences(for: preferenceID(for: course) ?? "")
+                  let enabled = autoSignOccurrences[attemptKey(for: course)]?.enabled ?? preference.autoSign.resolve(default: true)
+                  let key = attemptKey(for: course)
+                  if let execution = autoSignExecutions[key] {
+                      if [.signed, .skipped, .missed].contains(execution.stage) { return false }
+                      let policy = (autoSignOccurrences[key]?.policy ?? .init()).resolve((preference.autoSignRule ?? .init()).resolve(autoSignRule))
+                      if execution.stage == .needsAttention && execution.submissions < policy.maxSubmissions && !canVerifyExisting(course) { return false }
+                  }
+                  guard enabled, !preference.signInDisabled, !hasLocalSignSuccess(course), attendanceStatus(for: course) != .signed, let start = course.startDate, let end = course.endDate else { return false }
+                  if autoSignClockSchoolAt == nil, (autoSignExecutions[key]?.submissions ?? 0) > 0 { return true }
+                  return autoSignSchoolNow >= start.addingTimeInterval(-25 * 60) && autoSignSchoolNow <= end.addingTimeInterval(10 * 60)
+              }) else { return }
+        let token = generation
+        autoSignClockTask = Task {
+            defer { if generation == token { autoSignClockTask = nil } }
+            do {
+                let schoolNow = try await service.schoolNow()
+                guard generation == token, autoSignRunning, !Task.isCancelled else { return }
+                recordAutoSignClock(schoolNow)
+                autoSignNetworkIssue = false
+                if autoSignStoreAvailable { autoSignError = autoSignNotificationIssue }
+            } catch {
+                guard generation == token, autoSignRunning, !Task.isCancelled else { return }
+                autoSignNetworkIssue = true
+                autoSignError = autoSignNotificationIssue ?? "自动签到等待校时：\(error.localizedDescription)"
+            }
+        }
+    }
+
     func foregroundTick() async {
         guard !Task.isCancelled, !isDemo, session != nil, !showLogin, !automaticRefreshPaused,
-              !isLoading, signingID == nil else { return }
+              !isLoading, signingID == nil, autoSignStoreAvailable, autoSignRunning,
+              autoSignPausedUntil.map({ autoSignSchoolNow >= $0 }) ?? true else { return }
         let token = generation
-        let now = attendanceNow()
-        let candidates = todayCourses.filter {
-            attendanceStatus(for: $0) != .signed && effectiveAutoSign(for: $0) && !autoAttempts.contains(attemptKey(for: $0))
-                && attendanceStates[attendanceKey($0)]?.lastSuccessfulSignAt == nil
-                && $0.startDate.map { now >= $0.addingTimeInterval(-30 * 60) } == true
-                && $0.endDate.map { now < $0.addingTimeInterval(5 * 60) } == true
+        warmAutoSignClock()
+        if let task = autoSignClockTask { await task.value }
+        guard generation == token, autoSignRunning, autoSignStoreAvailable else { return }
+        let now = autoSignSchoolNow
+        let candidates = autoSignPlans.filter {
+            guard normalizedDay($0.course.day) == SchoolDate.key(autoSignSchoolNow),
+                  !hasLocalSignSuccess($0.course), $0.stage != .signed,
+                  $0.stage != .skipped || canVerifyExisting($0.course) else { return false }
+            if let execution = autoSignExecutions[$0.key], execution.submissions > 0 {
+                let legacy = execution.lastSchoolSubmissionAt == nil
+                let due = submissionSchoolTime(execution).addingTimeInterval(Double($0.policy.retryMinutes * 60))
+                let atLimit = execution.submissions >= $0.policy.maxSubmissions || legacy || !$0.isParticipating && canVerifyExisting($0.course)
+                guard $0.stage != .needsAttention || atLimit && autoSignSchoolNow < $0.course.endDate!
+                    && (legacy || !$0.isParticipating || execution.nextSchoolVerificationAt != nil) else { return false }
+                let wake = atLimit ? execution.nextSchoolVerificationAt ?? now : due
+                return wake <= now
+            }
+            return $0.stage != .needsAttention && $0.plannedAt <= now
         }
-        guard !candidates.isEmpty else { return }
-        if !CachePolicy.isFresh(dayVerifiedAt[SchoolDate.key(now)], at: now, lifetime: 60) { await refresh(on: now) }
-        guard generation == token, !Task.isCancelled, todayIsFresh else { return }
-        await refreshCourseIdentityIfNeeded(for: todayCourses)
-        guard let schoolNow = try? await service.schoolNow(), !Task.isCancelled, generation == token,
-              todayIsFresh, !isLoading, signingID == nil else { return }
-        guard let course = candidates.first(where: {
-            canSign($0) && effectiveAutoSign(for: $0) && CourseTime.isWithinSignWindow($0, now: schoolNow)
-        }) else { return }
-        let key = attemptKey(for: course)
-        guard autoAttempts.insert(key).inserted else { return }
+        for plan in candidates {
+            guard generation == token, !Task.isCancelled else { return }
+            await evaluateAutoSign(plan.course, token: token)
+        }
+    }
+
+    var autoSignPlans: [AutoSignPlan] {
+        guard let id = activeAccountID, !isDemo else { return [] }
+        let now = autoSignSchoolNow
+        let todayStart = SchoolDate.calendar.startOfDay(for: now)
+        let available = courses + semesterSchedules.values.flatMap(\.courses)
+        var unique: [String: Course] = [:]
+        for course in available {
+            guard let start = course.startDate, start >= todayStart,
+                  start < now.addingTimeInterval(7 * 86_400) else { continue }
+            if unique[attemptKey(for: course)] == nil { unique[attemptKey(for: course)] = course }
+        }
+        return unique.values.compactMap { course in
+            let key = attemptKey(for: course)
+            let preferences = coursePreferences(for: preferenceID(for: course) ?? "")
+            guard let plan = AutoSignPlanner.plan(account: id, course: course, accountPolicy: autoSignRule,
+                                        courseRule: preferences.autoSignRule, occurrence: autoSignOccurrences[key],
+                                        running: autoSignRunning && (autoSignPausedUntil.map { autoSignSchoolNow >= $0 } ?? true),
+                                        courseEnabled: preferences.autoSign, signDisabled: preferences.signInDisabled,
+                                        now: now, execution: autoSignExecutions[key], runningSince: autoSignRunningSince,
+                                        defaultSince: autoSignDefaultSince,
+                                        courseEnabledSince: preferences.autoSignEnabledSince,
+                                        pausedUntil: autoSignPausedUntil) else { return nil }
+            let completed = hasLocalSignSuccess(course)
+            let boundaryReadOnly = !plan.isParticipating && canVerifyExisting(course)
+            let execution = autoSignExecutions[key]
+            let schoolNext = execution?.nextSchoolVerificationAt
+                ?? execution?.lastSchoolSubmissionAt?.addingTimeInterval(Double(plan.policy.retryMinutes * 60))
+                ?? plan.nextAt
+            return AutoSignPlan(key: plan.key, course: plan.course, plannedAt: plan.plannedAt, deadline: plan.deadline,
+                                policy: plan.policy, source: plan.source, stage: completed ? .signed : boundaryReadOnly ? autoSignExecutions[key]!.stage : plan.stage,
+                                reason: completed ? "本机已有成功记录，不再自动提交" : boundaryReadOnly ? "启用时间之后不再补交此课次，继续核实已有提交结果" : plan.reason, nextAt: schoolNext,
+                                sources: plan.sources, isParticipating: plan.isParticipating)
+        }.sorted { $0.nextAt == $1.nextAt ? $0.key < $1.key : $0.nextAt < $1.nextAt }
+    }
+    var autoSignRuntimeStatus: String {
+        if !autoSignRunning { return "已关闭" }
+        if !autoSignStoreAvailable { return "已暂停 · 执行记录不可用" }
+        if automaticRefreshPaused || showLogin { return "需要登录" }
+        if let until = autoSignPausedUntil, until > autoSignSchoolNow { return "已暂停至明天" }
+        if autoSignNetworkIssue { return "等待网络" }
+        return "运行中"
+    }
+    var autoSignSettingsStatus: String {
+        if !autoSignRunning { return "已关闭" }
+        if !autoSignStoreAvailable || automaticRefreshPaused || showLogin
+            || (autoSignPausedUntil.map { $0 > autoSignSchoolNow } ?? false) { return "已暂停" }
+        return "运行中"
+    }
+    var autoSignHistory: [AutoSignExecution] {
+        autoSignExecutions.values.filter(\.hasExecutionActivity).sorted {
+            let left = $0.events.last?.at ?? $0.startedAt ?? .distantPast
+            let right = $1.events.last?.at ?? $1.startedAt ?? .distantPast
+            return left == right ? $0.key < $1.key : left > right
+        }
+    }
+
+    private func saveAutoSignExecutions() throws {
+        guard let id = activeAccountID, autoSignStoreAvailable else {
+            throw APIError(code: "AUTO_SIGN_STORE", message: "自动签到记录不可用")
+        }
+        let cutoff = attendanceNow().addingTimeInterval(-90 * 86_400)
+        autoSignExecutions = autoSignExecutions.filter {
+            let last = $0.value.events.last?.at ?? $0.value.lastSubmissionAt ?? $0.value.startedAt ?? $0.value.firstNegativeAt
+            return last.map { $0 >= cutoff } ?? true
+        }
+        do { try autoSignStore.save(accountID: id, executions: autoSignExecutions) }
+        catch {
+            autoSignStoreAvailable = false
+            autoSignError = "自动签到已暂停：记录保存失败：\(error.localizedDescription)"
+            throw error
+        }
+    }
+
+    private func recordAutoSignPlanChanges(before: [String: AutoSignPlan]) {
+        guard autoSignStoreAvailable else { return }
+        var changed = false
+        for plan in autoSignPlans {
+            guard var execution = autoSignExecutions[plan.key], execution.hasExecutionActivity else { continue }
+            if let previous = before[plan.key], previous.plannedAt == plan.plannedAt,
+               previous.policy == plan.policy, previous.stage == plan.stage, previous.source == plan.source { continue }
+            let message = plan.stage == .skipped ? "计划已暂停或跳过：\(plan.reason)"
+                : "计划已更新：\(plan.plannedAt.formatted(date: .abbreviated, time: .shortened))；\(plan.source)"
+            if execution.events.last?.message == message { continue }
+            execution.events.append(AutoSignEvent(at: attendanceNow(), stage: plan.stage, message: message,
+                                                  kind: plan.stage == .skipped ? .pause : .planChanged))
+            autoSignExecutions[plan.key] = execution
+            changed = true
+        }
+        if changed { try? saveAutoSignExecutions() }
+    }
+
+    private func updateAutoSign(_ key: String, stage: AutoSignStage, message: String, nextAt: Date? = nil) {
+        guard var execution = autoSignExecutions[key],
+              ![.skipped, .signed, .missed, .needsAttention].contains(execution.stage) else { return }
+        execution.transition(stage, now: attendanceNow(), message: message, nextAt: nextAt)
+        autoSignExecutions[key] = execution
+        try? saveAutoSignExecutions()
+        if [.missed, .needsAttention].contains(stage), let course = autoSignPlans.first(where: { $0.key == key })?.course {
+            let token = generation
+            Task { if generation == token { await notifyAutoSign(course, message: message, succeeded: false) } }
+        }
+    }
+
+    private func continuingAutoSignExecution(_ key: String, token: UUID, allowReadOnlyTerminal: Bool = false) -> AutoSignExecution? {
+        guard generation == token, autoSignStoreAvailable, let execution = autoSignExecutions[key],
+              ![.skipped, .signed, .submitting].contains(execution.stage),
+              allowReadOnlyTerminal || ![.missed, .needsAttention].contains(execution.stage) else { return nil }
+        return execution
+    }
+
+    private func nextAutoSignVerification(_ key: String) -> Date? {
+        guard let execution = autoSignExecutions[key], execution.lastSubmissionAt != nil,
+              let plan = autoSignPlans.first(where: { $0.key == key }) else { return nil }
+        return execution.submissions >= plan.policy.maxSubmissions ? attendanceNow().addingTimeInterval(30)
+            : submissionSchoolTime(execution).addingTimeInterval(Double(plan.policy.retryMinutes * 60) - autoSignSchoolOffset)
+    }
+
+    private func submissionSchoolTime(_ execution: AutoSignExecution) -> Date {
+        execution.lastSchoolSubmissionAt ?? .distantPast
+    }
+
+    private func reserveAutoSignSubmission(_ course: Course, token: UUID, schoolNow: Date) throws {
+        guard generation == token else { throw APIError(code: "SIGN_NOT_ALLOWED", message: "账户已切换") }
+        recordAutoSignClock(schoolNow)
+        guard let plan = autoSignPlans.first(where: { $0.key == attemptKey(for: course) }),
+              autoSignStoreAvailable, !hasLocalSignSuccess(course),
+              ![.skipped, .missed, .needsAttention, .signed].contains(plan.stage),
+              CourseTime.isWithinSignWindow(plan.course, now: schoolNow) else {
+            throw APIError(code: "SIGN_NOT_ALLOWED", message: "自动签到计划已失效")
+        }
+        recordAutoSignClock(schoolNow)
+        var execution = autoSignExecutions[plan.key] ?? AutoSignExecution(key: plan.key, now: attendanceNow())
+        let due = execution.submissions == 0 ? plan.plannedAt
+            : submissionSchoolTime(execution).addingTimeInterval(Double(plan.policy.retryMinutes * 60))
+        let deadline = execution.submissions > 0 && plan.policy.missedAction == .manual
+            ? due.addingTimeInterval(60) : plan.deadline
+        guard schoolNow >= due, schoolNow <= min(deadline, plan.course.endDate!) else {
+            throw APIError(code: "SIGN_NOT_ALLOWED", message: "自动签到计划已调整或错过，等待核实")
+        }
+        guard execution.submissions < plan.policy.maxSubmissions, execution.stage != .submitting,
+              execution.submissions == 0 || execution.lastSchoolSubmissionAt != nil && execution.negativeReads >= 2 else {
+            throw APIError(code: "SIGN_NOT_ALLOWED", message: "提交次数已耗尽或尚未取得两次未签到证据")
+        }
+        execution.begin(course: course, now: attendanceNow())
+        execution.submissions += 1
+        execution.lastSubmissionAt = attendanceNow()
+        execution.lastSchoolSubmissionAt = schoolNow
+        execution.firstNegativeAt = nil
+        execution.firstSchoolNegativeAt = nil
+        execution.nextSchoolVerificationAt = nil
+        execution.negativeReads = 0
+        execution.transition(.submitting, now: attendanceNow(), message: "第 \(execution.submissions) 次提交已发送")
+        autoSignExecutions[plan.key] = execution
+        try saveAutoSignExecutions()
+    }
+
+    private func evaluateAutoSign(_ course: Course, token: UUID) async {
+        let schoolNow: Date
+        do {
+            schoolNow = try await service.schoolNow()
+            guard generation == token, autoSignRunning, !Task.isCancelled else { return }
+            recordAutoSignClock(schoolNow)
+            autoSignNetworkIssue = false
+            if autoSignStoreAvailable { autoSignError = autoSignNotificationIssue }
+        } catch {
+            guard generation == token else { return }
+            autoSignNetworkIssue = true
+            autoSignError = autoSignNotificationIssue ?? "自动签到等待校时：\(error.localizedDescription)"
+            return
+        }
+        guard let plan = autoSignPlans.first(where: { $0.key == attemptKey(for: course) }),
+              plan.isParticipating || canVerifyExisting(course), !hasLocalSignSuccess(course),
+              plan.stage != .signed, plan.stage != .skipped || canVerifyExisting(course) else { return }
+        let now = attendanceNow()
+        var execution = autoSignExecutions[plan.key] ?? AutoSignExecution(key: plan.key, now: now)
+        let boundaryReadOnly = !plan.isParticipating && canVerifyExisting(course)
+        if execution.stage == .missed && !boundaryReadOnly { return }
+        let legacyReceipt = execution.submissions > 0 && execution.lastSchoolSubmissionAt == nil
+        let atLimit = execution.submissions >= plan.policy.maxSubmissions || legacyReceipt || boundaryReadOnly
+        guard execution.stage != .needsAttention || atLimit else { return }
+        let due = legacyReceipt || boundaryReadOnly ? schoolNow : execution.submissions == 0 ? plan.plannedAt
+            : submissionSchoolTime(execution).addingTimeInterval(atLimit ? 0 : Double(plan.policy.retryMinutes * 60))
+        guard schoolNow >= due else { return }
+        if !execution.hasExecutionActivity {
+            execution.begin(course: course, now: now)
+            autoSignExecutions[plan.key] = execution
+            guard (try? saveAutoSignExecutions()) != nil else { return }
+        }
+        if attendanceStatus(for: course) == .signed {
+            updateAutoSign(plan.key, stage: .signed, message: "学校确认已签到")
+            return
+        }
+        if atLimit {
+            if schoolNow >= plan.course.endDate! {
+                updateAutoSign(plan.key, stage: .needsAttention, message: "课程已结束，未确认签到成功，请手动核实")
+                return
+            }
+            if let date = CourseTime.parse(day: course.day, time: "00:00") { await refresh(on: date) }
+            guard let current = continuingAutoSignExecution(plan.key, token: token, allowReadOnlyTerminal: true) else { return }
+            let day = normalizedDay(course.day)
+            let fresh = autoSignQuerySchoolStartedAt[day].map { legacyReceipt || $0 > submissionSchoolTime(current) } == true
+                && autoSignVerifiedQuerySequence[day] == courseRefreshSequences[day]
+            if fresh && attendanceStatus(for: course) == .unsigned {
+                updateAutoSign(plan.key, stage: .needsAttention, message: legacyReceipt ? "上次提交缺少可靠学校时间，继续核实至下课，不再自动提交" : boundaryReadOnly ? "启用边界之后不再补交，继续核实已有提交结果至下课" : "自动提交次数已耗尽，继续核实至下课，不再自动提交")
+            }
+            if var latest = autoSignExecutions[plan.key], ![.signed, .skipped].contains(latest.stage) {
+                latest.nextSchoolVerificationAt = autoSignSchoolNow.addingTimeInterval(Double(plan.policy.retryMinutes * 60))
+                latest.nextAt = latest.nextSchoolVerificationAt!.addingTimeInterval(-autoSignSchoolOffset)
+                autoSignExecutions[plan.key] = latest
+                try? saveAutoSignExecutions()
+            }
+            return
+        }
+        let deadline = min(execution.submissions == 0 || plan.policy.missedAction != .manual
+                           ? plan.deadline : due.addingTimeInterval(60), plan.course.endDate!)
+        if schoolNow > deadline {
+            updateAutoSign(plan.key, stage: execution.submissions == 0 ? .missed : .needsAttention,
+                           message: "已错过自动执行时间，请手动处理")
+            return
+        }
+        if execution.submissions > 0 {
+            if execution.negativeReads < 2 {
+                if let first = execution.firstSchoolNegativeAt, schoolNow.timeIntervalSince(first) < 30 { return }
+                guard let date = CourseTime.parse(day: course.day, time: "00:00") else { return }
+                await refresh(on: date)
+                guard let current = continuingAutoSignExecution(plan.key, token: token) else { return }
+                execution = current
+                if attendanceStatus(for: course) == .signed { updateAutoSign(plan.key, stage: .signed, message: "学校确认已签到"); return }
+                let day = normalizedDay(course.day)
+                let observedSchool: Date
+                do { observedSchool = try await service.schoolNow() }
+                catch { return }
+                guard let latest = continuingAutoSignExecution(plan.key, token: token) else { return }
+                execution = latest
+                recordAutoSignClock(observedSchool)
+                guard let startedSchool = autoSignQuerySchoolStartedAt[day],
+                      startedSchool > submissionSchoolTime(execution),
+                      execution.firstSchoolNegativeAt.map({ startedSchool.timeIntervalSince($0) >= 30 && observedSchool.timeIntervalSince($0) >= 30 }) ?? true,
+                      observedSchool >= startedSchool,
+                      autoSignVerifiedQuerySequence[day] == courseRefreshSequences[day],
+                      let observed = dayVerifiedAt[day],
+                      attendanceStatus(for: course) == .unsigned else { return }
+                execution.negativeReads += 1
+                if execution.firstNegativeAt == nil { execution.firstNegativeAt = observed; execution.firstSchoolNegativeAt = observedSchool }
+                execution.events.append(AutoSignEvent(at: attendanceNow(), stage: .checking,
+                                                      message: "学校第 \(execution.negativeReads) 次确认仍未签到", kind: .verification))
+                autoSignExecutions[plan.key] = execution
+                guard (try? saveAutoSignExecutions()) != nil, execution.negativeReads >= 2 else { return }
+            }
+        } else if !CachePolicy.isFresh(dayVerifiedAt[normalizedDay(course.day)], at: now, lifetime: 60),
+                  let date = CourseTime.parse(day: course.day, time: "00:00") { await refresh(on: date) }
+        guard continuingAutoSignExecution(plan.key, token: token) != nil,
+              !hasLocalSignSuccess(course), attendanceStatus(for: course) == .unsigned else { return }
         await sign(course, accountGeneration: token, automatically: true)
     }
 
+    private func reconcileAutoSignSuccesses(_ courses: [Course]) {
+        for course in courses where course.signStatusKnown == true && course.signed {
+            let key = attemptKey(for: course)
+            guard var execution = autoSignExecutions[key], execution.hasExecutionActivity,
+                  ![.signed, .skipped].contains(execution.stage) else { continue }
+            execution.transition(.signed, now: attendanceNow(), message: "学校确认已签到")
+            autoSignExecutions[key] = execution
+            guard (try? saveAutoSignExecutions()) != nil else { return }
+            let token = generation
+            Task { if generation == token { await notifyAutoSign(course, message: "学校确认已签到", succeeded: true) } }
+        }
+    }
+
     private func attemptKey(for course: Course) -> String {
-        "\(activeAccountID ?? "demo")|\(course.day)|\(course.id)"
+        "\(activeAccountID ?? "demo")|\(normalizedDay(course.day))|\(course.id)"
+    }
+    private func notifyAutoSign(_ course: Course, message: String, succeeded: Bool) async {
+        let token = generation
+        let key = attemptKey(for: course)
+        let outcome = succeeded ? "signed" : message
+        let policy = autoSignPlans.first(where: { $0.key == key })?.policy ?? autoSignRule
+        guard policy.notification != .none, !succeeded || policy.notification == .all,
+              autoSignNotificationOutcomes[key]?.contains(outcome) != true else { return }
+        let status = await notifications.authorizationStatus()
+        guard generation == token, status == .authorized || status == .provisional,
+              autoSignNotificationOutcomes[key]?.contains(outcome) != true else { return }
+        autoSignNotificationOutcomes[key, default: []].insert(outcome)
+        let content = UNMutableNotificationContent()
+        content.title = (succeeded ? "自动签到成功 · " : "自动签到需关注 · ") + course.name
+        content.body = message
+        content.sound = .default
+        let request = UNNotificationRequest(identifier: "auto-sign-\(UUID())", content: content,
+                                            trigger: UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false))
+        do { try await notifications.add(request) }
+        catch { if generation == token { autoSignNotificationOutcomes[key]?.remove(outcome) } }
     }
 
     private func signInFeedback() {
@@ -825,11 +1365,24 @@ final class AppModel: ObservableObject {
         #endif
     }
 
-    private func savePreferences(autoSign: Bool? = nil, reminders: Bool? = nil,
+    private func savePreferences(autoSign: Bool? = nil, running: Bool? = nil, rule: AutoSignPolicy? = nil,
+                                 occurrences: [String: AutoSignOccurrenceOverride]? = nil, pauseUntil: Date? = nil,
+                                 clearPause: Bool = false, reminders: Bool? = nil,
                                  confirmation: Bool? = nil, leadMinutes: Int? = nil,
                                  courses: [String: CoursePreferences]? = nil) -> Bool {
         if isDemo {
-            if let autoSign { autoSignEnabled = autoSign }
+            if let value = running ?? autoSign {
+                if value && !autoSignRunning {
+                    autoSignRunningSince = attendanceNow()
+                    autoSignDefaultSince = attendanceNow()
+                }
+                autoSignRunning = value
+                autoSignEnabled = value
+            }
+            if let rule { autoSignRule = rule }
+            if let occurrences { autoSignOccurrences = occurrences }
+            if let pauseUntil { autoSignPausedUntil = pauseUntil }
+            if clearPause { autoSignPausedUntil = nil }
             if let reminders { remindersEnabled = reminders }
             if let confirmation { confirmationEnabled = confirmation }
             if let leadMinutes { reminderLeadMinutes = leadMinutes }
@@ -837,19 +1390,82 @@ final class AppModel: ObservableObject {
             return true
         }
         guard let id = activeAccountID, let index = vault.accounts.firstIndex(where: { $0.id == id }) else { return false }
+        let beforeAutoSignPlans = Dictionary(uniqueKeysWithValues: autoSignPlans.map { ($0.key, $0) })
         var updated = vault
-        if let autoSign { updated.accounts[index].preferences.autoSignEnabled = autoSign }
+        if let rule { updated.accounts[index].preferences.autoSignRule = rule }
+        if let occurrences { updated.accounts[index].preferences.autoSignOccurrences = occurrences }
+        if let pauseUntil { updated.accounts[index].preferences.autoSignPausedUntil = pauseUntil }
+        if clearPause { updated.accounts[index].preferences.autoSignPausedUntil = nil }
         if let reminders { updated.accounts[index].preferences.remindersEnabled = reminders }
         if let confirmation { updated.accounts[index].preferences.confirmationEnabled = confirmation }
         if let leadMinutes { updated.accounts[index].preferences.reminderLeadMinutes = leadMinutes }
         if let courses { updated.accounts[index].preferences.courses = courses }
+        let prior = vault.accounts[index].preferences
+        // Both compatibility fields mirror the one user-facing switch.
+        let singleRunning = running ?? autoSign ?? prior.autoSignIsRunning
+        updated.accounts[index].preferences.autoSignRunning = singleRunning
+        updated.accounts[index].preferences.autoSignEnabled = singleRunning
+        let enabledAt = autoSignSchoolNow
+        if autoSignClockWallAt == nil { autoSignUncalibratedBoundaries.insert(enabledAt); autoSignActivationUptimes[enabledAt] = autoSignMonotonicNow() }
+        if !prior.autoSignEnabled && updated.accounts[index].preferences.autoSignEnabled {
+            updated.accounts[index].preferences.autoSignDefaultSince = enabledAt
+        }
+        for key in updated.accounts[index].preferences.courses.keys {
+            var course = updated.accounts[index].preferences.courses[key]!
+            let previous = prior.courses[key] ?? coursePreferences(for: key)
+            if course.autoSignEnabledSince == nil { course.autoSignEnabledSince = previous.autoSignEnabledSince }
+            let wasEnabled = !previous.signInDisabled && previous.autoSign.resolve(default: true)
+            let isEnabled = !course.signInDisabled && course.autoSign.resolve(default: true)
+            if !wasEnabled && isEnabled { course.autoSignEnabledSince = enabledAt }
+            updated.accounts[index].preferences.courses[key] = course
+        }
+        // Restoring an inherited course that was disabled also starts a new participation period.
+        for (key, previous) in prior.courses where updated.accounts[index].preferences.courses[key] == nil {
+            if updated.accounts[index].preferences.courses.keys.contains(where: {
+                canonicalCourseID(for: $0) == canonicalCourseID(for: key)
+            }) { continue }
+            if previous.signInDisabled || !previous.autoSign.resolve(default: true) {
+                updated.accounts[index].preferences.courses[key] = CoursePreferences(autoSignEnabledSince: enabledAt)
+            }
+        }
+        for key in updated.accounts[index].preferences.autoSignOccurrences.keys {
+            var occurrence = updated.accounts[index].preferences.autoSignOccurrences[key]!
+            let previous = prior.autoSignOccurrences[key]
+            if occurrence.enabledSince == nil { occurrence.enabledSince = previous?.enabledSince }
+            if occurrence.enabled == true && previous?.enabled != true { occurrence.enabledSince = enabledAt }
+            if previous?.enabled == false && occurrence.enabled != false { occurrence.enabledSince = enabledAt }
+            updated.accounts[index].preferences.autoSignOccurrences[key] = occurrence
+        }
+        if (!prior.autoSignIsRunning && updated.accounts[index].preferences.autoSignIsRunning)
+            || (clearPause && prior.autoSignPausedUntil != nil) {
+            updated.accounts[index].preferences.autoSignRunningSince = enabledAt
+        }
+        updated.accounts[index].preferences.autoSignSinceUsesSchoolTime = autoSignUncalibratedBoundaries.isEmpty
+        updated.accounts[index].preferences.autoSignPendingClockBoundaries = autoSignUncalibratedBoundaries.sorted()
+        let previouslyEnabled = vault.accounts[index].preferences.autoSignEnabled
+            || vault.accounts[index].preferences.courses.values.contains { $0.autoSign == .enabled }
+        let nowEnabled = updated.accounts[index].preferences.autoSignEnabled
+            || updated.accounts[index].preferences.courses.values.contains { $0.autoSign == .enabled }
+        if running != nil || rule != nil || occurrences != nil || pauseUntil != nil || clearPause
+            || autoSign.map({ $0 != vault.accounts[index].preferences.autoSignEnabled }) == true
+            || (!previouslyEnabled && nowEnabled) {
+            updated.accounts[index].preferences.autoSignV2Acknowledged = true
+        }
         do {
             try commit(updated)
             autoSignEnabled = updated.accounts[index].preferences.autoSignEnabled
+            autoSignRunning = updated.accounts[index].preferences.autoSignIsRunning
+            autoSignRunningSince = updated.accounts[index].preferences.autoSignRunningSince
+            autoSignDefaultSince = updated.accounts[index].preferences.autoSignDefaultSince
+            autoSignRule = updated.accounts[index].preferences.autoSignRule
+            autoSignOccurrences = updated.accounts[index].preferences.autoSignOccurrences
+            autoSignPausedUntil = updated.accounts[index].preferences.autoSignPausedUntil
+            autoSignMigrationPending = updated.accounts[index].preferences.needsAutoSignMigrationNotice
             remindersEnabled = updated.accounts[index].preferences.remindersEnabled
             confirmationEnabled = updated.accounts[index].preferences.confirmationEnabled
             reminderLeadMinutes = updated.accounts[index].preferences.reminderLeadMinutes
             coursePreferences = updated.accounts[index].preferences.courses
+            recordAutoSignPlanChanges(before: beforeAutoSignPlans)
             return true
         } catch {
             errorMessage = "偏好未能保存：\(error.localizedDescription)"
@@ -857,8 +1473,96 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func setAutoSign(_ enabled: Bool) {
-        _ = savePreferences(autoSign: enabled)
+    func setAutoSign(_ enabled: Bool) { setAutoSignRunning(enabled) }
+    func setAutoSignRunning(_ enabled: Bool) {
+        guard savePreferences(running: enabled) else { return }
+        if enabled { warmAutoSignClock(force: true); requestAutoSignNotificationPermission() }
+        else { autoSignPermissionTask?.cancel(); autoSignPermissionTask = nil; autoSignPermissionGeneration = UUID() }
+    }
+    func setAutoSignRule(_ rule: AutoSignPolicy) {
+        guard rule.isValid else { errorMessage = "自动签到规则超出允许范围"; return }
+        let enablesNotification = autoSignRule.notification == .none && rule.notification != .none
+        guard savePreferences(rule: rule) else { return }
+        if enablesNotification { requestAutoSignNotificationPermission(force: true) }
+    }
+    func setAutoSignOccurrence(_ value: AutoSignOccurrenceOverride?, for course: Course) {
+        let inherited = (coursePreferences(for: preferenceID(for: course) ?? "").autoSignRule ?? .init()).resolve(autoSignRule)
+        if let value {
+            let policy = (value.policy ?? .init()).resolve(inherited)
+            guard policy.isValid else { errorMessage = "本次自动签到规则超出允许范围"; return }
+            let at = value.at ?? course.startDate?.addingTimeInterval(Double(policy.offsetMinutes * 60))
+            guard let start = course.startDate, let end = course.endDate, let at,
+                  at >= start.addingTimeInterval(-25 * 60), at < end else {
+                errorMessage = "本次自动签到时间必须在课前25分钟至下课前，请调整后再保存"
+                return
+            }
+        }
+        var values = autoSignOccurrences
+        let key = attemptKey(for: course)
+        let previousNotification = (values[key]?.policy ?? .init()).resolve(inherited).notification
+        if value == nil, values[key]?.enabled == false { values[key] = .init(enabledSince: autoSignSchoolNow) }
+        else { values[key] = value }
+        guard savePreferences(occurrences: values) else { return }
+        if previousNotification == .none && (value?.policy ?? .init()).resolve(inherited).notification != .none {
+            requestAutoSignNotificationPermission(force: true)
+        }
+    }
+
+    private func requestAutoSignNotificationPermission(force: Bool = false) {
+        guard !isDemo, force || autoSignRunning,
+              autoSignRule.notification != .none || coursePreferences.values.contains(where: { $0.autoSignRule?.notification.map { $0 != .none } ?? false })
+                || autoSignOccurrences.values.contains(where: { $0.policy?.notification.map { $0 != .none } ?? false }) else { return }
+        guard autoSignPermissionTask == nil else { return }
+        notificationSettingsNeeded = false
+        let accountToken = generation
+        let settingToken = UUID()
+        autoSignPermissionGeneration = settingToken
+        autoSignPermissionTask = Task {
+            defer { if autoSignPermissionGeneration == settingToken { autoSignPermissionTask = nil } }
+            let authorization = await notificationAuthorization()
+            guard generation == accountToken, autoSignPermissionGeneration == settingToken, !Task.isCancelled else { return }
+            if authorization == .allowed {
+                if autoSignError == autoSignNotificationIssue { autoSignError = nil }
+                if errorMessage == autoSignNotificationIssue { errorMessage = nil }
+                autoSignNotificationIssue = nil
+                return
+            }
+            if authorization == .denied {
+                var rule = autoSignRule; rule.notification = .none
+                var courses = coursePreferences
+                for key in courses.keys where courses[key]?.autoSignRule?.notification != nil { courses[key]?.autoSignRule?.notification = AutoSignNotification.none }
+                var occurrences = autoSignOccurrences
+                for key in occurrences.keys where occurrences[key]?.policy?.notification != nil { occurrences[key]?.policy?.notification = AutoSignNotification.none }
+                _ = savePreferences(rule: rule, occurrences: occurrences, courses: courses)
+                notificationSettingsNeeded = true
+                autoSignNotificationIssue = "系统未允许通知，自动签到结果通知已关闭；可在系统设置中开启后重新选择"
+                autoSignError = autoSignNotificationIssue
+                errorMessage = autoSignError
+            } else {
+                autoSignError = "无法检查自动签到通知权限，请稍后重新选择通知设置"
+            }
+        }
+    }
+
+    private func clearCourseReminderNotifications() async {
+        let accountToken = generation
+        let requestToken = reminderGeneration
+        let ids = await notifications.pendingRequestIdentifiers()
+        guard generation == accountToken, reminderGeneration == requestToken else { return }
+        notifications.remove(ids: ids.filter { !$0.hasPrefix("auto-sign-") })
+    }
+
+    func pauseAutoSignUntilTomorrow() {
+        let tomorrow = CourseTime.calendar.startOfDay(for: autoSignSchoolNow).addingTimeInterval(86_400)
+        _ = savePreferences(pauseUntil: tomorrow)
+    }
+    func resumeAutoSign() { if savePreferences(clearPause: true) { warmAutoSignClock(force: true) } }
+    func acknowledgeAutoSignMigration() {
+        guard let id = activeAccountID, let index = vault.accounts.firstIndex(where: { $0.id == id }) else { return }
+        var updated = vault
+        updated.accounts[index].preferences.autoSignV2Acknowledged = true
+        do { try commit(updated); autoSignMigrationPending = false }
+        catch { errorMessage = "自动签到提示状态未能保存：\(error.localizedDescription)" }
     }
 
     func setConfirmation(_ enabled: Bool) {
@@ -893,13 +1597,17 @@ final class AppModel: ObservableObject {
         guard generation == token, reminderGeneration == settingToken,
               savePreferences(reminders: enabled && allowed) else { return }
         if hasEnabledReminders { await scheduleReminders() }
-        else { notifications.removeAll() }
+        else { Task { await clearCourseReminderNotifications() } }
     }
 
     @discardableResult
     func setCoursePreferences(_ preferences: CoursePreferences, for courseId: String) async -> Bool {
         var preferences = preferences
         guard !courseId.isEmpty else { return false }
+        if let rule = preferences.autoSignRule, !rule.resolve(autoSignRule).isValid {
+            errorMessage = "自动签到规则超出允许范围"
+            return false
+        }
         let courseId = canonicalCourseID(for: courseId)
         let accountToken = generation
         let settingToken = UUID()
@@ -921,16 +1629,20 @@ final class AppModel: ObservableObject {
         guard generation == accountToken, reminderGeneration == settingToken else { return false }
         if let lead = preferences.reminderLeadMinutes,
            !AccountPreferences.validLeadTimes.contains(lead) { preferences.reminderLeadMinutes = nil }
+        let enablesAutoNotification = preferences.autoSignRule?.notification != nil
+            && preferences.autoSignRule!.resolve(autoSignRule).notification != .none
+            && (coursePreferences(for: courseId).autoSignRule ?? .init()).resolve(autoSignRule).notification == .none
         var updated = coursePreferences
         for alias in updated.keys.filter({ canonicalCourseID(for: $0) == courseId }) { updated.removeValue(forKey: alias) }
         if preferences == CoursePreferences() { updated.removeValue(forKey: courseId) }
         else { updated[courseId] = preferences }
         guard savePreferences(courses: updated) else { return false }
+        if enablesAutoNotification { requestAutoSignNotificationPermission(force: true) }
         if preferences.signInDisabled, let pending = pendingSignConfirmation, preferenceID(for: pending.course) == courseId {
             pendingSignConfirmation = nil
         }
         if hasEnabledReminders { await scheduleReminders() }
-        else { notifications.removeAll() }
+        else { Task { await clearCourseReminderNotifications() } }
         return true
     }
 
@@ -991,7 +1703,8 @@ final class AppModel: ObservableObject {
         reminderGeneration = requestToken
         await refreshCourseIdentityIfNeeded(for: courses)
         guard generation == accountToken, reminderGeneration == requestToken, !Task.isCancelled else { return }
-        notifications.removeAll()
+        await clearCourseReminderNotifications()
+        guard generation == accountToken, reminderGeneration == requestToken, !Task.isCancelled else { return }
         for course in courses.prefix(60) where !course.signed && arrangementFresh(course) && effectiveReminders(for: course) {
             guard generation == accountToken, reminderGeneration == requestToken, hasEnabledReminders else { return }
             guard let start = course.startDate else { continue }
@@ -1036,6 +1749,7 @@ final class AppModel: ObservableObject {
             }
             checkedScheduleDays = checkedScheduleDays.filter { !$0.hasPrefix("\(id)|") }
             autoAttempts = autoAttempts.filter { !$0.hasPrefix("\(id)|") }
+            autoSignStore.remove(accountID: id)
             recoveryAttempts = recoveryAttempts.filter { !$0.hasPrefix("\(id)|") }
             if activeAccountID == id {
                 loginRequest = nil
@@ -1106,7 +1820,11 @@ final class AppModel: ObservableObject {
             projectAttendance(value.preservingIdentity(from: previous["\(normalizedDay(value.day))|\(value.id)"]))
         }
         let merged = courses.filter { !days.contains(normalizedDay($0.day)) } + updated
-        if courses != merged { courses = merged }
+        if courses != merged {
+            let before = Dictionary(uniqueKeysWithValues: autoSignPlans.map { ($0.key, $0) })
+            courses = merged
+            recordAutoSignPlanChanges(before: before)
+        }
     }
     private func saveRecords() {
         guard let session, let data = try? JSONEncoder().encode(Array(records.prefix(100))) else { return }

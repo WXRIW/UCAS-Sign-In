@@ -654,7 +654,7 @@ final class UCASSignInUITests: XCTestCase {
         XCTAssertEqual(appearance.value as? String, "深色")
         XCTAssertTrue(app.navigationBars["设置"].exists)
         XCTAssertTrue(app.switches["settings.reminders"].exists)
-        XCTAssertTrue(app.switches["settings.autoSign"].exists)
+        XCTAssertTrue(app.buttons["settings.autoSign"].exists)
         capture(app, name: "设置-深色")
         app.terminate()
         let relaunched = launchAccounts(reset: false)
@@ -681,6 +681,93 @@ final class UCASSignInUITests: XCTestCase {
 
         XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", expectedCourse)).firstMatch.waitForExistence(timeout: 10))
         return app
+    }
+
+    @MainActor
+    func testAutoSignNavigationAndGlobalOffVisibility() {
+        verifyAutoSignNavigation(extraArguments: ["-appearanceMode", "light"])
+    }
+
+    @MainActor
+    func testAutoSignNavigationAtLargeTextInDarkMode() {
+        verifyAutoSignNavigation(extraArguments: ["-appearanceMode", "dark", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"])
+    }
+
+    @MainActor
+    private func verifyAutoSignNavigation(extraArguments: [String]) {
+        let app = launchAccounts(extraArguments: extraArguments)
+        XCTAssertFalse(app.descendants(matching: .any).matching(identifier: "autoSign.todaySummary").firstMatch.exists)
+        selectTab("账户", in: app)
+        tapAfterScrolling(app.buttons["profile.settings"], in: app)
+        XCTAssertFalse(app.switches["settings.autoSign"].exists)
+        tapAfterScrolling(app.buttons["settings.autoSign"], in: app)
+        let running = app.switches["autoSign.running"]
+        XCTAssertTrue(running.waitForExistence(timeout: 5))
+        XCTAssertEqual(running.value as? String, "0")
+        XCTAssertFalse(app.buttons["autoSign.plans"].exists)
+        XCTAssertFalse(app.buttons["autoSign.history"].exists)
+        capture(app, name: "自动签到-已关闭")
+        tapAfterScrolling(app.buttons["autoSign.rules"], in: app)
+        XCTAssertTrue(app.scrollViews["autoSign.defaultRules"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.switches.count, 0, "默认规则不应再有第二层自动签到开关")
+        let defaultSubmissions = app.buttons["autoSign.menu.最多自动提交"]
+        tapAfterScrolling(defaultSubmissions, in: app)
+        let once = app.buttons["1 次"]
+        XCTAssertTrue(once.waitForExistence(timeout: 5))
+        once.tap()
+        assertEventually("默认规则应保存，但不启动自动签到") { defaultSubmissions.value as? String == "1 次" }
+        capture(app, name: "自动签到-默认规则")
+        for field in ["执行时间", "错过计划时间", "结果通知"] {
+            let menu = app.buttons["autoSign.menu.\(field)"]
+            let scroll = app.scrollViews["autoSign.defaultRules"]
+            for _ in 0..<8 {
+                if menu.exists && menu.isHittable { break }
+                scroll.swipeDown()
+            }
+            for _ in 0..<12 {
+                if menu.exists && menu.isHittable { break }
+                scroll.swipeUp()
+            }
+            XCTAssertTrue(menu.exists && menu.isHittable, "默认规则菜单应能滚动到达：\(field)")
+            XCTAssertGreaterThanOrEqual(menu.frame.minX, app.frame.minX)
+            XCTAssertLessThanOrEqual(menu.frame.maxX, app.frame.maxX)
+            capture(app, name: "自动签到-\(field)")
+        }
+        returnToParent(from: "默认规则", to: "自动签到", in: app)
+        XCTAssertEqual(running.value as? String, "0")
+        tapAfterScrolling(running, in: app, normalizedOffset: CGVector(dx: 0.94, dy: 0.5))
+        assertEventually("总运行开关应开启") { running.value as? String == "1" }
+        selectTab("今日", in: app)
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "autoSign.todaySummary").firstMatch.waitForExistence(timeout: 5))
+        selectTab("账户", in: app)
+        tapAfterScrolling(app.buttons["autoSign.plans"], in: app)
+        XCTAssertTrue(app.scrollViews["autoSign.planList"].waitForExistence(timeout: 5))
+        capture(app, name: "自动签到-七天计划")
+        tapAfterScrolling(app.buttons["autoSign.selectOccurrence"], in: app)
+        XCTAssertTrue(app.scrollViews["autoSign.occurrenceList"].waitForExistence(timeout: 5))
+        let course = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "账户一课程")).firstMatch
+        tapAfterScrolling(course, in: app)
+        XCTAssertTrue(app.scrollViews["autoSign.planDetail"].waitForExistence(timeout: 5))
+        capture(app, name: "自动签到-单次详情")
+        let submissions = app.buttons["autoSign.menu.最多自动提交"]
+        tapAfterScrolling(submissions, in: app)
+        let twice = app.buttons["2 次"]
+        XCTAssertTrue(twice.waitForExistence(timeout: 5))
+        twice.tap()
+        assertEventually("单次修改后，当前规则应即时更新") {
+            app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "当前最多 2 次")).firstMatch.exists
+        }
+        returnToParent(from: "单次计划", to: "选择课次", in: app)
+        returnToParent(from: "选择课次", to: "未来七天计划", in: app)
+        returnToParent(from: "未来七天计划", to: "自动签到", in: app)
+        tapAfterScrolling(running, in: app, normalizedOffset: CGVector(dx: 0.94, dy: 0.5))
+        assertEventually("总运行开关应关闭") { running.value as? String == "0" }
+        XCTAssertFalse(app.buttons["autoSign.plans"].exists)
+        XCTAssertFalse(app.buttons["autoSign.history"].exists)
+        returnToParent(from: "自动签到", to: "设置", in: app)
+        returnToParent(from: "设置", to: "账户", in: app)
+        selectTab("今日", in: app)
+        XCTAssertFalse(app.descendants(matching: .any).matching(identifier: "autoSign.todaySummary").firstMatch.exists)
     }
 
     @MainActor
@@ -1113,12 +1200,13 @@ final class UCASSignInUITests: XCTestCase {
     }
 
     @MainActor
-    private func tapAfterScrolling(_ element: XCUIElement, in app: XCUIApplication,
+    private func tapAfterScrolling(_ element: XCUIElement, in app: XCUIApplication, normalizedOffset: CGVector? = nil,
                                    file: StaticString = #filePath, line: UInt = #line) {
         let scrollView = app.scrollViews.firstMatch.exists ? app.scrollViews.firstMatch : app.collectionViews.firstMatch
         for _ in 0..<8 {
             if element.exists && element.isHittable {
-                element.tap()
+                if let normalizedOffset { element.coordinate(withNormalizedOffset: normalizedOffset).tap() }
+                else { element.tap() }
                 return
             }
             guard scrollView.exists else { break }
@@ -1127,7 +1215,8 @@ final class UCASSignInUITests: XCTestCase {
         // 原生标签页保留滚动位置；目标可能位于当前可视区域上方。
         for _ in 0..<8 {
             if element.exists && element.isHittable {
-                element.tap()
+                if let normalizedOffset { element.coordinate(withNormalizedOffset: normalizedOffset).tap() }
+                else { element.tap() }
                 return
             }
             guard scrollView.exists else { break }

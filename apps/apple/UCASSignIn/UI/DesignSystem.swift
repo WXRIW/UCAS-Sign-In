@@ -117,6 +117,7 @@ struct PreferenceDivider: View {
 struct PreferenceNavigationRow: View {
     let title: String
     let symbol: String
+    var value: String? = nil
 
     var body: some View {
         HStack(spacing: PreferenceRowLayout.spacing) {
@@ -128,6 +129,10 @@ struct PreferenceNavigationRow: View {
             Text(title).font(PreferenceTypography.body).foregroundStyle(Palette.ink)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 12)
+            if let value {
+                Text(value).font(PreferenceTypography.detail).foregroundStyle(Palette.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Image(systemName: "chevron.right")
                 .font(.system(size: 11, weight: .medium)).foregroundStyle(Palette.secondary)
                 .accessibilityHidden(true)

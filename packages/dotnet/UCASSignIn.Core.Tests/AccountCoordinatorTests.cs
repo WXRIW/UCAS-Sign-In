@@ -411,8 +411,10 @@ public sealed class AccountCoordinatorTests
     public async Task AutoAttemptIsNotRepeatedAfterSwitchingAwayAndBack()
     {
         var h = new Harness();
+        h.School.Query = (_, _) => Task.FromResult(new CourseQueryResult([TestData.Course() with { BeginTime = "08:35" }], "ok"));
         await h.Model.InitializeAsync();
         await h.Model.SetPreferencesAsync(true, false);
+        await h.Model.SetAutoSignSettingsAsync(running: true);
         h.Model.IsForeground = true;
         await h.Model.TickAsync();
         Assert.Equal(1, h.School.Signs);
@@ -427,6 +429,7 @@ public sealed class AccountCoordinatorTests
         var h = new Harness();
         await h.Model.InitializeAsync();
         await h.Model.SetPreferencesAsync(true, false);
+        await h.Model.SetAutoSignSettingsAsync(running: true);
         await h.Model.TickAsync();
         Assert.Equal(0, h.School.Signs);
     }
@@ -434,8 +437,10 @@ public sealed class AccountCoordinatorTests
     public async Task PlatformBackgroundTickCanSignWhenExplicitlyAllowed()
     {
         var h = new Harness();
+        h.School.Query = (_, _) => Task.FromResult(new CourseQueryResult([TestData.Course() with { BeginTime = "08:35" }], "ok"));
         await h.Model.InitializeAsync();
         await h.Model.SetPreferencesAsync(true, false);
+        await h.Model.SetAutoSignSettingsAsync(running: true);
         await h.Model.TickAsync(allowBackground: true);
         Assert.Equal(1, h.School.Signs);
     }
@@ -447,6 +452,7 @@ public sealed class AccountCoordinatorTests
             [TestData.Course() with { BeginTime = "12:00", EndTime = "13:40" }], "ok"));
         await h.Model.InitializeAsync();
         await h.Model.SetPreferencesAsync(true, false);
+        await h.Model.SetAutoSignSettingsAsync(running: true);
         await h.Model.TickAsync(allowBackground: true);
         Assert.Equal(0, h.School.ClockReads);
         Assert.Equal(0, h.School.Signs);

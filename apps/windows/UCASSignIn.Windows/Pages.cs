@@ -189,6 +189,7 @@ public sealed partial class MainWindow
             "catalog-detail" => catalogDetail?.Name ?? "课程详情",
             "course-schedule" => "排课信息",
             "settings" => "设置",
+            var autoRoute when AutoSignPageTitle(autoRoute) is { } title => title,
             "records" => Model.IsDemo ? "演示签到记录" : "本机签到记录",
             "about" => "关于",
             "source" => "项目源码与致谢",
@@ -220,6 +221,7 @@ public sealed partial class MainWindow
         if (route is not null)
         {
             if (route == "settings") RenderSettings();
+            else if (RenderAutoSignPage(route)) { }
             else RenderInformation();
             return;
         }
@@ -276,6 +278,14 @@ public sealed partial class MainWindow
             return;
         }
         Banner(CourseTime.Today());
+        if (!Model.IsDemo && Model.Preferences.AutoSignIsRunning)
+        {
+            var nextPlan = NextAutoSignPlan();
+            var paused = Model.Preferences.AutoSignPausedUntil is { } pause && pause > DateTimeOffset.Now;
+            Page.Children.Add(ActionCard(Column(Text("自动签到 · " + Model.AutoSignRuntimeStatus, 12, color: Secondary),
+                Text(paused ? "已暂停至明天" : nextPlan is null ? "暂无待执行计划" : $"下一项 {nextPlan.Course.Name} · {(nextPlan.NextAt ?? nextPlan.PlannedAt).ToOffset(CourseTime.ShanghaiOffset):HH:mm}",
+                    12, color: Secondary)), () => Navigate("autosign")));
+        }
         var (current, next) = CourseTime.CurrentAndNext(courses, now);
         var featured = current is { Signed: false } ? current : next ?? current ?? courses.LastOrDefault();
         if (featured is not null)
@@ -493,10 +503,8 @@ public sealed partial class MainWindow
         var prefs = Model.Preferences;
         var reminders = new ToggleSwitch { IsOn = prefs.RemindersEnabled, OnContent = "", OffContent = "", Width = 50, MinWidth = 0, IsEnabled = Model.IsConnected && Model.CanChangeAccount };
         var confirmation = new ToggleSwitch { IsOn = prefs.ConfirmBeforeSign, OnContent = "", OffContent = "", Width = 50, MinWidth = 0, IsEnabled = Model.IsConnected && Model.CanChangeAccount };
-        var auto = new ToggleSwitch { IsOn = prefs.AutoSignEnabled, OnContent = "", OffContent = "", Width = 50, MinWidth = 0, IsEnabled = Model.IsConnected && Model.CanChangeAccount };
-        reminders.Toggled += async (_, _) => await Run(() => Model.SetPreferencesAsync(auto.IsOn, reminders.IsOn, confirmation.IsOn, prefs.ReminderLeadMinutes));
-        confirmation.Toggled += async (_, _) => await Run(() => Model.SetPreferencesAsync(auto.IsOn, reminders.IsOn, confirmation.IsOn, prefs.ReminderLeadMinutes));
-        auto.Toggled += async (_, _) => await Run(() => Model.SetPreferencesAsync(auto.IsOn, reminders.IsOn, confirmation.IsOn, prefs.ReminderLeadMinutes));
+        reminders.Toggled += async (_, _) => await Run(() => Model.SetPreferencesAsync(Model.Preferences.AutoSignIsRunning, reminders.IsOn, confirmation.IsOn, prefs.ReminderLeadMinutes));
+        confirmation.Toggled += async (_, _) => await Run(() => Model.SetPreferencesAsync(Model.Preferences.AutoSignIsRunning, reminders.IsOn, confirmation.IsOn, prefs.ReminderLeadMinutes));
         var preferences = SettingsGroup("课堂偏好",
             SettingRow("课程提醒", "按全局默认值安排本机通知", "\uE787", reminders));
         var preferenceCards = (StackPanel)preferences.Children[1];
@@ -507,17 +515,15 @@ public sealed partial class MainWindow
             lead.SelectionChanged += async (_, _) =>
             {
                 var minutes = new[] { 5, 10, 15, 30 }[Math.Max(0, lead.SelectedIndex)];
-                if (minutes != prefs.ReminderLeadMinutes) await Run(() => Model.SetPreferencesAsync(auto.IsOn, reminders.IsOn, confirmation.IsOn, minutes));
+                if (minutes != prefs.ReminderLeadMinutes) await Run(() => Model.SetPreferencesAsync(Model.Preferences.AutoSignIsRunning, reminders.IsOn, confirmation.IsOn, minutes));
             };
             preferenceCards.Children.Add(SettingRow("提醒时间", "课程可单独覆盖此默认值", "\uE823", lead));
         }
         preferenceCards.Children.Add(SettingRow("手动签到二次确认", "提交前弹窗确认，避免误触签到", "\uE9D5", confirmation));
-        preferenceCards.Children.Add(SettingRow("自动签到", "果壳签到运行时，进入签到时段后尝试一次", "\uE73E", auto));
-        preferences.Children.Add(SettingsNote("窗口可最小化，也可切换到其他应用；退出果壳签到或设备睡眠时会暂停。签到结果以学校返回状态为准。"));
+        preferenceCards.Children.Add(AutoSignLink("自动签到", "\uE823", "autosign", Model.AutoSignSettingsStatus));
         Page.Children.Add(preferences);
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(reminders, "课程提醒");
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(confirmation, "手动签到二次确认");
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(auto, "自动签到");
         var notifications = Button("系统通知设置", async () => { await Launcher.LaunchUriAsync(new("ms-settings:notifications")); });
         notifications.IsEnabled = true;
         Page.Children.Add(SettingsGroup("通知", SettingRow("Windows 通知", "管理通知权限和显示方式", "\uE7F4", notifications)));
@@ -583,7 +589,7 @@ public sealed partial class MainWindow
     }
     void GoBack(object sender, RoutedEventArgs e)
     {
-        route = route == "source" ? "about" : route == "course-schedule" ? "catalog-detail" : null;
+        route = AutoSignParentRoute(route) ?? (route == "source" ? "about" : route == "course-schedule" ? "catalog-detail" : null);
         detail = null;
         if (route != "catalog-detail") catalogDetail = null;
         Render(NavigationMotion.Back);

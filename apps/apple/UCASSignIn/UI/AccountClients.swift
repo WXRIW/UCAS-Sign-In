@@ -9,6 +9,11 @@ protocol NotificationClient {
     func add(_ request: UNNotificationRequest) async throws
     func removeAll()
     func remove(ids: [String])
+    func pendingRequestIdentifiers() async -> [String]
+}
+
+extension NotificationClient {
+    func pendingRequestIdentifiers() async -> [String] { [] }
 }
 
 struct LiveNotificationClient: NotificationClient {
@@ -34,6 +39,13 @@ struct LiveNotificationClient: NotificationClient {
     }
     func removeAll() { UNUserNotificationCenter.current().removeAllPendingNotificationRequests() }
     func remove(ids: [String]) { UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ids) }
+    func pendingRequestIdentifiers() async -> [String] {
+        await withCheckedContinuation { continuation in
+            UNUserNotificationCenter.current().getPendingNotificationRequests { requests in
+                continuation.resume(returning: requests.map(\.identifier))
+            }
+        }
+    }
 }
 
 @MainActor

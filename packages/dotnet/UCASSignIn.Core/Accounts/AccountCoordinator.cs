@@ -18,6 +18,8 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
     readonly Dictionary<string, string?> courseNotices = [];
     readonly HashSet<string> autoAttempts = [];
     readonly HashSet<string> signPreparations = [];
+    bool AddSignPreparation(string key) { lock (signPreparations) return signPreparations.Add(key); }
+    void RemoveSignPreparation(string key) { lock (signPreparations) signPreparations.Remove(key); }
     readonly HashSet<string> recoveryAttempts = [];
     readonly Dictionary<string, (Task Task, long Revision)> reads = [];
     Task<SchoolSession?>? recovery;
@@ -139,15 +141,20 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
         Notify();
         try
         {
-            var session = await school.LoginAsync(username, password);
-            if (expectedAccountId is not null && session.StudentNo != expectedAccountId)
-                throw new SchoolException("ACCOUNT_MISMATCH", "请使用此账户对应的学校身份登录");
-            var prior = vault.Accounts.FirstOrDefault(a => a.Id == session.StudentNo);
-            var next = new StoredAccount(session, remember ? new(username.Trim(), password) : null, username.Trim(), clock.GetUtcNow(), false, prior?.Preferences);
-            await CommitAsync(Updated(next, true));
+            StoredAccount next;
+            try
+            {
+                var session = await school.LoginAsync(username, password);
+                if (expectedAccountId is not null && session.StudentNo != expectedAccountId)
+                    throw new SchoolException("ACCOUNT_MISMATCH", "请使用此账户对应的学校身份登录");
+                var prior = vault.Accounts.FirstOrDefault(a => a.Id == session.StudentNo);
+                next = new(session, remember ? new(username.Trim(), password) : null, username.Trim(), clock.GetUtcNow(), false, prior?.Preferences);
+                await CommitAsync(Updated(next, true));
+            }
+            finally { mutations.Release(); }
             await ActivateAsync(next);
         }
-        finally { IsBusy = false; mutations.Release(); Notify(); }
+        finally { IsBusy = false; Notify(); }
     }
     public async Task SwitchAsync(string id)
     {
@@ -158,14 +165,16 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
         Notify();
         try
         {
-            var a = vault.Accounts.First(x => x.Id == id) with
+            StoredAccount a;
+            try
             {
-                LastUsedAt = clock.GetUtcNow()
-            };
-            await CommitAsync(Updated(a, true));
+                a = vault.Accounts.First(x => x.Id == id) with { LastUsedAt = clock.GetUtcNow() };
+                await CommitAsync(Updated(a, true));
+            }
+            finally { mutations.Release(); }
             await ActivateAsync(a);
         }
-        finally { IsBusy = false; mutations.Release(); Notify(); }
+        finally { IsBusy = false; Notify(); }
     }
     async Task ResetAsync()
     {
@@ -191,6 +200,11 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
         school.ClearClock();
         Message = null;
         SignInError = null;
+        autoSignExecutions.Clear(); autoSignQueryStartedAt.Clear();
+        autoSignQuerySchoolStartedAt.Clear(); autoSignQuerySchoolVerifiedAt.Clear(); autoSignVerifiedQuerySequence.Clear();
+        autoSignSchoolOffset = null; autoSignSchoolSample = null; autoSignActivationMarks.Clear();
+        autoSignClockRetryTimestamp = null;
+        AutoSignError = null; autoSignNetworkIssue = false; autoSignStoreAvailable = autoSignStore is not null;
         ResetCatalogState();
         await UpdateRemindersAsync();
     }
@@ -205,6 +219,10 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
         if (epoch != Generation)
             return;
         await LoadAttendanceStateAsync(a.Id, epoch);
+        if (epoch != Generation) return;
+        await LoadAutoSignAsync(a.Id, epoch);
+        if (epoch != Generation) return;
+        await UnifyAutoSignPreferencesAsync(epoch);
         if (epoch != Generation) return;
         await LoadScheduleCacheAsync(a, epoch);
         if (epoch != Generation) return;
@@ -301,6 +319,8 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
             var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var sequence = ++requestSequence;
             versions[day] = sequence;
+            autoSignQueryStartedAt[day] = clock.GetUtcNow();
+            autoSignQuerySchoolStartedAt[day] = AutoSignNow;
             reads[day] = (completion.Task, sequence);
             var epoch = Generation;
             var ct = lifetime.Token;
@@ -350,8 +370,12 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
             }
             if (epoch != Generation || paused || versions.GetValueOrDefault(day) != sequence)
                 return;
+            autoSignVerifiedQuerySequence[day] = sequence;
+            autoSignQuerySchoolVerifiedAt[day] = AutoSignNow;
             result = result with { Courses = result.Courses.Where(c => CourseTime.NormalizeDay(c.Day) == day).Select(c => CourseIdentity.PreserveFields(c with { Day = day }, Courses.FirstOrDefault(x => x.Day == day && x.Id == c.Id))).ToArray(), FromWeeklyFallback = false };
             foreach (var course in result.Courses) ObserveAttendance(course, AttendanceSource.Daily, sequence);
+            await ReconcileAutoSignSuccessAsync(result.Courses, epoch);
+            if (epoch != Generation) return;
             dayVerifiedAt[day] = clock.GetUtcNow();
             invalidatedDays.Remove(day);
             await SaveAttendanceStateAsync(epoch);
@@ -362,7 +386,9 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
             await cache.SaveAsync(account.Id, day, new(result.Courses.ToList(), updatedAt, false, sequence), ct);
             if (epoch != Generation || paused || versions.GetValueOrDefault(day) != sequence)
                 return;
+            var previousAutoSignPlans = arrangementChanged ? AutoSignPlans.ToDictionary(x => x.Key) : null;
             Merge(result.Courses, day);
+            if (previousAutoSignPlans is not null) await RecordAutoSignPlanChangesAsync(previousAutoSignPlans, epoch);
             successfulWrites[day] = sequence;
             checkedDays.Add(day); retryAt.Remove("day:" + day); failures.Remove("day:" + day);
             freshDays.Add(day);
@@ -434,11 +460,13 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
                 return null;
             if (result.StudentNo != failed.StudentNo)
                 throw new SchoolException("ACCOUNT_MISMATCH", "保存的凭据与账户不符，请重新登录");
-            await CommitAsync(Updated(a with
+            await mutations.WaitAsync(lifetime.Token);
+            try
             {
-                Session = result,
-                RequiresLogin = false
-            }));
+                if (epoch != Generation || ActiveAccount is not { } current || current.Id != failed.StudentNo) return null;
+                await CommitAsync(Updated(current with { Session = result, RequiresLogin = false }));
+            }
+            finally { mutations.Release(); }
             paused = false;
             scheduleSessionId = result.SessionId;
             return result;
@@ -455,10 +483,13 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
         Message = "登录已过期，请在账户页重新验证";
         try
         {
-            await CommitAsync(Updated(a with
+            await mutations.WaitAsync(lifetime.Token);
+            try
             {
-                RequiresLogin = true
-            }));
+                if (epoch != Generation || ActiveAccount is not { } current || current.Id != id) return;
+                await CommitAsync(Updated(current with { RequiresLogin = true }));
+            }
+            finally { mutations.Release(); }
         }
         catch (Exception e) { Message += "；账户状态保存失败：" + e.Message; }
         await UpdateRemindersAsync();
@@ -469,11 +500,16 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
         if (automatically && !IsDemo && !CachePolicy.Fresh(dayVerifiedAt.GetValueOrDefault(course.Day), clock.GetUtcNow(), TimeSpan.FromSeconds(60)))
             await EnterDayAsync(CourseTime.Date(course.Day));
         var preparationKey = course.Day + "|" + course.Id;
-        if (expectedGeneration != Generation || !CanSign(course) || automatically && !EffectiveAutoSign(PreferenceId(course)) || !signPreparations.Add(preparationKey))
+        if (expectedGeneration != Generation || !CanSign(course) || automatically && !AutoSignAllowed(course) || !AddSignPreparation(preparationKey))
             return;
         var epoch = Generation;
         var id = ActiveAccount?.Id ?? "demo";
-        var attemptKey = id + "|" + course.Day + "|" + course.Id;
+        var attemptKey = AutoSignPlanner.Key(id, course);
+        if (!automatically && autoSignStoreAvailable && (autoSignExecutions.GetValueOrDefault(attemptKey)?.HasExecutionActivity == true
+            || AutoSignPlans.Any(x => x.Key == attemptKey && x.IsParticipating)))
+            await SetAutoSignStageAsync(autoSignExecutions.GetValueOrDefault(attemptKey) ?? AutoSignExecution.New(attemptKey, clock.GetUtcNow()),
+                AutoSignStage.Skipped, "用户已手动接管", epoch);
+        var authorized = false;
         var submitted = false;
         bool Authorize()
         {
@@ -481,14 +517,21 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
             if (epoch != Generation || paused || ActiveAccount?.RequiresLogin == true || current is null || current.Signed
                 || AttendanceStatusFor(current) != AttendanceStatus.Unsigned
                 || automatically && !CachePolicy.Fresh(dayVerifiedAt.GetValueOrDefault(course.Day), clock.GetUtcNow(), TimeSpan.FromSeconds(60))
-                || !IsFresh(current) || IsSignInDisabled(PreferenceId(current)) || automatically && !EffectiveAutoSign(PreferenceId(current))) return false;
-            submitted = true;
+                || !IsFresh(current) || IsSignInDisabled(PreferenceId(current)) || automatically && !AutoSignAllowed(current)) return false;
+            authorized = true;
+            submitted = !automatically;
             IsBusy = true;
             if (automatically) autoAttempts.Add(attemptKey);
             Notify();
             return true;
         }
         Notify();
+        async Task<bool> ReserveAutomaticSubmission(DateTimeOffset schoolNow)
+        {
+            if (!await ReserveAutoSignSubmissionAsync(course, epoch, schoolNow)) return false;
+            submitted = true;
+            return true;
+        }
         try
         {
             SignResult result;
@@ -497,7 +540,8 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
                 if (!Authorize()) return;
                 result = new(SignOutcome.Signed, "演示签到成功 · 未向学校提交");
             }
-            else result = await school.SignAsync(course, ActiveAccount!.Session, lifetime.Token, Authorize);
+            else result = await school.SignAsync(course, ActiveAccount!.Session, lifetime.Token, Authorize,
+                authorizeAt: automatically ? ReserveAutomaticSubmission : null);
             if (epoch != Generation)
                 return;
             Records = new[] { new AttendanceRecord(course.Name, clock.GetUtcNow(), result.Message, result.Outcome == SignOutcome.Signed, course.CourseId, course.Id) }.Concat(Records).Take(100).ToList();
@@ -514,6 +558,11 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
                 Notify();
             }
             else ReportSignInError(course.Day, result.Message);
+            if (automatically && autoSignExecutions.TryGetValue(attemptKey, out var completed))
+                await SetAutoSignStageAsync(completed, result.Outcome == SignOutcome.Signed ? AutoSignStage.Signed
+                    : result.Outcome == SignOutcome.OutsideSignWindow ? AutoSignStage.NeedsAttention : AutoSignStage.Verifying,
+                    result.Message, epoch, result.Outcome is SignOutcome.Signed or SignOutcome.OutsideSignWindow
+                        ? null : clock.GetUtcNow().AddMinutes(AutoSignPlans.FirstOrDefault(x => x.Key == attemptKey)?.Policy.RetryMinutes ?? Preferences.AutoSignRule.RetryMinutes));
             if (!IsDemo)
             {
                 try { await records.SaveAsync(id, Records, lifetime.Token); }
@@ -536,7 +585,11 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
         {
             if (epoch != Generation)
                 return;
+            if (automatically && !autoSignStoreAvailable) return;
             ReportSignInError(course.Day, "未能确认签到结果：" + e.Message + " 请先刷新课程状态，再决定是否重试。");
+            if (automatically && autoSignExecutions.TryGetValue(attemptKey, out var uncertain))
+                await SetAutoSignStageAsync(uncertain, AutoSignStage.Verifying, "提交结果未知，等待学校状态核实", epoch,
+                    clock.GetUtcNow().AddMinutes(AutoSignPlans.FirstOrDefault(x => x.Key == attemptKey)?.Policy.RetryMinutes ?? Preferences.AutoSignRule.RetryMinutes));
             if (e is SchoolException se && se.IsSessionExpired && ActiveAccount is { } a)
             {
                 if (await RecoverAsync(a.Session, epoch) is not null)
@@ -545,11 +598,17 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
         }
         finally
         {
-            signPreparations.Remove(preparationKey);
-            if (epoch == Generation) { if (submitted) IsBusy = false; Notify(); }
+            RemoveSignPreparation(preparationKey);
+            if (epoch == Generation) { if (authorized) IsBusy = false; Notify(); }
         }
     }
     public async Task TickAsync(bool allowBackground = false)
+    {
+        if (!await autoSignTickGate.WaitAsync(0)) return;
+        try { await TickCoreAsync(allowBackground); }
+        finally { autoSignTickGate.Release(); }
+    }
+    async Task TickCoreAsync(bool allowBackground)
     {
         bool Active() => IsForeground || allowBackground;
         if (IsDemo && IsForeground)
@@ -567,35 +626,43 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
         var epoch = Generation;
         if (!IsScheduleRefreshing) await MaintainScheduleAsync();
         if (epoch != Generation || !Active() || paused) return;
-        var today = CourseTime.Today(clock);
+        if (!Preferences.AutoSignIsRunning || !autoSignStoreAvailable
+            || Preferences.AutoSignPausedUntil is { } until && until > AutoSignNow) return;
+        if (autoSignClockRetryAt is { } retry && clock.GetUtcNow() < retry) return;
+        if (autoSignSchoolOffset is null && Courses.Concat(snapshots.Values.SelectMany(s => s.Courses))
+            .Any(c => AutoSignConfigured(c) && CourseTime.InSignWindow(c, clock.GetUtcNow())))
+        {
+            if (await ReadAutoSignClockAsync(epoch) is null || epoch != Generation) return;
+        }
+        var today = DateOnly.FromDateTime(AutoSignNow.ToOffset(CourseTime.ShanghaiOffset).DateTime);
         // Avoid waking the school clock endpoint all day. Device time is only a
         // coarse gate; the signed request still uses the authoritative school time.
-        var localNow = clock.GetUtcNow();
-        var candidates = Courses.Where(c => c.Day == CourseTime.DayKey(today) && AttendanceStatusFor(c) != AttendanceStatus.Signed && EffectiveAutoSign(PreferenceId(c))
-            && c.Start is { } start && c.End is { } end
-            && localNow >= start.AddMinutes(-30) && localNow < end.AddMinutes(5)
-            && !autoAttempts.Contains(a.Id + "|" + c.Day + "|" + c.Id)
-            && attendanceStates.GetValueOrDefault(AttendanceKey(c))?.LastSuccessfulSignAt is null).ToList();
+        var schoolNow = AutoSignNow;
+        var candidates = AutoSignPlans.Where(p => p.Course.Day == CourseTime.DayKey(today)
+            && p.Stage != AutoSignStage.Signed && (p.Stage != AutoSignStage.Skipped || CanVerifyExisting(p))
+            && (p.Stage != AutoSignStage.NeedsAttention || autoSignExecutions.GetValueOrDefault(p.Key) is { Submissions: > 0 })
+            && (p.Stage != AutoSignStage.NeedsAttention || p.Course.End > schoolNow)
+            && p.NextAt <= schoolNow
+            && attendanceStates.GetValueOrDefault(AttendanceKey(p.Course))?.LastSuccessfulSignAt is null).ToList();
         if (candidates.Count == 0)
             return;
-        if (!CachePolicy.Fresh(dayVerifiedAt.GetValueOrDefault(CourseTime.DayKey(today)), clock.GetUtcNow(), TimeSpan.FromSeconds(60)))
-            await RefreshAsync(today);
-        if (epoch != Generation || !Active()) return;
-        var now = await school.SchoolNowAsync(lifetime.Token);
-        if (epoch != Generation || !Active())
-            return;
-        var course = candidates.FirstOrDefault(c => CanSign(c) && EffectiveAutoSign(PreferenceId(c)) && CourseTime.InSignWindow(c, now)
-            && !autoAttempts.Contains(a.Id + "|" + c.Day + "|" + c.Id));
-        if (course is not null)
-            await SignAsync(course, epoch, true);
+        foreach (var plan in candidates.OrderBy(x => x.NextAt).ThenBy(x => x.Key))
+        {
+            if (epoch != Generation || !Active()) return;
+            await EvaluateAutoSignAsync(plan.Course, epoch);
+        }
     }
     public async Task SetPreferencesAsync(bool autoSign, bool enableReminders, bool? confirmBeforeSign = null, int? reminderLeadMinutes = null)
     {
         var lead = reminderLeadMinutes is 5 or 10 or 15 or 30 ? reminderLeadMinutes : null;
         if (IsDemo)
         {
-            demoPreferences = new(autoSign, enableReminders, confirmBeforeSign ?? demoPreferences.ConfirmBeforeSign,
-                lead ?? demoPreferences.ReminderLeadMinutes, demoPreferences.Courses);
+            demoPreferences = StampParticipation(demoPreferences, demoPreferences with
+            {
+                AutoSignRunning = autoSign, AutoSignEnabled = autoSign, RemindersEnabled = enableReminders,
+                ConfirmBeforeSign = confirmBeforeSign ?? demoPreferences.ConfirmBeforeSign,
+                ReminderLeadMinutes = lead ?? demoPreferences.ReminderLeadMinutes
+            }, clock.GetUtcNow());
             Notify();
             return;
         }
@@ -612,11 +679,20 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
                 return;
             IsBusy = true;
             Notify();
+            var beforeAutoSignPlans = AutoSignPlans.ToDictionary(x => x.Key);
+            var preferences = StampParticipation(current.Preferences, current.Preferences with
+            {
+                AutoSignRunning = autoSign,
+                AutoSignEnabled = autoSign, RemindersEnabled = enableReminders,
+                ConfirmBeforeSign = confirmBeforeSign ?? current.Preferences.ConfirmBeforeSign,
+                ReminderLeadMinutes = lead ?? current.Preferences.ReminderLeadMinutes,
+                AutoSignV2Acknowledged = current.Preferences.AutoSignV2Acknowledged || autoSign != current.Preferences.AutoSignEnabled
+            }, clock.GetUtcNow());
             await CommitAsync(Updated(current with
             {
-                Settings = new(autoSign, enableReminders, confirmBeforeSign ?? current.Preferences.ConfirmBeforeSign,
-                    lead ?? current.Preferences.ReminderLeadMinutes, current.Preferences.Courses)
+                Settings = preferences
             }));
+            await RecordAutoSignPlanChangesAsync(beforeAutoSignPlans, epoch);
             await UpdateRemindersAsync();
             if (!permissionGranted)
                 Message = "偏好已保存；通知权限未开启，可在系统设置中允许通知";

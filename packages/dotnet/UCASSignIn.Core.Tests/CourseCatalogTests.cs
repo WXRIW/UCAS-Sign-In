@@ -83,16 +83,21 @@ public sealed class CourseCatalogTests
     }
 
     [Fact]
-    public async Task CourseOverrideCanEnableServiceWhileGlobalDefaultIsOff()
+    public async Task CourseOverridesCannotChangeTheGlobalServiceSwitch()
     {
         var accounts = new MemoryAccounts { Vault = new(1, [TestData.Account()], "a") };
         var data = new MemoryData(); var model = new AccountCoordinator(new FakeSchool(), accounts, data, data, new FakeReminders(), new FakeClock(TestData.Now));
         await model.InitializeAsync();
         await model.SetCoursePreferencesAsync("official-1", new(AutoSign: PreferenceOverride.Enabled));
+        Assert.False(model.NeedsAutoSignService);
+        await model.SetAutoSignSettingsAsync(running: true);
         Assert.True(model.EffectiveAutoSign("official-1"));
         Assert.True(model.NeedsAutoSignService);
         await model.SetCoursePreferencesAsync("official-1", new(AutoSign: PreferenceOverride.Enabled, SignInDisabled: true));
         Assert.False(model.EffectiveAutoSign("official-1"));
+        Assert.True(model.EffectiveAutoSign("inherited-course"));
+        Assert.True(model.NeedsAutoSignService);
+        await model.SetAutoSignSettingsAsync(running: false);
         Assert.False(model.NeedsAutoSignService);
     }
 
@@ -101,16 +106,17 @@ public sealed class CourseCatalogTests
     {
         var accounts = new MemoryAccounts { Vault = new(1, [TestData.Account()], "a") };
         var data = new MemoryData(); var school = new FakeSchool();
-        school.Query = (_, date) => Task.FromResult(new CourseQueryResult([TestData.Course() with { Day = CourseTime.DayKey(date), CourseId = "official-1" }], ""));
+        school.Query = (_, date) => Task.FromResult(new CourseQueryResult([TestData.Course() with { Day = CourseTime.DayKey(date), CourseId = "official-1", BeginTime = "08:35" }], ""));
         var reachedClockWait = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseClockWait = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         school.BeforeSignAuthorization = async () => { reachedClockWait.SetResult(); await releaseClockWait.Task; };
         var model = new AccountCoordinator(school, accounts, data, data, new FakeReminders(), new FakeClock(TestData.Now));
         await model.InitializeAsync();
         await model.SetCoursePreferencesAsync("official-1", new(AutoSign: PreferenceOverride.Enabled));
+        await model.SetAutoSignSettingsAsync(running: true);
         var course = Assert.Single(model.Courses);
         var pending = model.SignAsync(course, model.Generation, true);
-        await reachedClockWait.Task;
+        await reachedClockWait.Task.WaitAsync(TimeSpan.FromSeconds(5));
         await model.SetCoursePreferencesAsync("official-1", new(AutoSign: PreferenceOverride.Enabled, SignInDisabled: true));
         releaseClockWait.SetResult();
         await pending;

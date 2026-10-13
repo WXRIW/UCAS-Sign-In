@@ -257,9 +257,39 @@ public sealed partial class MainWindow
             signCards.Children.Add(SettingRow("手动签到二次确认", "提交前弹窗确认，避免误触签到", "\uE9D5",
                 OverridePicker("手动签到二次确认", values.Confirmation, Model.Preferences.ConfirmBeforeSign,
                     selected => Model.SetCoursePreferencesAsync(course.Id, values with { Confirmation = selected }))));
-            signCards.Children.Add(SettingRow("自动签到", "进入签到时段后自动尝试一次", "\uE73E",
-                OverridePicker("自动签到", values.AutoSign, Model.Preferences.AutoSignEnabled,
+            signCards.Children.Add(SettingRow("自动签到", "按本课程的计划时间与重试规则执行", "\uE73E",
+                OverridePicker("自动签到", values.AutoSign, Model.Preferences.AutoSignIsRunning,
                     selected => Model.SetCoursePreferencesAsync(course.Id, values with { AutoSign = selected }))));
+            var autoRule = values.AutoSignRule ?? new AutoSignPolicyOverride();
+            ComboBox RulePicker(string[] items, int selected, Func<int, AutoSignPolicyOverride> update)
+            {
+                var picker = new ComboBox { ItemsSource = items, SelectedIndex = selected, MinWidth = 150 };
+                picker.SelectionChanged += async (_, _) =>
+                {
+                    if (picker.SelectedIndex >= 0 && picker.SelectedIndex != selected)
+                        await Run(() => Model.SetCoursePreferencesAsync(course.Id, values with { AutoSignRule = update(picker.SelectedIndex) }));
+                };
+                return picker;
+            }
+            var times = new[] { "跟随账户" }.Concat(Enumerable.Range(-25, 266).Select(x => x == 0 ? "上课时" : x < 0 ? $"课前 {-x} 分钟" : $"开课后 {x} 分钟")).ToArray();
+            signCards.Children.Add(SettingRow("执行时间", "课程默认规则", "\uE823",
+                RulePicker(times, autoRule.OffsetMinutes is { } offset ? offset + 26 : 0,
+                    i => autoRule with { OffsetMinutes = i == 0 ? null : i - 26 })));
+            signCards.Children.Add(SettingRow("错过计划时间", "课程默认规则", "\uE823",
+                RulePicker(["跟随账户", "提示手动处理", "宽限 10 分钟", "下课前补执行"],
+                    autoRule.MissedAction is { } missed ? (int)missed + 1 : 0,
+                    i => autoRule with { MissedAction = i == 0 ? null : (AutoSignMissedAction)(i - 1) })));
+            signCards.Children.Add(SettingRow("最多自动提交", "课程默认规则", "\uE823",
+                RulePicker(["跟随账户", "1 次", "2 次", "3 次"], autoRule.MaxSubmissions ?? 0,
+                    i => autoRule with { MaxSubmissions = i == 0 ? null : i })));
+            var intervals = new[] { 1, 2, 5 };
+            signCards.Children.Add(SettingRow("重试间隔", "课程默认规则", "\uE823",
+                RulePicker(["跟随账户", "1 分钟", "2 分钟", "5 分钟"], autoRule.RetryMinutes is { } interval ? Array.IndexOf(intervals, interval) + 1 : 0,
+                    i => autoRule with { RetryMinutes = i == 0 ? null : intervals[i - 1] })));
+            signCards.Children.Add(SettingRow("结果通知", "课程默认规则", "\uE823",
+                RulePicker(["跟随账户", "仅异常", "成功与异常", "关闭"],
+                    autoRule.Notification is { } notification ? (int)notification + 1 : 0,
+                    i => autoRule with { Notification = i == 0 ? null : (AutoSignNotification)(i - 1) })));
         }
         signCards.Children.Add(SettingRow("禁用本课程签到", "暂停本课程的手动签到和自动签到", "\uEA39", disabled));
         Page.Children.Add(signRows);

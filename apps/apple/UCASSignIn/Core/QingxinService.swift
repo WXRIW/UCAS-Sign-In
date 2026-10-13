@@ -52,13 +52,18 @@ public actor QingxinService {
     private static let verificationURL = "http://iclass.ucas.edu.cn:88/ve/webservices/mobileCheck.shtml?method=mobileLogin&username=${0}&password=${1}&lx=${2}"
     private let transport: any HTTPTransport
     private let now: @Sendable () -> Date
+    private let monotonicNow: @Sendable () -> TimeInterval
     private var sample: ClockSample?
     private var pendingSync: Task<ClockSample, Error>?
     private var clockGeneration = 0
 
-    public init(transport: any HTTPTransport = URLSessionTransport(), now: @escaping @Sendable () -> Date = { Date() }) {
+    public init(transport: any HTTPTransport = URLSessionTransport(), now: (@Sendable () -> Date)? = nil,
+                monotonicNow: (@Sendable () -> TimeInterval)? = nil) {
         self.transport = transport
-        self.now = now
+        self.now = now ?? { Date() }
+        if let monotonicNow { self.monotonicNow = monotonicNow }
+        else if let now { self.monotonicNow = { now().timeIntervalSinceReferenceDate } }
+        else { self.monotonicNow = { ProcessInfo.processInfo.systemUptime } }
     }
 
     public func login(username: String, password: String) async throws -> SchoolSession {
@@ -146,12 +151,14 @@ public actor QingxinService {
 
     /// A sign-in is never retried automatically: an ambiguous network response may already have committed.
     public func sign(course: Course, session: SchoolSession,
-                     authorizeSubmission: @MainActor @Sendable () throws -> Void = {}) async throws -> SignResult {
+                     authorizeSubmission: @MainActor @Sendable () async throws -> Void = {},
+                     authorizeSynchronizedSubmission: (@MainActor @Sendable (Date) async throws -> Void)? = nil) async throws -> SignResult {
         guard course.id.range(of: "^[0-9]{7}$", options: .regularExpression) != nil else {
             throw APIError(code: "COURSE_ID_INVALID", message: "课程缺少有效的 7 位签到 ID，请刷新课表")
         }
         let reading = try await synchronizedReading()
         try await authorizeSubmission()
+        try await authorizeSynchronizedSubmission?(Date(timeIntervalSince1970: Double(reading.timestamp) / 1000))
         let json = try await execute(path: "course/stu_scan_sign.action", session: session, query: [
             URLQueryItem(name: "courseSchedId", value: course.id),
             URLQueryItem(name: "timestamp", value: String(reading.timestamp)),
@@ -208,12 +215,13 @@ public actor QingxinService {
     private struct ClockSample: Sendable {
         let schoolAtReceive: Int64
         let receivedAt: Date
+        let receivedUptime: TimeInterval
     }
 
     private func synchronizedReading() async throws -> (timestamp: Int64, age: TimeInterval, localNow: Date) {
         let initialNow = now()
         if let sample {
-            let age = initialNow.timeIntervalSince(sample.receivedAt)
+            let age = monotonicNow() - sample.receivedUptime
             if age >= 0 && age < Self.timeSyncTTL {
                 return (sample.schoolAtReceive + Int64(age * 1000), age, initialNow)
             }
@@ -222,15 +230,16 @@ public actor QingxinService {
         let task: Task<ClockSample, Error>
         if let pendingSync { task = pendingSync } else {
             task = Task {
-                let startedAt = self.now()
+                let startedUptime = self.monotonicNow()
                 let json = try await self.execute(path: "common/get_timestamp.do", fields: [], query: [URLQueryItem(name: "id", value: "0")], timeout: 6)
                 let timestamp = try ResponseParser.timestamp(json)
                 let receivedAt = self.now()
-                let roundTrip = receivedAt.timeIntervalSince(startedAt)
+                let receivedUptime = self.monotonicNow()
+                let roundTrip = receivedUptime - startedUptime
                 guard roundTrip >= 0 && roundTrip < Self.timeSyncTTL else {
                     throw APIError(code: "TIME_SYNC_EXPIRED", message: "学校校时已过期，请重试")
                 }
-                return ClockSample(schoolAtReceive: timestamp + Int64(roundTrip * 500), receivedAt: receivedAt)
+                return ClockSample(schoolAtReceive: timestamp + Int64(roundTrip * 500), receivedAt: receivedAt, receivedUptime: receivedUptime)
             }
             pendingSync = task
         }
@@ -241,7 +250,7 @@ public actor QingxinService {
             sample = received
             pendingSync = nil
             let localNow = now()
-            let age = localNow.timeIntervalSince(received.receivedAt)
+            let age = monotonicNow() - received.receivedUptime
             guard age >= 0 && age < Self.timeSyncTTL else {
                 throw APIError(code: "TIME_SYNC_EXPIRED", message: "学校校时已过期，请重试")
             }

@@ -9,6 +9,7 @@ using UCASSignIn.Core;
 using UCASSignIn.Windows.ViewModels;
 using Windows.System;
 using Windows.Storage.Streams;
+using Windows.UI.Notifications;
 namespace UCASSignIn.Windows;
 
 public sealed partial class MainWindow : Window
@@ -18,6 +19,7 @@ public sealed partial class MainWindow : Window
     readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromSeconds(15) };
     string section = "today";
     bool dialogOpen, ready, tickRunning, closed;
+    AutoSignNotificationSnapshot? autoSignNotificationBaseline;
     ContentDialog? activeDialog;
     Guid renderedGeneration;
     string? notification;
@@ -82,6 +84,7 @@ public sealed partial class MainWindow : Window
             ApplyTheme();
             Navigation.SelectedItem = Navigation.MenuItems[0];
             await Run(Environment.GetCommandLineArgs().Contains("--demo") ? Model.InitializeDemoAsync : Model.InitializeAsync);
+            autoSignNotificationBaseline = AutoSignNotificationSnapshot.Capture(Model.Generation, Model.ActiveAccount?.Id, Model.AutoSignHistory);
             ready = true;
             timer.Start();
             Render();
@@ -92,14 +95,36 @@ public sealed partial class MainWindow : Window
     }
     async Task Tick()
     {
-        if (!ready || tickRunning)
+        if (!ready || tickRunning || Model.IsBusy || Model.IsRecovering || Model.IsRefreshing)
             return;
         tickRunning = true;
         try
         {
             // Desktop automatic attendance keeps running while this window is
             // minimized or another app is active. Closing the app still stops it.
+            var epoch = Model.Generation;
+            var accountId = Model.ActiveAccount?.Id;
+            var previous = autoSignNotificationBaseline;
+            if (previous is null || previous.Generation != epoch || previous.AccountId != accountId)
+            {
+                previous = AutoSignNotificationSnapshot.Capture(epoch, accountId, Model.AutoSignHistory);
+                autoSignNotificationBaseline = previous;
+            }
             await Model.TickAsync(allowBackground: true);
+            if (closed || epoch != Model.Generation || accountId != Model.ActiveAccount?.Id) return;
+            var policies = Model.AutoSignPlans.ToDictionary(x => x.Key, x => x.Policy.Notification);
+            var results = AutoSignRuntime.Results(previous, epoch, accountId, Model.AutoSignHistory,
+                item => policies.GetValueOrDefault(item.Key,
+                    Model.Preferences.AutoSignOccurrences.GetValueOrDefault(item.Key)?.Policy?.Notification
+                        ?? item.NotificationMode ?? Model.Preferences.AutoSignRule.Notification));
+            autoSignNotificationBaseline = AutoSignNotificationSnapshot.Capture(epoch, accountId, Model.AutoSignHistory);
+            foreach (var result in results)
+            {
+                if (closed || epoch != Model.Generation || accountId != Model.ActiveAccount?.Id) return;
+                var content = new ToastContentBuilder().AddText("果壳签到 · 自动签到")
+                    .AddText(result.CourseName).AddText(result.Message).GetToastContent();
+                ToastNotificationManagerCompat.CreateToastNotifier().Show(new ToastNotification(content.GetXml()));
+            }
         }
         finally { tickRunning = false; }
     }

@@ -69,7 +69,15 @@ struct RootView: View {
             todayPath.removeAll()
             selectTab(0, refreshToday: true)
         }
-        .task(id: model.accountGeneration) { await model.maintainScheduleCache() }
+        .task(id: model.accountGeneration) {
+            await model.maintainScheduleCache()
+            #if os(macOS)
+            while !Task.isCancelled {
+                await model.foregroundTick()
+                do { try await Task.sleep(for: .seconds(30)) } catch { break }
+            }
+            #endif
+        }
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
             if selection == 0 { await model.enterDay(.now) }
@@ -297,6 +305,7 @@ struct TodayView: View {
                                 emptyDay
                             }
                             progressCard
+                            if !model.isDemo && model.autoSignRunning { autoSignStatusCard }
                             courseList
                             if let notice = model.notice(on: .now), !model.isCached(on: .now) {
                                 Label(notice, systemImage: "info.circle")
@@ -376,6 +385,29 @@ struct TodayView: View {
             .padding(.horizontal, 13).padding(.vertical, 10)
             .background(Palette.pale, in: RoundedRectangle(cornerRadius: 12))
             .padding(.top, -10).padding(.bottom, -10)
+    }
+    private var autoSignStatusCard: some View {
+        let paused = model.autoSignPausedUntil.map { $0 > .now } ?? false
+        let next = model.autoSignPlans.first {
+            $0.isParticipating && [.planned, .checking, .submitting, .verifying, .retryWaiting].contains($0.stage)
+        }
+        return HStack(spacing: 10) {
+            Image(systemName: "clock.arrow.circlepath").foregroundStyle(Palette.green)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("自动签到 · \(model.autoSignRuntimeStatus)")
+                    .font(.system(size: 13, weight: .semibold))
+                if let until = model.autoSignPausedUntil, paused {
+                    Text("暂停至 \(SchoolDate.text(until, "M 月 d 日 HH:mm"))")
+                        .font(.system(size: 11)).foregroundStyle(Palette.secondary)
+                } else if let next {
+                    Text("下一项：\(next.course.name) · \(SchoolDate.text(next.nextAt, "HH:mm")) · \(next.stageTitle)")
+                        .font(.system(size: 11)).foregroundStyle(Palette.secondary)
+                } else {
+                    Text("暂无待执行计划").font(.system(size: 11)).foregroundStyle(Palette.secondary)
+                }
+            }
+            Spacer()
+        }.padding(14).cardSurface().accessibilityIdentifier("autoSign.todaySummary")
     }
     private var progressCard: some View {
         HStack(spacing: 0) {

@@ -63,7 +63,7 @@ public static class AtomicFile
     public static void WriteJson<T>(string path, T value) => Write(path, JsonSerializer.SerializeToUtf8Bytes(value));
     public static T? ReadJson<T>(string path) => File.Exists(path) ? JsonSerializer.Deserialize<T>(File.ReadAllBytes(path)) : default;
 }
-public sealed class FileDataStore(string root) : ICourseStore, IRecordStore, ICourseCatalogStore, IScheduleStore, IAttendanceStateStore
+public sealed class FileDataStore(string root) : ICourseStore, IRecordStore, ICourseCatalogStore, IScheduleStore, IAttendanceStateStore, IAutoSignStore
 {
     static T? ReadCache<T>(string path)
     {
@@ -151,6 +151,28 @@ public sealed class FileDataStore(string root) : ICourseStore, IRecordStore, ICo
     {
         ct.ThrowIfCancellationRequested();
         AtomicFile.WriteJson(Path.Combine(AccountPath(state.AccountId), "attendance-state.json"), state);
+        return Task.CompletedTask;
+    }
+
+    public Task<AutoSignLedger?> LoadAutoSignAsync(string accountId, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        var path = Path.Combine(AccountPath(accountId), "auto-sign.json");
+        if (!File.Exists(path)) return Task.FromResult<AutoSignLedger?>(null);
+        // A damaged execution log must never be interpreted as a fresh, safe-to-submit state.
+        var result = AtomicFile.ReadJson<AutoSignLedger>(path);
+        if (result is null) throw new IOException("自动签到记录无法读取，已暂停自动提交");
+        result.Validate(accountId);
+        var cleaned = result.Cleaned();
+        if (result.Version != AutoSignLedger.CurrentVersion || result.Executions.Count != cleaned.Executions.Count)
+            AtomicFile.WriteJson(path, cleaned);
+        return Task.FromResult<AutoSignLedger?>(cleaned);
+    }
+    public Task SaveAutoSignAsync(AutoSignLedger ledger, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        ledger.Validate(ledger.AccountId);
+        AtomicFile.WriteJson(Path.Combine(AccountPath(ledger.AccountId), "auto-sign.json"), ledger);
         return Task.CompletedTask;
     }
 

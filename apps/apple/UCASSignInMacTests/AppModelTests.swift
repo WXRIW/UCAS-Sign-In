@@ -453,6 +453,8 @@ final class AppModelTests: XCTestCase {
         let model = makeModel(MemoryAccountStore(accounts: [accountA, accountB], active: accountA.id), transport)
         await model.restore()
         model.setAutoSign(true)
+        model.setAutoSignRule(AutoSignPolicy(offsetMinutes: 30))
+        model.setAutoSignRunning(true)
         await model.foregroundTick()
         let initialSignCount = await transport.count("sign")
         XCTAssertEqual(initialSignCount, 1)
@@ -516,7 +518,7 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(signCount, 0)
     }
 
-    func testCourseOverrideCanEnableAutoSignWhenGlobalDefaultIsOff() async throws {
+    func testCourseOverrideCannotBypassOffGlobalSwitch() async throws {
         let schoolNow = try XCTUnwrap(CourseTime.parse(day: SchoolDate.key(.now), time: "08:30"))
         let clock = "{\"STATUS\":\"0\",\"timestamp\":\(Int64(schoolNow.timeIntervalSince1970 * 1_000))}"
         let transport = PlannedTransport([
@@ -528,6 +530,12 @@ final class AppModelTests: XCTestCase {
         await model.restore()
         XCTAssertFalse(model.autoSignEnabled)
         await model.setCoursePreferences(CoursePreferences(autoSign: .enabled), for: "stable-course")
+        model.setAutoSignRule(AutoSignPolicy(offsetMinutes: 30))
+        await model.foregroundTick()
+        let countWhileOff = await transport.count("sign")
+        XCTAssertEqual(countWhileOff, 0)
+        XCTAssertFalse(model.autoSignRunning)
+        model.setAutoSignRunning(true)
         await model.foregroundTick()
         let signCount = await transport.count("sign")
         XCTAssertEqual(signCount, 1)
@@ -592,6 +600,7 @@ final class AppModelTests: XCTestCase {
 
     func testDisablingCourseDuringClockWaitPreventsSubmission() async throws {
         for automatically in [false, true] {
+            defaults.removeObject(forKey: "auto-sign-\(accountA.id)")
             let gate = ResponseGate()
             let schoolNow = try XCTUnwrap(CourseTime.parse(day: SchoolDate.key(.now), time: "08:30"))
             let clock = "{\"STATUS\":\"0\",\"timestamp\":\(Int64(schoolNow.timeIntervalSince1970 * 1_000))}"
@@ -603,6 +612,8 @@ final class AppModelTests: XCTestCase {
             let model = makeModel(store, transport)
             await model.restore()
             model.setAutoSign(true)
+            model.setAutoSignRule(AutoSignPolicy(offsetMinutes: 30))
+            model.setAutoSignRunning(true)
             let course = try XCTUnwrap(model.todayCourses.first)
             let task = Task {
                 if automatically { await model.foregroundTick() }
@@ -1510,12 +1521,879 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(after, 2)
     }
 
-    private func makeModel(_ store: MemoryAccountStore, _ transport: PlannedTransport,
-                           notifications: TestNotifications? = nil, widgets: TestWidgets? = nil) -> AppModel {
-        let model = AppModel(service: QingxinService(transport: transport), accountStore: store, defaults: defaults,
-                             notifications: notifications ?? TestNotifications(), widgets: widgets ?? TestWidgets())
+    func testDisabledAutoSignDoesNotJournalPreviewsSyncOrPreferenceChanges() async {
+        let transport = PlannedTransport(["courses:session-a": [.init(courseResponse("课程")), .init(courseResponse("调课课程"))]])
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), transport)
+        await model.restore()
+        _ = model.autoSignPlans; _ = model.autoSignPlans
+        model.setConfirmation(true)
+        model.setAutoSignRule(.init(offsetMinutes: 30))
+        _ = await model.setCoursePreferences(.init(autoSignRule: .init(retryMinutes: 5)), for: "stable-course")
+        await model.refresh()
+        await model.foregroundTick()
+        XCTAssertEqual(model.autoSignSettingsStatus, "已关闭")
+        XCTAssertTrue(model.autoSignExecutions.isEmpty)
+        XCTAssertTrue(model.autoSignHistory.isEmpty)
+        XCTAssertNil(defaults.data(forKey: "auto-sign-\(accountA.id)"))
+    }
+
+    func testGlobalOffBlocksEnabledCourseAndOccurrenceWithoutHistory() async throws {
+        var account = accountA
+        account.preferences.autoSignRunning = false
+        account.preferences.courses["stable-course"] = .init(autoSign: .enabled)
+        let transport = PlannedTransport(["courses:session-a": [.init(courseResponse("课程"))]])
+        let model = makeModel(MemoryAccountStore(accounts: [account], active: account.id), transport)
+        await model.restore()
+        let course = try XCTUnwrap(model.todayCourses.first)
+        model.setAutoSignOccurrence(.init(enabled: true, policy: .init(offsetMinutes: 30)), for: course)
+        await model.foregroundTick()
+        XCTAssertFalse(model.autoSignRunning)
+        XCTAssertTrue(model.autoSignHistory.isEmpty)
+        XCTAssertTrue(model.autoSignExecutions.isEmpty)
+        let count = await transport.count("sign")
+        XCTAssertEqual(count, 0)
+    }
+
+    func testLateEnableSkipsExpiredPlanInsteadOfCreatingMissedRecord() async throws {
+        let store = MemoryAccountStore(accounts: [accountA], active: accountA.id)
+        let model = makeModel(store, PlannedTransport(["courses:session-a": [.init(courseResponse("课程"))]]))
+        await model.restore()
+        model.setAutoSign(true)
+        model.setAutoSignRunning(true)
+        await model.foregroundTick()
+        XCTAssertEqual(try XCTUnwrap(model.autoSignPlans.first).stage, .skipped)
+        XCTAssertTrue(model.autoSignHistory.isEmpty)
+        XCTAssertEqual(store.vault.accounts[0].preferences.autoSignRunningSince, model.attendanceNow())
+        XCTAssertEqual(store.vault.accounts[0].preferences.autoSignDefaultSince, model.attendanceNow())
+    }
+
+    func testFutureEnabledPlanIsOnlyPreviewUntilDue() async {
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id),
+                              PlannedTransport(["courses:session-a": [.init(courseResponse("课程"))]]))
+        await model.restore()
+        model.setAutoSignRule(.init(offsetMinutes: 60))
+        model.setAutoSign(true)
+        model.setAutoSignRunning(true)
+        await model.foregroundTick()
+        XCTAssertEqual(model.autoSignPlans.first?.stage, .planned)
+        XCTAssertTrue(model.autoSignExecutions.isEmpty)
+        XCTAssertTrue(model.autoSignHistory.isEmpty)
+    }
+
+    func testExistingEnabledMissedPlanRecordsRealMissOnce() async throws {
+        var account = accountA
+        account.preferences.autoSignEnabled = true
+        let model = makeModel(MemoryAccountStore(accounts: [account], active: account.id),
+                              PlannedTransport(["courses:session-a": [.init(courseResponse("课程"))], "clock": [.init(clockResponse)]]))
+        await model.restore()
+        XCTAssertTrue(model.autoSignExecutions.isEmpty)
+        await model.foregroundTick()
+        let value = try XCTUnwrap(model.autoSignHistory.first)
+        XCTAssertEqual(value.stage, .missed)
+        XCTAssertEqual(value.submissions, 0)
+        XCTAssertEqual(value.courseName, "课程")
+        XCTAssertNotNil(value.startedAt)
+        await model.foregroundTick()
+        XCTAssertEqual(model.autoSignHistory.count, 1)
+        XCTAssertEqual(model.autoSignHistory.first?.events.count, value.events.count)
+    }
+
+    func testManualBeforeAutoDueOnlyKeepsHiddenTakeover() async throws {
+        var account = accountA
+        account.preferences.autoSignEnabled = true
+        account.preferences.autoSignRule = .init(offsetMinutes: 60)
+        let now = try XCTUnwrap(CourseTime.parse(day: SchoolDate.key(.now), time: "08:30"))
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("课程")), .init(courseResponse("课程"))],
+            "clock": [.init("{\"STATUS\":\"0\",\"timestamp\":\(Int64(now.timeIntervalSince1970 * 1000))}")],
+            "sign": [.init(#"{"STATUS":"0","ERRCODE":"0","result":{"stuSignStatus":"1"}}"#)]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [account], active: account.id), transport)
+        await model.restore()
+        await model.signManually(try XCTUnwrap(model.todayCourses.first))
+        XCTAssertEqual(model.records.count, 1)
+        XCTAssertTrue(model.autoSignHistory.isEmpty)
+        let marker = try XCTUnwrap(model.autoSignExecutions.values.first)
+        XCTAssertNil(marker.startedAt)
+        XCTAssertEqual(marker.stage, .skipped)
+        XCTAssertEqual(marker.events.last?.kind, .manualTakeover)
+        model.attendanceNow = { now.addingTimeInterval(1800) }
+        await model.foregroundTick()
+        let count = await transport.count("sign")
+        XCTAssertEqual(count, 1)
+    }
+
+    func testBrokenAutoSignJournalDoesNotShowGlobalErrorWhenOff() async {
+        defaults.set(Data("broken-ledger".utf8), forKey: "auto-sign-\(accountA.id)")
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id),
+                              PlannedTransport(["courses:session-a": [.init(courseResponse("课程"))]]))
+        await model.restore()
+        XCTAssertNil(model.errorMessage)
+        XCTAssertNotNil(model.autoSignError)
+        XCTAssertEqual(model.autoSignSettingsStatus, "已关闭")
+        model.setAutoSignRunning(true)
+        XCTAssertEqual(model.autoSignSettingsStatus, "已暂停")
+        await model.foregroundTick()
+        XCTAssertTrue(model.autoSignExecutions.isEmpty)
+    }
+
+    func testSingleEnabledOccurrenceOverridesExcludedCourseWhileGlobalIsOn() async throws {
+        let now = try XCTUnwrap(CourseTime.parse(day: SchoolDate.key(.now), time: "08:30"))
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("课程")), .init(courseResponse("课程"))],
+            "clock": [.init("{\"STATUS\":\"0\",\"timestamp\":\(Int64(now.timeIntervalSince1970 * 1000))}")],
+            "sign": [.init(#"{"STATUS":"0","ERRCODE":"0","result":{"stuSignStatus":"1"}}"#)]
+        ])
+        var account = accountA
+        account.preferences.courses["stable-course"] = .init(autoSign: .disabled)
+        let model = makeModel(MemoryAccountStore(accounts: [account], active: account.id), transport)
+        await model.restore()
+        XCTAssertFalse(model.autoSignEnabled)
+        model.setAutoSignRunning(true)
+        model.setAutoSignOccurrence(.init(enabled: true, policy: .init(offsetMinutes: 30)),
+                                    for: try XCTUnwrap(model.todayCourses.first))
+        await model.foregroundTick()
+        let count = await transport.count("sign")
+        XCTAssertEqual(count, 1)
+        XCTAssertEqual(model.autoSignHistory.first?.submissions, 1)
+        XCTAssertEqual(model.autoSignHistory.first?.stage, .signed)
+    }
+
+    func testCourseAndOccurrenceSettingsDoNotTurnOnGlobalSwitch() async throws {
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id),
+                              PlannedTransport(["courses:session-a": [.init(courseResponse("课程"))]]))
+        await model.restore()
+        _ = await model.setCoursePreferences(.init(autoSign: .enabled), for: "stable-course")
+        model.setAutoSignOccurrence(.init(enabled: true, policy: .init(offsetMinutes: 30)),
+                                    for: try XCTUnwrap(model.todayCourses.first))
+        XCTAssertFalse(model.autoSignRunning)
+        XCTAssertEqual(model.autoSignSettingsStatus, "已关闭")
+        await model.foregroundTick()
+        XCTAssertTrue(model.autoSignExecutions.isEmpty)
+        XCTAssertTrue(model.autoSignHistory.isEmpty)
+    }
+
+    func testSingleGlobalSwitchEnablesInheritedCourseAndMirrorsCompatibilityFields() async throws {
+        let now = try XCTUnwrap(CourseTime.parse(day: SchoolDate.key(.now), time: "08:30"))
+        let store = MemoryAccountStore(accounts: [accountA], active: accountA.id)
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("课程")), .init(courseResponse("课程"))],
+            "clock": [.init("{\"STATUS\":\"0\",\"timestamp\":\(Int64(now.timeIntervalSince1970 * 1000))}")],
+            "sign": [.init(#"{"STATUS":"0","ERRCODE":"0","result":{"stuSignStatus":"1"}}"#)]
+        ])
+        let model = makeModel(store, transport)
+        await model.restore()
+        model.setAutoSignRule(.init(offsetMinutes: 30))
+        XCTAssertFalse(model.autoSignRunning)
+        XCTAssertTrue(model.coursePreferences.isEmpty)
+        model.setAutoSignRunning(true)
+        XCTAssertTrue(model.autoSignEnabled)
+        XCTAssertTrue(model.effectiveAutoSign(for: "stable-course"))
+        await model.foregroundTick()
+        let signs = await transport.count("sign")
+        XCTAssertEqual(signs, 1)
+        XCTAssertEqual(model.autoSignHistory.first?.submissions, 1)
+        XCTAssertEqual(store.vault.accounts[0].preferences.autoSignRunning, true)
+        XCTAssertTrue(store.vault.accounts[0].preferences.autoSignEnabled)
+        model.setAutoSign(false)
+        XCTAssertFalse(model.autoSignRunning, "兼容入口也只控制同一个总开关")
+        XCTAssertFalse(model.autoSignEnabled)
+        XCTAssertEqual(store.vault.accounts[0].preferences.autoSignRunning, false)
+        XCTAssertFalse(store.vault.accounts[0].preferences.autoSignEnabled)
+        XCTAssertEqual(model.autoSignHistory.first?.submissions, 1)
+    }
+
+    func testOldSplitRunningOnNormalizesInheritedParticipationWithoutCatchingUpPastClass() async throws {
+        var account = accountA
+        account.preferences.autoSignRunning = true
+        XCTAssertFalse(account.preferences.autoSignEnabled)
+        let store = MemoryAccountStore(accounts: [account, accountB], active: account.id)
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("过去课程"))],
+            "courses:session-b": [.init(courseResponse("乙课程"))]
+        ])
+        let model = makeModel(store, transport)
+        await model.restore()
+        XCTAssertTrue(model.autoSignRunning)
+        XCTAssertTrue(model.autoSignEnabled)
+        XCTAssertEqual(store.vault.accounts[0].preferences.autoSignRunning, true)
+        XCTAssertTrue(store.vault.accounts[0].preferences.autoSignEnabled)
+        XCTAssertEqual(store.vault.accounts[0].preferences.autoSignDefaultSince, model.attendanceNow())
+        XCTAssertNil(store.vault.accounts[0].preferences.autoSignRunningSince)
+        XCTAssertEqual(model.autoSignPlans.first?.stage, .skipped)
+        await model.foregroundTick()
+        XCTAssertTrue(model.autoSignHistory.isEmpty)
+        model.courses.append(.init(id: "1234568", name: "未来课程", beginTime: "09:00", endTime: "10:40", day: SchoolDate.key(.now)))
+        XCTAssertTrue(model.autoSignPlans.first { $0.course.id == "1234568" }!.isParticipating)
+        await model.switchAccount(id: accountB.id)
+        XCTAssertFalse(model.autoSignRunning)
+        XCTAssertFalse(model.autoSignEnabled)
+        XCTAssertTrue(store.vault.accounts.first { $0.id == account.id }!.preferences.autoSignIsRunning)
+    }
+
+    func testLegacyCourseOnlyOptInMigrationPreservesExplicitRulesAndUnknownSubmissionEvidence() async throws {
+        var account = accountA
+        account.preferences.courses["stable-course"] = .init(autoSign: .enabled)
+        account.preferences.courses["excluded-course"] = .init(autoSign: .disabled)
+        let now = try XCTUnwrap(CourseTime.parse(day: SchoolDate.key(.now), time: "08:30"))
+        let course = Course(id: "1234567", name: "课程", beginTime: "08:00", endTime: "09:40", day: SchoolDate.key(.now))
+        let key = AutoSignPlanner.key(account: account.id, course: course)
+        var execution = AutoSignExecution(key: key, now: now.addingTimeInterval(-120))
+        execution.begin(course: course, now: now.addingTimeInterval(-120))
+        execution.submissions = 1; execution.lastSubmissionAt = now.addingTimeInterval(-120)
+        execution.negativeReads = 1; execution.firstNegativeAt = now.addingTimeInterval(-60)
+        execution.transition(.verifying, now: now.addingTimeInterval(-60), message: "提交结果未知", nextAt: now)
+        try UserDefaultsAutoSignStore(defaults: defaults).save(accountID: account.id, executions: [key: execution])
+        let store = MemoryAccountStore(accounts: [account], active: account.id)
+        let model = makeModel(store, PlannedTransport(["courses:session-a": [.init(courseResponse("课程"))]]))
+        await model.restore()
+        XCTAssertTrue(model.autoSignRunning)
+        XCTAssertTrue(model.autoSignEnabled)
+        XCTAssertTrue(model.effectiveAutoSign(for: "stable-course"))
+        XCTAssertFalse(model.effectiveAutoSign(for: "excluded-course"))
+        let restored = try XCTUnwrap(model.autoSignExecutions[key])
+        XCTAssertEqual(restored.submissions, execution.submissions)
+        XCTAssertEqual(restored.lastSubmissionAt, execution.lastSubmissionAt)
+        XCTAssertEqual(restored.nextAt, execution.nextAt)
+        XCTAssertEqual(restored.negativeReads, execution.negativeReads)
+        XCTAssertEqual(restored.firstNegativeAt, execution.firstNegativeAt)
+        XCTAssertEqual(restored.stage, execution.stage)
+        XCTAssertEqual(restored.startedAt, execution.startedAt)
+        XCTAssertEqual(Array(restored.events.prefix(execution.events.count)), execution.events)
+        XCTAssertNil(store.vault.accounts[0].preferences.autoSignRunningSince)
+        XCTAssertEqual(store.vault.accounts[0].preferences.autoSignDefaultSince, now)
+        XCTAssertEqual(store.vault.accounts[0].preferences.courses, account.preferences.courses)
+        XCTAssertTrue(model.autoSignPlans.first!.isParticipating, "旧明确开启课次不受新增继承边界影响")
+    }
+
+    func testFailedSingleControlMigrationKeepsSafeBoundaryAndBlocksAutomaticSubmission() async {
+        var account = accountA
+        account.preferences.autoSignRunning = true
+        account.preferences.autoSignRule = .init(offsetMinutes: 30)
+        let store = MemoryAccountStore(accounts: [account], active: account.id)
+        store.failWrites = true
+        let transport = PlannedTransport(["courses:session-a": [.init(courseResponse("课程"))]])
+        let model = makeModel(store, transport)
+        await model.restore()
+        await model.foregroundTick()
+        XCTAssertTrue(model.autoSignRunning)
+        XCTAssertTrue(model.autoSignEnabled)
+        XCTAssertEqual(model.autoSignSettingsStatus, "已暂停")
+        XCTAssertNotNil(model.autoSignError)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertTrue(model.autoSignHistory.isEmpty)
+        let signs = await transport.count("sign")
+        XCTAssertEqual(signs, 0)
+    }
+
+    func testClockFailureShowsAutoSignNetworkStateWithoutGlobalErrorOrSubmission() async {
+        var account = accountA
+        account.preferences.autoSignEnabled = true
+        account.preferences.autoSignRule = .init(offsetMinutes: 30)
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("课程"))],
+            "clock": [.init("invalid"), .init("invalid")]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [account], active: account.id), transport)
+        await model.restore()
+        await model.foregroundTick()
+        let eventCount = model.autoSignHistory.first?.events.count
+        XCTAssertEqual(model.autoSignRuntimeStatus, "等待网络")
+        XCTAssertNotNil(model.autoSignError)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertTrue(model.autoSignHistory.isEmpty)
+        await model.foregroundTick()
+        XCTAssertEqual(model.autoSignHistory.first?.events.count, eventCount)
+        let signCount = await transport.count("sign")
+        XCTAssertEqual(signCount, 0)
+    }
+
+    func testStructurallyDamagedAutoSignStatePausesWithoutSubmittingOrOverwriting() async throws {
+        var account = accountA
+        account.preferences.autoSignEnabled = true
+        account.preferences.autoSignRule = .init(offsetMinutes: 30)
+        let key = "\(account.id)|\(SchoolDate.key(.now))|1234567"
+        var execution = AutoSignExecution(key: key, now: .now)
+        execution.submissions = 1
+        let original = try JSONEncoder().encode(AutoSignLedger(accountID: account.id, executions: [key: execution]))
+        defaults.set(original, forKey: "auto-sign-\(account.id)")
+        let transport = PlannedTransport(["courses:session-a": [.init(courseResponse("课程"))]])
+        let model = makeModel(MemoryAccountStore(accounts: [account], active: account.id), transport)
+        await model.restore()
+        await model.foregroundTick()
+        XCTAssertEqual(model.autoSignSettingsStatus, "已暂停")
+        XCTAssertNotNil(model.autoSignError)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(defaults.data(forKey: "auto-sign-\(account.id)"), original)
+        let signs = await transport.count("sign")
+        XCTAssertEqual(signs, 0)
+    }
+
+    func testManualTakeoverDuringRetryReadCannotBeOverwrittenByLateSchoolResult() async throws {
+        let now = try XCTUnwrap(CourseTime.parse(day: SchoolDate.key(.now), time: "08:30"))
+        let day = SchoolDate.key(.now)
+        let course = Course(id: "1234567", name: "课程", beginTime: "08:00", endTime: "09:40", day: day)
+        for signedSchoolReply in [false, true] {
+            var account = accountA
+            account.preferences.autoSignEnabled = true
+            account.preferences.autoSignRule = .init(offsetMinutes: 30)
+            let key = AutoSignPlanner.key(account: account.id, course: course)
+            var execution = AutoSignExecution(key: key, now: now.addingTimeInterval(-120))
+            execution.begin(course: course, now: now.addingTimeInterval(-120))
+            execution.submissions = 1; execution.lastSubmissionAt = now.addingTimeInterval(-120)
+            execution.transition(.verifying, now: now.addingTimeInterval(-120), message: "提交结果未知", nextAt: now)
+            try UserDefaultsAutoSignStore(defaults: defaults).save(accountID: account.id, executions: [key: execution])
+            let reply = signedSchoolReply ? courseResponse("课程").replacingOccurrences(of: "\"signStatus\":\"0\"", with: "\"signStatus\":\"1\"")
+                : courseResponse("课程")
+            let gate = ResponseGate()
+            let transport = PlannedTransport([
+                "courses:session-a": [.init(courseResponse("课程")), .init(reply, gate: gate), .init(reply)],
+                "clock": [.init("{\"STATUS\":\"0\",\"timestamp\":\(Int64(now.timeIntervalSince1970 * 1000))}")],
+                "sign": [.init(#"{"STATUS":"0","result":{"stuSignStatus":"0"}}"#)]
+            ])
+            let model = makeModel(MemoryAccountStore(accounts: [account], active: account.id), transport)
+            await model.restore()
+            let automatic = Task { await model.foregroundTick() }
+            await assertEventually { await transport.count("courses:session-a") == 2 }
+            let manual = Task { await model.signManually(course) }
+            await assertEventually { await transport.count("sign") == 1 }
+            XCTAssertEqual(model.autoSignExecutions[key]?.stage, .skipped)
+            await gate.open()
+            await automatic.value; await manual.value
+            let current = try XCTUnwrap(model.autoSignExecutions[key])
+            XCTAssertEqual(current.stage, .skipped)
+            XCTAssertEqual(current.submissions, 1)
+            XCTAssertEqual(current.negativeReads, 0)
+            XCTAssertTrue(current.events.contains { $0.kind == .manualTakeover })
+            let signs = await transport.count("sign")
+            XCTAssertEqual(signs, 1, "只有用户接管后的手动请求，不能复活自动任务")
+            let stored = try UserDefaultsAutoSignStore(defaults: defaults).load(accountID: account.id)
+            XCTAssertEqual(stored[key]?.stage, .skipped)
+            XCTAssertTrue(stored[key]!.events.contains { $0.kind == .manualTakeover })
+        }
+    }
+
+    func testPostponingOccurrenceDuringClockWaitPreventsEarlySubmission() async throws {
+        var account = accountA
+        account.preferences.autoSignEnabled = true
+        account.preferences.autoSignRule = .init(offsetMinutes: 30)
+        let now = try XCTUnwrap(CourseTime.parse(day: SchoolDate.key(.now), time: "08:30"))
+        let gate = ResponseGate()
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("课程"))],
+            "clock": [.init("{\"STATUS\":\"0\",\"timestamp\":\(Int64(now.timeIntervalSince1970 * 1000))}", gate: gate)]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [account], active: account.id), transport)
+        await model.restore()
+        let course = try XCTUnwrap(model.todayCourses.first)
+        let automatic = Task { await model.foregroundTick() }
+        await assertEventually { await transport.count("clock") == 1 }
+        model.setAutoSignOccurrence(.init(at: now.addingTimeInterval(1800)), for: course)
+        await gate.open(); await automatic.value
+        let signs = await transport.count("sign")
+        XCTAssertEqual(signs, 0)
+        XCTAssertTrue(model.autoSignHistory.isEmpty, "校时期间推迟尚未到期任务，不创建执行历史")
+        XCTAssertEqual(model.autoSignPlans.first?.plannedAt, now.addingTimeInterval(1800))
+    }
+
+    func testIncreasingRetryIntervalDuringClockWaitPreservesEvidenceWithoutEarlySubmission() async throws {
+        var account = accountA
+        account.preferences.autoSignEnabled = true
+        account.preferences.autoSignRule = .init(offsetMinutes: 30)
+        let now = try XCTUnwrap(CourseTime.parse(day: SchoolDate.key(.now), time: "08:30"))
+        let course = Course(id: "1234567", name: "课程", beginTime: "08:00", endTime: "09:40", day: SchoolDate.key(.now))
+        let key = AutoSignPlanner.key(account: account.id, course: course)
+        var execution = AutoSignExecution(key: key, now: now.addingTimeInterval(-120))
+        execution.begin(course: course, now: now.addingTimeInterval(-120))
+        execution.submissions = 1; execution.lastSubmissionAt = now.addingTimeInterval(-120)
+        execution.negativeReads = 2; execution.firstNegativeAt = now.addingTimeInterval(-90)
+        execution.transition(.verifying, now: now.addingTimeInterval(-30), message: "学校已两次确认未签到", nextAt: now)
+        try UserDefaultsAutoSignStore(defaults: defaults).save(accountID: account.id, executions: [key: execution])
+        let gate = ResponseGate()
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("课程"))],
+            "clock": [.init("{\"STATUS\":\"0\",\"timestamp\":\(Int64(now.timeIntervalSince1970 * 1000))}", gate: gate)]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [account], active: account.id), transport)
+        await model.restore()
+        let automatic = Task { await model.foregroundTick() }
+        await assertEventually { await transport.count("clock") == 1 }
+        model.setAutoSignOccurrence(.init(policy: .init(retryMinutes: 5)), for: course)
+        await gate.open(); await automatic.value
+        let signs = await transport.count("sign")
+        XCTAssertEqual(signs, 0)
+        XCTAssertEqual(model.autoSignExecutions[key]?.submissions, 1)
+        XCTAssertEqual(model.autoSignExecutions[key]?.negativeReads, 2)
+        XCTAssertEqual(model.autoSignExecutions[key]?.firstNegativeAt, execution.firstNegativeAt)
+        XCTAssertEqual(model.autoSignExecutions[key]?.lastSubmissionAt, execution.lastSubmissionAt)
+    }
+
+    func testFuturePlanListExcludesYesterdayButKeepsTodayMissedAndSeparateHistory() async throws {
+        var account = accountA
+        account.preferences.autoSignEnabled = true
+        let now = try XCTUnwrap(CourseTime.parse(day: SchoolDate.key(.now), time: "08:30"))
+        let yesterday = SchoolDate.key(now.addingTimeInterval(-86_400))
+        let oldCourse = Course(id: "1234560", name: "昨天课程", beginTime: "10:00", endTime: "11:40", day: yesterday)
+        let key = AutoSignPlanner.key(account: account.id, course: oldCourse)
+        var old = AutoSignExecution(key: key, now: now.addingTimeInterval(-80_000))
+        old.begin(course: oldCourse, now: now.addingTimeInterval(-80_000))
+        old.transition(.missed, now: now.addingTimeInterval(-80_000), message: "已错过自动执行时间")
+        try UserDefaultsAutoSignStore(defaults: defaults).save(accountID: account.id, executions: [key: old])
+        let model = makeModel(MemoryAccountStore(accounts: [account], active: account.id),
+                              PlannedTransport(["courses:session-a": [.init(courseResponse("今天课程"))]]))
+        await model.restore()
+        model.courses.append(oldCourse)
+        let plans = model.autoSignPlans
+        XCTAssertFalse(plans.contains { $0.course.day == yesterday })
+        XCTAssertEqual(plans.count, 1)
+        XCTAssertEqual(plans.first?.stage, .missed)
+        XCTAssertEqual(model.autoSignHistory.first?.courseName, "昨天课程")
+        XCTAssertEqual(model.autoSignHistory.first?.key, key)
+    }
+
+    func testAutoSignDoesNotRepeatLocallySuccessfulManualSubmissionAfterSchoolCorrection() async throws {
         let now = CourseTime.parse(day: SchoolDate.key(.now), time: "08:30")!
-        model.attendanceNow = { now }
+        let clock = TestClock(now)
+        var account = accountA
+        account.preferences = .init(autoSignEnabled: true, courses: ["stable-course": .init(autoSign: .disabled)], autoSignRunning: true,
+                                    autoSignRule: .init(offsetMinutes: 30))
+        let transport = PlannedTransport([
+            "courses:session-a": Array(repeating: .init(courseResponse("课程")), count: 4),
+            "clock": [.init(clockJSON(now))],
+            "sign": [.init(#"{"STATUS":"0","ERRCODE":"0","result":{"stuSignStatus":"1"}}"#)]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [account], active: account.id), transport, clock: clock)
+        await model.restore()
+        let course = try XCTUnwrap(model.todayCourses.first)
+        await model.signManually(course)
+        clock.set(now.addingTimeInterval(30)); await model.refresh()
+        XCTAssertEqual(model.attendanceStatus(for: course), .unsigned)
+        _ = await model.setCoursePreferences(.init(autoSign: .enabled), for: "stable-course")
+        model.setAutoSignOccurrence(.init(at: now.addingTimeInterval(60)), for: course)
+        clock.set(now.addingTimeInterval(60)); await model.foregroundTick()
+        let requests = await transport.count("sign")
+        XCTAssertEqual(requests, 1)
+        XCTAssertTrue(model.autoSignHistory.isEmpty)
+        XCTAssertEqual(model.autoSignPlans.first?.stage, .signed)
+        XCTAssertEqual(model.autoSignPlans.first?.reason, "本机已有成功记录，不再自动提交")
+    }
+
+    func testEffectiveOccurrenceRetryControlsWakeAndRequiresTwoFreshReads() async throws {
+        let now = CourseTime.parse(day: SchoolDate.key(.now), time: "08:30")!
+        let clock = TestClock(now)
+        var account = accountA
+        account.preferences = .init(autoSignEnabled: true, autoSignRunning: true, autoSignRule: .init(offsetMinutes: 30, retryMinutes: 5))
+        let transport = PlannedTransport([
+            "courses:session-a": Array(repeating: .init(courseResponse("课程")), count: 5),
+            "clock": [now, now.addingTimeInterval(60), now.addingTimeInterval(90)].map { .init(clockJSON($0)) },
+            "sign": [.init(#"{"STATUS":"1","ERRMSG":"结果未知"}"#), .init(#"{"STATUS":"0","result":{"stuSignStatus":"1"}}"#)]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [account], active: account.id), transport, clock: clock)
+        await model.restore()
+        model.setAutoSignOccurrence(.init(policy: .init(retryMinutes: 1)), for: try XCTUnwrap(model.todayCourses.first))
+        await model.foregroundTick()
+        XCTAssertEqual(model.autoSignHistory.first?.nextAt, now.addingTimeInterval(60))
+        clock.set(now.addingTimeInterval(60)); await model.foregroundTick()
+        XCTAssertEqual(model.autoSignHistory.first?.negativeReads, 1)
+        let first = await transport.count("sign"); XCTAssertEqual(first, 1)
+        clock.set(now.addingTimeInterval(90)); await model.foregroundTick()
+        let second = await transport.count("sign"); XCTAssertEqual(second, 2)
+        XCTAssertEqual(model.autoSignHistory.first?.submissions, 2)
+        XCTAssertEqual(model.autoSignHistory.first?.stage, .signed)
+    }
+
+    func testLastUnknownSubmissionKeepsVerifyingWithoutFurtherSubmitAndReconcilesTerminalHistory() async throws {
+        let now = CourseTime.parse(day: SchoolDate.key(.now), time: "08:30")!
+        let clock = TestClock(now)
+        var account = accountA
+        account.preferences = .init(autoSignEnabled: true, autoSignRunning: true, autoSignRule: .init(offsetMinutes: 30, maxSubmissions: 1, retryMinutes: 1))
+        let signed = courseResponse("课程").replacingOccurrences(of: "\"signStatus\":\"0\"", with: "\"signStatus\":\"1\"")
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("课程")), .init(courseResponse("课程")), .init(courseResponse("课程")), .init(signed)],
+            "clock": [now, now.addingTimeInterval(30), now.addingTimeInterval(90)].map { .init(clockJSON($0)) },
+            "sign": [.init(#"{"STATUS":"1","ERRMSG":"结果未知"}"#)]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [account], active: account.id), transport, clock: clock)
+        await model.restore(); await model.foregroundTick()
+        clock.set(now.addingTimeInterval(30)); await model.foregroundTick()
+        XCTAssertEqual(model.autoSignHistory.first?.stage, .needsAttention)
+        clock.set(now.addingTimeInterval(90)); await model.foregroundTick()
+        let requests = await transport.count("sign")
+        XCTAssertEqual(requests, 1)
+        XCTAssertEqual(model.autoSignHistory.first?.stage, .signed)
+        XCTAssertEqual(model.autoSignHistory.first?.submissions, 1)
+    }
+
+    func testSchoolClockCalibratesBothLeadingAndLaggingDeviceBeforeMissedDecision() async throws {
+        let school = CourseTime.parse(day: SchoolDate.key(.now), time: "08:30")!
+        for offset in [-120.0, 120.0] {
+            let clock = TestClock(school.addingTimeInterval(offset))
+            var account = accountA
+            account.preferences = .init(autoSignEnabled: true, autoSignRunning: true, autoSignRule: .init(offsetMinutes: 30))
+            let transport = PlannedTransport([
+                "courses:session-a": [.init(courseResponse("课程")), .init(courseResponse("课程"))],
+                "clock": [.init(clockJSON(school))],
+                "sign": [.init(#"{"STATUS":"0","result":{"stuSignStatus":"1"}}"#)]
+            ])
+            let model = makeModel(MemoryAccountStore(accounts: [account], active: account.id), transport, clock: clock)
+            await model.restore(); await model.foregroundTick()
+            let signs = await transport.count("sign")
+            XCTAssertEqual(signs, 1, "设备偏差 \(offset) 秒仍按学校时间执行")
+            XCTAssertEqual(model.autoSignHistory.first?.stage, .signed)
+            XCTAssertFalse(try XCTUnwrap(model.autoSignHistory.first).events.contains { $0.stage == .missed })
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+    }
+
+    func testInvalidOccurrenceTimeAndRulesKeepPreviousOverride() async throws {
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id),
+                              PlannedTransport(["courses:session-a": [.init(courseResponse("课程"))]]))
+        await model.restore()
+        let course = try XCTUnwrap(model.todayCourses.first)
+        let start = try XCTUnwrap(course.startDate), end = try XCTUnwrap(course.endDate)
+        let original = AutoSignOccurrenceOverride(at: start.addingTimeInterval(-25 * 60))
+        model.setAutoSignOccurrence(original, for: course)
+        let key = AutoSignPlanner.key(account: accountA.id, course: course)
+        for invalid in [AutoSignOccurrenceOverride(at: start.addingTimeInterval(-25 * 60 - 1)), .init(at: end), .init(policy: .init(maxSubmissions: 4))] {
+            model.setAutoSignOccurrence(invalid, for: course)
+            XCTAssertEqual(model.autoSignOccurrences[key]?.at, original.at)
+            XCTAssertNotNil(model.errorMessage)
+        }
+        XCTAssertTrue(model.autoSignHistory.isEmpty)
+    }
+
+    func testAutoSignRequestsNotificationPermissionAndDenialDoesNotStopExecution() async throws {
+        let notifications = TestNotifications()
+        notifications.status = .notDetermined
+        notifications.authorizationError = NSError(domain: UNErrorDomain, code: UNError.Code.notificationsNotAllowed.rawValue)
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id),
+                              PlannedTransport(["courses:session-a": [.init(courseResponse("课程"))]]), notifications: notifications)
+        await model.restore()
+        model.setAutoSignRunning(true)
+        await assertEventually { notifications.authorizationCalls == 1 && model.autoSignRule.notification == .none }
+        XCTAssertTrue(model.autoSignRunning)
+        XCTAssertTrue(model.notificationSettingsNeeded)
+        XCTAssertTrue(model.autoSignError?.contains("结果通知已关闭") == true)
+        model.setAutoSignRunning(false)
+        model.setAutoSignRule(.init(notification: .none))
+        model.setAutoSignRunning(true)
+        await Task.yield()
+        XCTAssertEqual(notifications.authorizationCalls, 1, "通知关闭时不再申请权限")
+    }
+
+    func testReminderRefreshRetainsAutoSignResultNotification() async throws {
+        let now = CourseTime.parse(day: SchoolDate.key(.now), time: "08:30")!
+        var account = accountA
+        account.preferences = .init(autoSignEnabled: true, remindersEnabled: true, autoSignRunning: true,
+                                    autoSignRule: .init(offsetMinutes: 30, notification: .all))
+        let notifications = TestNotifications(); notifications.status = .authorized
+        notifications.pendingIDs = ["old-reminder"]
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("课程")), .init(courseResponse("课程"))],
+            "clock": [.init(clockJSON(now))],
+            "sign": [.init(#"{"STATUS":"0","result":{"stuSignStatus":"1"}}"#)]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [account], active: account.id), transport, notifications: notifications)
+        await model.restore(); await model.foregroundTick()
+        XCTAssertFalse(notifications.pendingIDs.contains("old-reminder"))
+        XCTAssertEqual(notifications.pendingIDs.filter { $0.hasPrefix("auto-sign-") }.count, 1)
+    }
+
+    func testMissedTaskNotifiesOnlyOnceAndOffAccountDoesNotReadClock() async throws {
+        let school = CourseTime.parse(day: SchoolDate.key(.now), time: "08:30")!
+        var account = accountA; account.preferences.autoSignEnabled = true
+        let notifications = TestNotifications(); notifications.status = .authorized
+        let transport = PlannedTransport(["courses:session-a": [.init(courseResponse("课程"))], "clock": [.init(clockJSON(school))]])
+        let model = makeModel(MemoryAccountStore(accounts: [account], active: account.id), transport, notifications: notifications)
+        await model.restore(); await model.foregroundTick(); await model.foregroundTick()
+        await assertEventually { notifications.pendingIDs.filter { $0.hasPrefix("auto-sign-") }.count == 1 }
+        XCTAssertEqual(model.autoSignHistory.first?.stage, .missed)
+        let offTransport = PlannedTransport(["courses:session-a": [.init(courseResponse("课程"))]])
+        let off = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), offTransport)
+        await off.restore(); await off.foregroundTick()
+        let reads = await offTransport.count("clock"); XCTAssertEqual(reads, 0)
+    }
+
+    func testSchoolClockCacheUsesMonotonicElapsedWhenDeviceClockJumps() async throws {
+        let school = CourseTime.parse(day: SchoolDate.key(.now), time: "08:26")!.addingTimeInterval(40)
+        let clock = TestClock(school)
+        let transport = PlannedTransport(["clock": [.init(clockJSON(school))]])
+        let service = QingxinService(transport: transport, now: { clock.get() }, monotonicNow: { clock.elapsed() })
+        _ = try await service.schoolNow()
+        clock.advance(15); clock.setWallOnly(clock.get().addingTimeInterval(10))
+        let reading = try await service.schoolNow()
+        XCTAssertEqual(reading, school.addingTimeInterval(15))
+        let reads = await transport.count("clock"); XCTAssertEqual(reads, 1)
+    }
+
+    func testDeviceClockJumpAfterSubmissionCannotShortenFrozenSchoolRetry() async throws {
+        let school = CourseTime.parse(day: SchoolDate.key(.now), time: "08:30")!
+        let clock = TestClock(school)
+        var account = accountA
+        account.preferences = .init(autoSignEnabled: true, autoSignRunning: true, autoSignRule: .init(offsetMinutes: 30))
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("课程")), .init(courseResponse("课程"))],
+            "clock": [.init(clockJSON(school)), .init(clockJSON(school.addingTimeInterval(30)))],
+            "sign": [.init(#"{"STATUS":"1","ERRMSG":"结果未知"}"#)]
+        ])
+        let store = MemoryAccountStore(accounts: [account], active: account.id)
+        let model = makeModel(store, transport, clock: clock)
+        await model.restore(); await model.foregroundTick()
+        XCTAssertEqual(model.autoSignHistory.first?.lastSchoolSubmissionAt, school)
+        clock.advance(30); clock.setWallOnly(clock.get().addingTimeInterval(120))
+        await model.foregroundTick()
+        let signs = await transport.count("sign"); XCTAssertEqual(signs, 1)
+        XCTAssertEqual(model.autoSignHistory.first?.negativeReads, 0)
+        XCTAssertEqual(model.autoSignHistory.first?.lastSchoolSubmissionAt, school)
+        let restartTransport = PlannedTransport(["courses:session-a": [.init(courseResponse("课程"))], "clock": [.init(clockJSON(school.addingTimeInterval(30)))]])
+        let restarted = makeModel(store, restartTransport, clock: clock)
+        await restarted.restore(); await restarted.foregroundTick()
+        let newSigns = await restartTransport.count("sign"); XCTAssertEqual(newSigns, 0)
+        XCTAssertEqual(restarted.autoSignHistory.first?.submissions, 1)
+        XCTAssertEqual(restarted.autoSignHistory.first?.lastSchoolSubmissionAt, school)
+    }
+
+    func testDeviceClockJumpCannotShortenThirtySecondNegativeQuorum() async throws {
+        let school = CourseTime.parse(day: SchoolDate.key(.now), time: "08:30")!
+        let clock = TestClock(school.addingTimeInterval(120))
+        var account = accountA
+        account.preferences = .init(autoSignEnabled: true, autoSignRunning: true, autoSignRule: .init(offsetMinutes: 30))
+        let course = Course(id: "1234567", name: "课程", beginTime: "08:00", endTime: "09:40", day: SchoolDate.key(.now))
+        let key = AutoSignPlanner.key(account: account.id, course: course)
+        var old = AutoSignExecution(key: key, now: school.addingTimeInterval(-120))
+        old.begin(course: course, now: school.addingTimeInterval(-120))
+        old.submissions = 1; old.lastSubmissionAt = school.addingTimeInterval(-120)
+        old.lastSchoolSubmissionAt = school.addingTimeInterval(-120)
+        old.negativeReads = 1; old.firstNegativeAt = school.addingTimeInterval(-20)
+        old.firstSchoolNegativeAt = school.addingTimeInterval(-20)
+        old.transition(.verifying, now: school.addingTimeInterval(-20), message: "已核实一次", nextAt: school)
+        try UserDefaultsAutoSignStore(defaults: defaults).save(accountID: account.id, executions: [key: old])
+        let transport = PlannedTransport([
+            "courses:session-a": Array(repeating: .init(courseResponse("课程")), count: 3),
+            "clock": [.init(clockJSON(school))],
+            "sign": [.init(#"{"STATUS":"0","result":{"stuSignStatus":"1"}}"#)]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [account], active: account.id), transport, clock: clock)
+        await model.restore(); await model.foregroundTick()
+        let before = await transport.count("sign"); XCTAssertEqual(before, 0)
+        XCTAssertEqual(model.autoSignHistory.first?.negativeReads, 1)
+        clock.advance(10); await model.foregroundTick()
+        let after = await transport.count("sign"); XCTAssertEqual(after, 1)
+        XCTAssertEqual(model.autoSignHistory.first?.submissions, 2)
+    }
+
+    func testRepeatedAutoSignEnableSharesPendingNotificationPermissionRequest() async {
+        let notifications = TestNotifications()
+        let gate = ResponseGate(); notifications.authorizationGate = gate
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id),
+                              PlannedTransport(["courses:session-a": [.init(courseResponse("课程"))]]), notifications: notifications)
+        await model.restore()
+        model.setAutoSignRunning(true)
+        await assertEventually { notifications.authorizationCalls == 1 }
+        model.setAutoSignRunning(true)
+        await Task.yield()
+        XCTAssertEqual(notifications.authorizationCalls, 1)
+        await gate.open()
+    }
+
+    func testBackwardDeviceClockJumpStillWakesRetryBySchoolMonotonicTime() async throws {
+        let school = CourseTime.parse(day: SchoolDate.key(.now), time: "08:30")!
+        let clock = TestClock(school)
+        var account = accountA
+        account.preferences = .init(autoSignEnabled: true, autoSignRunning: true, autoSignRule: .init(offsetMinutes: 30))
+        let transport = PlannedTransport([
+            "courses:session-a": Array(repeating: .init(courseResponse("课程")), count: 5),
+            "clock": [school, school.addingTimeInterval(120), school.addingTimeInterval(150)].map { .init(clockJSON($0)) },
+            "sign": [.init(#"{"STATUS":"1","ERRMSG":"结果未知"}"#), .init(#"{"STATUS":"0","result":{"stuSignStatus":"1"}}"#)]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [account], active: account.id), transport, clock: clock)
+        await model.restore(); await model.foregroundTick()
+        clock.advance(120); clock.setWallOnly(clock.get().addingTimeInterval(-3600))
+        await model.foregroundTick()
+        XCTAssertEqual(model.autoSignHistory.first?.negativeReads, 1)
+        clock.advance(30); await model.foregroundTick()
+        let signs = await transport.count("sign"); XCTAssertEqual(signs, 2)
+        XCTAssertEqual(model.autoSignHistory.first?.stage, .signed)
+    }
+
+    func testActivationDuringClockAwaitFreezesCreationUptimeDespiteWallJump() async throws {
+        let school = CourseTime.parse(day: SchoolDate.key(.now), time: "08:20")!
+        let clock = TestClock(school)
+        let gate = ResponseGate()
+        let store = MemoryAccountStore(accounts: [accountA], active: accountA.id)
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("课程"))],
+            "clock": [.init(clockJSON(school.addingTimeInterval(10)), gate: gate)]
+        ])
+        let model = makeModel(store, transport, clock: clock)
+        await model.restore()
+        model.setAutoSignRule(.init(offsetMinutes: 15, missedAction: .tenMinuteGrace, notification: .none))
+        model.setAutoSignRunning(true)
+        await assertEventually { await transport.count("clock") == 1 }
+        clock.advance(20); clock.setWallOnly(clock.get().addingTimeInterval(3600))
+        await gate.open(); await model.foregroundTick()
+        XCTAssertEqual(store.vault.accounts[0].preferences.autoSignRunningSince, school)
+        XCTAssertEqual(store.vault.accounts[0].preferences.autoSignSinceUsesSchoolTime, true)
+        XCTAssertTrue(store.vault.accounts[0].preferences.autoSignPendingClockBoundaries.isEmpty)
+        XCTAssertFalse(model.autoSignPlans.first!.isParticipating)
+        XCTAssertTrue(model.autoSignHistory.isEmpty)
+        let signs = await transport.count("sign"); XCTAssertEqual(signs, 0)
+    }
+
+    func testFailedClockActivationRestartNeverBackfillsPastGracePlan() async throws {
+        let school = CourseTime.parse(day: SchoolDate.key(.now), time: "08:30")!
+        let device = school.addingTimeInterval(-600)
+        let clock = TestClock(device)
+        let store = MemoryAccountStore(accounts: [accountA], active: accountA.id)
+        let firstTransport = PlannedTransport(["courses:session-a": [.init(courseResponse("课程"))], "clock": [.init("invalid")]])
+        let first = makeModel(store, firstTransport, clock: clock)
+        await first.restore()
+        first.setAutoSignRule(.init(offsetMinutes: 25, missedAction: .tenMinuteGrace, notification: .none))
+        first.setAutoSignRunning(true)
+        await first.foregroundTick()
+        XCTAssertFalse(store.vault.accounts[0].preferences.autoSignPendingClockBoundaries.isEmpty)
+        XCTAssertTrue(first.autoSignHistory.isEmpty)
+        let secondTransport = PlannedTransport(["courses:session-a": [.init(courseResponse("课程"))], "clock": [.init(clockJSON(school))]])
+        let second = makeModel(store, secondTransport, clock: clock)
+        await second.restore(); await second.foregroundTick()
+        XCTAssertEqual(store.vault.accounts[0].preferences.autoSignRunningSince, school)
+        XCTAssertFalse(second.autoSignPlans.first!.isParticipating)
+        XCTAssertTrue(second.autoSignHistory.isEmpty)
+        let signs = await secondTransport.count("sign"); XCTAssertEqual(signs, 0)
+    }
+
+    func testLegacyReceiptAfterClockCorrectionOnlyVerifiesAndNeverSubmitsAgain() async throws {
+        let school = CourseTime.parse(day: SchoolDate.key(.now), time: "08:30")!
+        for offset in [-3600.0, 3600.0] {
+            let clock = TestClock(school.addingTimeInterval(offset))
+            var account = accountA
+            account.preferences = .init(autoSignEnabled: true, autoSignRunning: true, autoSignRule: .init(offsetMinutes: 30))
+            let course = Course(id: "1234567", name: "课程", beginTime: "08:00", endTime: "09:40", day: SchoolDate.key(.now))
+            let key = AutoSignPlanner.key(account: account.id, course: course)
+            var old = AutoSignExecution(key: key, now: school.addingTimeInterval(-120))
+            old.begin(course: course, now: school.addingTimeInterval(-120))
+            old.submissions = 1; old.lastSubmissionAt = school.addingTimeInterval(-120)
+            old.negativeReads = 2; old.firstNegativeAt = school.addingTimeInterval(-90)
+            old.transition(.verifying, now: school.addingTimeInterval(-30), message: "旧结果未知", nextAt: school)
+            try UserDefaultsAutoSignStore(defaults: defaults).save(accountID: account.id, executions: [key: old])
+            let transport = PlannedTransport([
+                "courses:session-a": [.init(courseResponse("课程")), .init(courseResponse("课程"))],
+                "clock": [.init(clockJSON(school))]
+            ])
+            let model = makeModel(MemoryAccountStore(accounts: [account], active: account.id), transport, clock: clock)
+            await model.restore(); await model.foregroundTick()
+            let signs = await transport.count("sign"); XCTAssertEqual(signs, 0)
+            XCTAssertEqual(model.autoSignHistory.first?.submissions, 1)
+            XCTAssertEqual(model.autoSignHistory.first?.negativeReads, 2)
+            XCTAssertNil(model.autoSignHistory.first?.lastSchoolSubmissionAt)
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+    }
+
+    func testPauseUntilSchoolMidnightResumesDespiteBackwardDeviceClock() async throws {
+        let first = CourseTime.parse(day: SchoolDate.key(.now), time: "08:30")!
+        let until = SchoolDate.calendar.startOfDay(for: first).addingTimeInterval(86_400)
+        let clock = TestClock(first)
+        var account = accountA
+        account.preferences = .init(autoSignEnabled: true, autoSignRunning: true, autoSignRule: .init(offsetMinutes: 30, notification: .none))
+        let midnightCourse = courseResponse("午夜课程").replacingOccurrences(of: "08:00", with: "00:05").replacingOccurrences(of: "09:40", with: "01:40")
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("课程")), .init(courseResponse("课程")), .init(midnightCourse), .init(midnightCourse)],
+            "clock": [.init(clockJSON(first)), .init(clockJSON(until))],
+            "sign": [.init(#"{"STATUS":"0","result":{"stuSignStatus":"1"}}"#), .init(#"{"STATUS":"0","result":{"stuSignStatus":"1"}}"#)]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [account], active: account.id), transport, clock: clock)
+        await model.restore(); await model.foregroundTick()
+        model.setAutoSignRule(.init(notification: .none)); model.pauseAutoSignUntilTomorrow()
+        clock.advance(until.timeIntervalSince(first)); clock.setWallOnly(clock.get().addingTimeInterval(-3600))
+        await model.refresh(on: until); await model.foregroundTick()
+        XCTAssertEqual(model.autoSignSettingsStatus, "运行中")
+        let signs = await transport.count("sign"); XCTAssertEqual(signs, 2)
+        XCTAssertEqual(model.autoSignHistory.first?.stage, .signed)
+    }
+
+    func testCappedReadOnlyWakeUsesFrozenSchoolTimeAfterBackwardClockJump() async throws {
+        let school = CourseTime.parse(day: SchoolDate.key(.now), time: "08:30")!
+        let clock = TestClock(school)
+        var account = accountA
+        account.preferences = .init(autoSignEnabled: true, autoSignRunning: true, autoSignRule: .init(offsetMinutes: 30, maxSubmissions: 1, retryMinutes: 1))
+        let signed = courseResponse("课程").replacingOccurrences(of: "\"signStatus\":\"0\"", with: "\"signStatus\":\"1\"")
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("课程")), .init(courseResponse("课程")), .init(signed)],
+            "clock": [.init(clockJSON(school)), .init(clockJSON(school.addingTimeInterval(30)))],
+            "sign": [.init(#"{"STATUS":"1","ERRMSG":"结果未知"}"#)]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [account], active: account.id), transport, clock: clock)
+        await model.restore(); await model.foregroundTick()
+        XCTAssertEqual(model.autoSignHistory.first?.nextSchoolVerificationAt, school.addingTimeInterval(30))
+        clock.advance(30); clock.setWallOnly(clock.get().addingTimeInterval(-3600))
+        await model.foregroundTick()
+        XCTAssertEqual(model.autoSignHistory.first?.stage, .signed)
+        let signs = await transport.count("sign"); XCTAssertEqual(signs, 1)
+    }
+
+    func testActivationBoundaryStillVerifiesExistingSubmissionWithoutNewPost() async throws {
+        let school = CourseTime.parse(day: SchoolDate.key(.now), time: "08:30")!
+        var account = accountA
+        account.preferences = .init(autoSignEnabled: true, autoSignRunning: true, autoSignRule: .init(offsetMinutes: 30),
+                                    autoSignRunningSince: school.addingTimeInterval(60), autoSignSinceUsesSchoolTime: true)
+        let course = Course(id: "1234567", name: "课程", beginTime: "08:00", endTime: "09:40", day: SchoolDate.key(.now))
+        let key = AutoSignPlanner.key(account: account.id, course: course)
+        var old = AutoSignExecution(key: key, now: school.addingTimeInterval(-120))
+        old.begin(course: course, now: school.addingTimeInterval(-120))
+        old.submissions = 1; old.lastSubmissionAt = school.addingTimeInterval(-120)
+        old.lastSchoolSubmissionAt = school.addingTimeInterval(-120)
+        old.transition(.verifying, now: school, message: "提交结果未知", nextAt: school)
+        try UserDefaultsAutoSignStore(defaults: defaults).save(accountID: account.id, executions: [key: old])
+        let signed = courseResponse("课程").replacingOccurrences(of: "\"signStatus\":\"0\"", with: "\"signStatus\":\"1\"")
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("课程")), .init(signed)], "clock": [.init(clockJSON(school))]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [account], active: account.id), transport)
+        await model.restore(); await model.foregroundTick()
+        XCTAssertEqual(model.autoSignHistory.first?.stage, .signed)
+        XCTAssertEqual(model.autoSignHistory.first?.submissions, 1)
+        let signs = await transport.count("sign"); XCTAssertEqual(signs, 0)
+    }
+
+    func testLegacyReadOnlySchoolWakeSurvivesBackwardClockAndRestartBelowSubmissionCap() async throws {
+        let school = CourseTime.parse(day: SchoolDate.key(.now), time: "08:30")!
+        let clock = TestClock(school)
+        var account = accountA
+        account.preferences = .init(autoSignEnabled: true, autoSignRunning: true, autoSignRule: .init(offsetMinutes: 30, maxSubmissions: 3))
+        let course = Course(id: "1234567", name: "课程", beginTime: "08:00", endTime: "09:40", day: SchoolDate.key(.now))
+        let key = AutoSignPlanner.key(account: account.id, course: course)
+        var old = AutoSignExecution(key: key, now: school.addingTimeInterval(-120))
+        old.begin(course: course, now: school.addingTimeInterval(-120))
+        old.submissions = 1; old.lastSubmissionAt = school.addingTimeInterval(-120)
+        old.transition(.needsAttention, now: school, message: "旧记录结果未知，继续核实", nextAt: school.addingTimeInterval(60))
+        old.nextSchoolVerificationAt = school.addingTimeInterval(60)
+        try UserDefaultsAutoSignStore(defaults: defaults).save(accountID: account.id, executions: [key: old])
+        let store = MemoryAccountStore(accounts: [account], active: account.id)
+        let transport = PlannedTransport(["courses:session-a": [.init(courseResponse("课程"))], "clock": [.init(clockJSON(school))]])
+        let model = makeModel(store, transport, clock: clock)
+        await model.restore(); await model.foregroundTick()
+        let before = await transport.count("courses:session-a"); XCTAssertEqual(before, 1)
+        clock.advance(60); clock.setWallOnly(clock.get().addingTimeInterval(-3600))
+        let signed = courseResponse("课程").replacingOccurrences(of: "\"signStatus\":\"0\"", with: "\"signStatus\":\"1\"")
+        let restartedTransport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("课程")), .init(signed)], "clock": [.init(clockJSON(school.addingTimeInterval(60)))]
+        ])
+        let restarted = makeModel(store, restartedTransport, clock: clock)
+        await restarted.restore(); await restarted.foregroundTick()
+        XCTAssertEqual(restarted.autoSignHistory.first?.stage, .signed)
+        XCTAssertEqual(restarted.autoSignHistory.first?.submissions, 1)
+        let signs = await restartedTransport.count("sign"); XCTAssertEqual(signs, 0)
+    }
+
+    private func makeModel(_ store: MemoryAccountStore, _ transport: PlannedTransport,
+                           notifications: TestNotifications? = nil, widgets: TestWidgets? = nil, clock: TestClock? = nil) -> AppModel {
+        let now = CourseTime.parse(day: SchoolDate.key(.now), time: "08:30")!
+        let localClock = clock ?? TestClock(now)
+        let model = AppModel(service: QingxinService(transport: transport, now: { localClock.get() }, monotonicNow: { localClock.elapsed() }), accountStore: store, defaults: defaults,
+                             notifications: notifications ?? TestNotifications(), widgets: widgets ?? TestWidgets())
+        model.attendanceNow = { localClock.get() }
+        model.autoSignMonotonicNow = { localClock.elapsed() }
         return model
     }
 
@@ -1533,7 +2411,7 @@ private let accountA = StoredAccount(session: SchoolSession(userId: "user-a", se
 private let accountB = StoredAccount(session: SchoolSession(userId: "user-b", sessionId: "session-b", studentNo: "2026000002", name: "周宁"), loginUsername: "b@example.edu")
 private let rememberedAccountA = StoredAccount(session: accountA.session, credentials: StoredCredentials(username: "a@example.edu", password: "remembered-a"), loginUsername: "a@example.edu")
 private let expiredResponse = #"{"STATUS":"1","ERRMSG":"登录已过期，请重新登录"}"#
-private var clockResponse: String { "{\"STATUS\":\"0\",\"timestamp\":\(Int64(Date().timeIntervalSince1970 * 1_000))}" }
+private var clockResponse: String { clockJSON(CourseTime.parse(day: SchoolDate.key(.now), time: "08:30")!) }
 private let semesterResponse = #"{"STATUS":"0","result":[{"code":"2026202701","name":"2026-2027秋季学期","beginDate":"2026-08-31","endDate":"2027-01-31","yearStatus":"1"}]}"#
 private let catalogResponse = #"{"STATUS":"0","result":[{"course_id":"stable-course","courseNum":"CS6001","course_name":"高级人工智能","teacher_name":"陈老师","course_address":"教学楼 A101","semesterId":"2026202701","course_beignDate":"2026-08-31","course_endDate":"2027-01-31","jc_num":"16","jc_num_studyed":"3"}]}"#
 
@@ -1617,6 +2495,7 @@ private final class TestNotifications: NotificationClient {
     }
     func removeAll() { pendingIDs.removeAll() }
     func remove(ids: [String]) { pendingIDs.subtract(ids) }
+    func pendingRequestIdentifiers() async -> [String] { Array(pendingIDs) }
 }
 
 /// Intentionally ignores cancellation so tests cover transports that deliver a late response.
@@ -1665,4 +2544,17 @@ private actor PlannedTransport: HTTPTransport {
         if path.hasSuffix("get_my_course_sign_detail.action") { return "attendance:\(request.value(forHTTPHeaderField: "sessionId") ?? "")" }
         return "courses:\(request.value(forHTTPHeaderField: "sessionId") ?? "")"
     }
+}
+
+private func clockJSON(_ date: Date) -> String { "{\"STATUS\":\"0\",\"timestamp\":\(Int64(date.timeIntervalSince1970 * 1000))}" }
+private final class TestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Date
+    private var uptime: TimeInterval = 0
+    init(_ value: Date) { self.value = value }
+    func get() -> Date { lock.lock(); defer { lock.unlock() }; return value }
+    func elapsed() -> TimeInterval { lock.lock(); defer { lock.unlock() }; return uptime }
+    func set(_ value: Date) { lock.lock(); uptime += max(0, value.timeIntervalSince(self.value)); self.value = value; lock.unlock() }
+    func setWallOnly(_ value: Date) { lock.lock(); self.value = value; lock.unlock() }
+    func advance(_ seconds: TimeInterval) { lock.lock(); uptime += seconds; value = value.addingTimeInterval(seconds); lock.unlock() }
 }

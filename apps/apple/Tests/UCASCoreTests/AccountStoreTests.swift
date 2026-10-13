@@ -26,6 +26,44 @@ final class AccountStoreTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(CoursePreferences.self, from: JSONEncoder().encode(disabled)), disabled)
     }
 
+    func testSingleSwitchNormalizationMirrorsOldSplitAndPreservesParticipationBoundaries() throws {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let oldRunning = now.addingTimeInterval(-3600)
+        let courseSince = now.addingTimeInterval(-1800)
+        let original = AccountPreferences(autoSignEnabled: false,
+            courses: ["opt-in": .init(autoSign: .enabled, autoSignEnabledSince: courseSince),
+                      "excluded": .init(autoSign: .disabled)], autoSignRunning: true,
+            autoSignOccurrences: ["once": .init(enabled: false, enabledSince: courseSince)],
+            autoSignRunningSince: oldRunning)
+        let normalized = original.unifyingAutoSign(at: now)
+        XCTAssertTrue(normalized.autoSignEnabled)
+        XCTAssertEqual(normalized.autoSignRunning, true)
+        XCTAssertEqual(normalized.autoSignDefaultSince, now)
+        XCTAssertEqual(normalized.autoSignRunningSince, oldRunning)
+        XCTAssertEqual(normalized.courses, original.courses)
+        XCTAssertEqual(normalized.autoSignOccurrences, original.autoSignOccurrences)
+        XCTAssertEqual(normalized.unifyingAutoSign(at: now.addingTimeInterval(600)), normalized)
+        XCTAssertEqual(try JSONDecoder().decode(AccountPreferences.self, from: JSONEncoder().encode(normalized)), normalized)
+    }
+
+    func testLegacyCourseOptInNormalizesOnButExplicitOffStillOverridesEveryException() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let legacy = AccountPreferences(courses: ["opt-in": .init(autoSign: .enabled)])
+        XCTAssertNil(legacy.autoSignRunning)
+        let normalized = legacy.unifyingAutoSign(at: now)
+        XCTAssertTrue(normalized.autoSignEnabled)
+        XCTAssertEqual(normalized.autoSignRunning, true)
+        XCTAssertEqual(normalized.autoSignDefaultSince, now)
+        let off = AccountPreferences(autoSignEnabled: true, courses: legacy.courses, autoSignRunning: false,
+            autoSignOccurrences: ["once": .init(enabled: true)])
+        let normalizedOff = off.unifyingAutoSign(at: now)
+        XCTAssertFalse(normalizedOff.autoSignEnabled)
+        XCTAssertEqual(normalizedOff.autoSignRunning, false)
+        XCTAssertFalse(normalizedOff.autoSignIsRunning)
+        XCTAssertEqual(normalizedOff.courses, off.courses)
+        XCTAssertEqual(normalizedOff.autoSignOccurrences, off.autoSignOccurrences)
+    }
+
     func testCourseOverridesRoundTripAndResolveGlobals() throws {
         let override = CoursePreferences(confirmation: .enabled, autoSign: .disabled,
                                          reminders: .enabled, reminderLeadMinutes: 30)

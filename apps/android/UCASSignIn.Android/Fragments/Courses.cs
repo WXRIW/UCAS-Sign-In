@@ -290,9 +290,38 @@ public sealed partial class MainPageFragment
                 values.Confirmation, Model.Preferences.ConfirmBeforeSign,
                 selected => Model.SetCoursePreferencesAsync(course.Id, values with { Confirmation = selected })));
             sign.AddView(SettingsRule());
-            sign.AddView(OverrideSettingRow(Resource.Drawable.ic_check, "自动签到", "进入签到时段后自动尝试一次",
-                values.AutoSign, Model.Preferences.AutoSignEnabled,
+            sign.AddView(OverrideSettingRow(Resource.Drawable.ic_check, "自动签到", "按本课程的计划时间与重试规则执行",
+                values.AutoSign, Model.Preferences.AutoSignIsRunning,
                 selected => Model.SetCoursePreferencesAsync(course.Id, values with { AutoSign = selected })));
+            sign.AddView(SettingsRule());
+            var autoRule = values.AutoSignRule ?? new AutoSignPolicyOverride();
+            View RuleRow(string title, string[] labels, int selected, Func<int, AutoSignPolicyOverride> update)
+                => Tap(Across(SettingLabel(Resource.Drawable.ic_clock, title, labels[Math.Max(0, selected)]),
+                    Icon(Resource.Drawable.ic_chevron_right, 11, Secondary)), () =>
+                {
+                    AutoSignChoice(title, labels, Math.Max(0, selected), i => Model.SetCoursePreferencesAsync(course.Id,
+                        values with { AutoSignRule = update(i) }));
+                    return Task.CompletedTask;
+                }, title);
+            var times = new[] { "跟随账户" }.Concat(Enumerable.Range(-25, 266).Select(x => x == 0 ? "上课时" : x < 0 ? $"课前 {-x} 分钟" : $"开课后 {x} 分钟")).ToArray();
+            sign.AddView(RuleRow("执行时间", times, autoRule.OffsetMinutes is { } offset ? offset + 26 : 0,
+                i => autoRule with { OffsetMinutes = i == 0 ? null : i - 26 }));
+            sign.AddView(SettingsRule());
+            sign.AddView(RuleRow("错过计划时间", ["跟随账户", "提示手动处理", "宽限 10 分钟", "下课前补执行"],
+                autoRule.MissedAction is { } missed ? (int)missed + 1 : 0,
+                i => autoRule with { MissedAction = i == 0 ? null : (AutoSignMissedAction)(i - 1) }));
+            sign.AddView(SettingsRule());
+            sign.AddView(RuleRow("最多自动提交", ["跟随账户", "1 次", "2 次", "3 次"], autoRule.MaxSubmissions ?? 0,
+                i => autoRule with { MaxSubmissions = i == 0 ? null : i }));
+            sign.AddView(SettingsRule());
+            int[] retryIntervals = [1, 2, 5];
+            sign.AddView(RuleRow("重试间隔", ["跟随账户", "1 分钟", "2 分钟", "5 分钟"],
+                autoRule.RetryMinutes is { } interval ? Array.IndexOf(retryIntervals, interval) + 1 : 0,
+                i => autoRule with { RetryMinutes = i == 0 ? null : retryIntervals[i - 1] }));
+            sign.AddView(SettingsRule());
+            sign.AddView(RuleRow("结果通知", ["跟随账户", "仅异常", "成功与异常", "关闭"],
+                autoRule.Notification is { } notification ? (int)notification + 1 : 0,
+                i => autoRule with { Notification = i == 0 ? null : (AutoSignNotification)(i - 1) }));
             sign.AddView(SettingsRule());
         }
         sign.AddView(SettingRow(Resource.Drawable.ic_eye_off, "禁用本课程签到", "暂停本课程的手动签到和自动签到", disabled));

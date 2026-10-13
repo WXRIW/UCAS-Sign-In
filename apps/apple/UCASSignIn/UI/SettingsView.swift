@@ -67,7 +67,7 @@ struct SettingsView: View {
                     .accessibilityHint("在周课表中显示非本周课程。")
                     .padding(.vertical, 18)
                 }
-                settingsSection("课堂偏好", footer: model.isConnected ? autoSignExplanation : disconnectedClassroomPreferences) {
+                settingsSection("课堂偏好", footer: model.isConnected ? nil : disconnectedClassroomPreferences) {
                     VStack(spacing: 0) {
                         Toggle(isOn: Binding(get: { model.remindersEnabled }, set: { enabled in Task { await model.setReminders(enabled) } })) {
                             settingsLabel("课程提醒", subtitle: "已同步课程将在设定时间提醒", symbol: "bell")
@@ -95,12 +95,11 @@ struct SettingsView: View {
                         }.toggleStyle(.switch).accessibilityIdentifier("settings.confirmation")
                             .padding(.vertical, 18)
                         PreferenceDivider()
-                        Toggle(isOn: Binding(get: { model.autoSignEnabled }, set: { model.setAutoSign($0) })) {
-                            settingsLabel(autoSignTitle, subtitle: autoSignSubtitle, symbol: "checkmark.circle")
-                        }.toggleStyle(.switch).accessibilityIdentifier("settings.autoSign")
-                            .accessibilityLabel(autoSignTitle)
-                            .accessibilityHint(autoSignSubtitle)
-                            .padding(.vertical, 18)
+                        NavigationLink {
+                            AutoSignView()
+                        } label: {
+                            PreferenceNavigationRow(title: "自动签到", symbol: "clock.arrow.circlepath", value: model.autoSignSettingsStatus)
+                        }.buttonStyle(.plain).accessibilityIdentifier("settings.autoSign")
                     }.tint(Palette.green)
                         .disabled(!model.isConnected || !model.canChangeAccount)
                 }
@@ -156,35 +155,11 @@ struct SettingsView: View {
             }
         }
     }
-    private var autoSignTitle: String {
-        #if os(macOS)
-        "自动签到"
-        #else
-        "前台自动签到"
-        #endif
-    }
-
     private var disconnectedClassroomPreferences: String {
         #if os(macOS)
         "连接学校账户后，可设置签到确认、课程提醒与自动签到。"
         #else
         "连接学校账户后，可设置签到确认、课程提醒与前台自动签到。"
-        #endif
-    }
-
-    private var autoSignSubtitle: String {
-        #if os(macOS)
-        "果壳签到运行时，进入签到时段后尝试一次"
-        #else
-        "App 处于前台时，进入签到时段后尝试一次"
-        #endif
-    }
-
-    private var autoSignExplanation: String {
-        #if os(macOS)
-        "窗口可关闭、最小化，也可切换到其他 App；退出果壳签到或 Mac 睡眠时会暂停。签到结果以学校返回状态为准。"
-        #else
-        "iOS / iPadOS 不保证后台定时运行。请保持 App 在前台，并以学校返回的签到状态为准。"
         #endif
     }
 

@@ -33,8 +33,8 @@ public sealed partial class MainPageFragment
     bool scenePrivacy, backPreview;
     ITransitionSeekController? backSeek;
     bool AnimationsEnabled => !OperatingSystem.IsAndroidVersionAtLeast(26) || ValueAnimator.AreAnimatorsEnabled();
-    static int Depth(string? route) => route is null ? 0 : route is "source" or "course-schedule" ? 2 : 1;
-    static string? ParentRoute(string? route) => route == "source" ? "about" : route == "course-schedule" ? "catalog-detail" : null;
+    static int Depth(string? route) => AutoSignDepth(route) ?? (route is null ? 0 : route is "source" or "course-schedule" ? 2 : 1);
+    static string? ParentRoute(string? route) => AutoSignParentRoute(route) ?? (route == "source" ? "about" : route == "course-schedule" ? "catalog-detail" : null);
     string SceneKey(string? route) => Host.Vm.Page + ":" + (route ?? "root");
     public MaterialToolbar ActiveToolbar => activeScene!.Toolbar;
 
@@ -284,6 +284,7 @@ public sealed partial class MainPageFragment
         "catalog-detail" => CurrentCatalogDetail?.Name ?? "课程详情",
         "course-schedule" => "排课信息",
         "settings" => "设置",
+        var autoRoute when AutoSignPageTitle(autoRoute) is { } title => title,
         "records" => Model.IsDemo ? "演示签到记录" : "本机签到记录",
         "about" => "关于",
         "source" => "项目源码与致谢",

@@ -33,7 +33,15 @@ public static class CourseIdentity
         var values = source.Select(x => x.Normalized()).ToArray();
         static PreferenceOverride Pick(IEnumerable<PreferenceOverride> values, PreferenceOverride strict) => values.Contains(strict) ? strict
             : values.FirstOrDefault(x => x != PreferenceOverride.Inherit);
+        var rules = values.Select(x => x.AutoSignRule).OfType<AutoSignPolicyOverride>().ToArray();
+        var rule = rules.Length == 0 ? null : new AutoSignPolicyOverride(
+            rules.Select(x => x.OffsetMinutes).LastOrDefault(x => x.HasValue),
+            rules.Select(x => x.MissedAction).LastOrDefault(x => x.HasValue),
+            rules.Select(x => x.MaxSubmissions).LastOrDefault(x => x.HasValue),
+            rules.Select(x => x.RetryMinutes).LastOrDefault(x => x.HasValue),
+            rules.Select(x => x.Notification).LastOrDefault(x => x.HasValue));
         return new(Pick(values.Select(x => x.Confirmation), PreferenceOverride.Enabled), Pick(values.Select(x => x.AutoSign), PreferenceOverride.Disabled),
-            Pick(values.Select(x => x.Reminders), PreferenceOverride.Disabled), values.Select(x => x.ReminderLeadMinutes).Max(), values.Any(x => x.SignInDisabled));
+            Pick(values.Select(x => x.Reminders), PreferenceOverride.Disabled), values.Select(x => x.ReminderLeadMinutes).Max(),
+            values.Any(x => x.SignInDisabled), rule, values.Select(x => x.AutoSignEnabledSince).Max());
     }
 }

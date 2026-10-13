@@ -119,6 +119,33 @@ public class SchoolClientTests
         Assert.Single(handler.Requests);
     }
     [Fact]
+    public async Task WallClockAdjustmentCannotAdvanceCachedSchoolTimeOrExpireItsMonotonicSample()
+    {
+        var clock = new FakeClock(TestData.Now);
+        using var handler = new FakeHttp(_ => """{"STATUS":0,"timestamp":1789518600000}""");
+        using var client = new SchoolClient(handler, clock);
+        var sample = await client.SchoolNowAsync();
+        clock.Now += TimeSpan.FromSeconds(15);
+        clock.ShiftDeviceClock(TimeSpan.FromSeconds(10));
+        Assert.Equal(sample.AddSeconds(15), await client.SchoolNowAsync());
+        Assert.Single(handler.Requests);
+        clock.ShiftDeviceClock(TimeSpan.FromMinutes(-2));
+        Assert.Equal(sample.AddSeconds(15), await client.SchoolNowAsync());
+        Assert.Single(handler.Requests);
+    }
+    [Fact]
+    public async Task FinalAutomaticAuthorizationReceivesSchoolReadingAndDecliningItDoesNotSendSign()
+    {
+        using var handler = new FakeHttp(r => r.Uri.AbsolutePath.EndsWith("get_timestamp.do")
+            ? """{"STATUS":0,"timestamp":1789518600000}""" : Fixture("sign-success"));
+        using var client = new SchoolClient(handler, new FakeClock(TestData.Now.AddMinutes(2)));
+        DateTimeOffset? observed = null;
+        await Assert.ThrowsAsync<OperationCanceledException>(() => client.SignAsync(TestData.Course(), TestData.Session(),
+            authorizeAt: at => { observed = at; return Task.FromResult(false); }));
+        Assert.Equal(DateTimeOffset.FromUnixTimeMilliseconds(1789518600000), observed);
+        Assert.Single(handler.Requests);
+    }
+    [Fact]
     public async Task ClockClearRejectsOldSync()
     {
         var release = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);

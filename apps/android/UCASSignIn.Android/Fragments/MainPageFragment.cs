@@ -209,6 +209,7 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
         if (Route is not null)
         {
             if (Route == "settings") SettingsPage();
+            else if (AutoSignPage(Route)) { }
             else InformationPage();
             return;
         }
@@ -299,6 +300,14 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
         }
         var today = CourseTime.Today();
         if (!TwoColumns || !Model.IsDemo) Banner(today);
+        if (!Model.IsDemo && Model.Preferences.AutoSignIsRunning)
+        {
+            var nextPlan = NextAutoSignPlan();
+            var paused = Model.Preferences.AutoSignPausedUntil is { } pause && pause > DateTimeOffset.Now;
+            Add(Tap(Card(Column(Text("自动签到 · " + AutoSignRuntimeStatus, 12, color: Secondary),
+                Text(paused ? "已暂停至明天" : nextPlan is null ? "暂无待执行计划" : $"下一项 {nextPlan.Course.Name} · {(nextPlan.NextAt ?? nextPlan.PlannedAt).ToOffset(CourseTime.ShanghaiOffset):HH:mm}",
+                    12, color: Secondary))), () => Navigate("autosign"), "自动签到状态"), 14);
+        }
         var (current, next) = CourseTime.CurrentAndNext(courses, now);
         var featured = current is { Signed: false } ? current : next ?? current ?? courses.LastOrDefault();
         if (featured is not null)
@@ -582,10 +591,8 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
         var prefs = Model.Preferences;
         var remind = new MaterialSwitch(Ui) { Checked = prefs.RemindersEnabled, Enabled = Model.IsConnected && Model.CanChangeAccount, ContentDescription = "课程提醒" };
         var confirmation = new MaterialSwitch(Ui) { Checked = prefs.ConfirmBeforeSign, Enabled = Model.IsConnected && Model.CanChangeAccount, ContentDescription = "手动签到二次确认" };
-        var auto = new MaterialSwitch(Ui) { Checked = prefs.AutoSignEnabled, Enabled = Model.IsConnected && Model.CanChangeAccount, ContentDescription = "后台自动签到" };
-        remind.CheckedChange += async (_, _) => await Host.Run(() => Host.SetClassroomPreferences(auto.Checked, remind.Checked, confirmation.Checked, prefs.ReminderLeadMinutes));
-        confirmation.CheckedChange += async (_, _) => await Host.Run(() => Host.SetClassroomPreferences(auto.Checked, remind.Checked, confirmation.Checked, prefs.ReminderLeadMinutes));
-        auto.CheckedChange += async (_, _) => await Host.Run(() => Host.SetClassroomPreferences(auto.Checked, remind.Checked, confirmation.Checked, prefs.ReminderLeadMinutes));
+        remind.CheckedChange += async (_, _) => await Host.Run(() => Host.SetClassroomPreferences(Model.Preferences.AutoSignIsRunning, remind.Checked, confirmation.Checked, prefs.ReminderLeadMinutes));
+        confirmation.CheckedChange += async (_, _) => await Host.Run(() => Host.SetClassroomPreferences(Model.Preferences.AutoSignIsRunning, remind.Checked, confirmation.Checked, prefs.ReminderLeadMinutes));
         var classroom = Column(Across(SettingLabel(Resource.Drawable.ic_bell, "课程提醒", "按全局默认值安排本机通知"), remind));
         if (prefs.RemindersEnabled)
         {
@@ -596,7 +603,7 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
                 () =>
                 {
                     ReminderLeadTime(prefs.ReminderLeadMinutes, false, prefs.ReminderLeadMinutes,
-                        selected => Host.SetClassroomPreferences(auto.Checked, remind.Checked, confirmation.Checked, selected));
+                        selected => Host.SetClassroomPreferences(Model.Preferences.AutoSignIsRunning, remind.Checked, confirmation.Checked, selected));
                     return Task.CompletedTask;
                 }, "提醒时间");
             classroom.AddView(lead);
@@ -604,9 +611,8 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
         classroom.AddView(SettingsRule());
         classroom.AddView(Across(SettingLabel(Resource.Drawable.ic_check_circle, "手动签到二次确认", "提交前弹窗确认，避免误触签到"), confirmation));
         classroom.AddView(SettingsRule());
-        classroom.AddView(Across(SettingLabel(Resource.Drawable.ic_check, "后台自动签到", "无需保持 App 前台，进入签到时段后尝试一次"), auto));
-        Add(MaterialSettingsSection("课堂偏好", classroom,
-            "开启后会显示常驻状态通知；系统省电、自启动限制或强行停止 App 仍可能使任务延迟或中断。签到结果以学校返回状态为准。"));
+        classroom.AddView(AutoSignLink(Resource.Drawable.ic_clock, "自动签到", "autosign", Model.AutoSignSettingsStatus));
+        Add(MaterialSettingsSection("课堂偏好", classroom));
         Add(MaterialSettingsSection("通知", Button("系统通知设置", OpenNotificationSettings)));
         var automaticUpdates = new MaterialSwitch(Ui)
         {
@@ -626,6 +632,15 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
         // Landscape: keep the long classroom section in one column and stack the
         // shorter app-level sections in portrait order in the equally wide column.
         ArrangeColumns(i => i == 1, .5f);
+    }
+    void AutoSignChoice(string title, string[] labels, int selected, Func<int, Task> save)
+    {
+        var dialog = new Google.Android.Material.Dialog.MaterialAlertDialogBuilder(Ui)
+            .SetTitle(title)!.SetSingleChoiceItems(labels, selected, (_, e) =>
+            {
+                if (Host.ActiveDialog is { } current) DismissThen(current, () => save(e.Which));
+            })!.SetNegativeButton("取消", (_, _) => { })!.Create()!;
+        Track(dialog);
     }
     Task OpenNotificationSettings()
     {

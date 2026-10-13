@@ -67,13 +67,13 @@ public sealed partial class AccountCoordinator
     public bool IsSignInDisabled(string? courseId) => courseId is not null && CoursePreferencesFor(courseId).SignInDisabled;
     public bool EffectiveConfirmation(string? courseId) => !IsSignInDisabled(courseId) && (courseId is null
         ? Preferences.ConfirmBeforeSign : CoursePreferences.Resolve(CoursePreferencesFor(courseId).Confirmation, Preferences.ConfirmBeforeSign));
-    public bool EffectiveAutoSign(string? courseId) => !IsSignInDisabled(courseId) && (courseId is null
-        ? Preferences.AutoSignEnabled : CoursePreferences.Resolve(CoursePreferencesFor(courseId).AutoSign, Preferences.AutoSignEnabled));
+    public bool EffectiveAutoSign(string? courseId) => Preferences.AutoSignIsRunning && !IsSignInDisabled(courseId) && (courseId is null
+        || CoursePreferences.Resolve(CoursePreferencesFor(courseId).AutoSign, true));
     public bool EffectiveReminders(string? courseId) => courseId is null ? Preferences.RemindersEnabled
         : CoursePreferences.Resolve(CoursePreferencesFor(courseId).Reminders, Preferences.RemindersEnabled);
     public int EffectiveReminderLeadMinutes(string? courseId) => courseId is not null && CoursePreferencesFor(courseId).ReminderLeadMinutes is { } lead
         ? lead : Preferences.ReminderLeadMinutes;
-    public bool NeedsAutoSignService => Preferences.AutoSignEnabled || Preferences.Courses.Any(x => !x.Value.SignInDisabled && x.Value.AutoSign == PreferenceOverride.Enabled);
+    public bool NeedsAutoSignService => Preferences.AutoSignIsRunning;
 
     void ResetCatalogState()
     {
@@ -292,12 +292,16 @@ public sealed partial class AccountCoordinator
     {
         if (string.IsNullOrWhiteSpace(courseId)) return;
         preferences = preferences.Normalized();
+        try { _ = preferences.AutoSignRule?.Resolve(Preferences.AutoSignRule); }
+        catch (ArgumentOutOfRangeException) { SetMessage("自动签到规则超出允许范围"); return; }
         if (IsDemo)
         {
             var values = new Dictionary<string, CoursePreferences>(demoPreferences.Courses);
             foreach (var alias in ProvenAliases(courseId)) values.Remove(alias);
             if (preferences == new CoursePreferences()) values.Remove(courseId); else values[courseId] = preferences;
-            demoPreferences = new(demoPreferences.AutoSignEnabled, demoPreferences.RemindersEnabled, demoPreferences.ConfirmBeforeSign, demoPreferences.ReminderLeadMinutes, values); Notify(); return;
+            demoPreferences = demoPreferences with { Courses = values,
+                AutoSignRunning = demoPreferences.AutoSignIsRunning, AutoSignEnabled = demoPreferences.AutoSignIsRunning };
+            Notify(); return;
         }
         if (!CanChangeAccount || ActiveAccount is not { } account) return;
         var epoch = Generation;
@@ -306,13 +310,21 @@ public sealed partial class AccountCoordinator
         await mutations.WaitAsync();
         try
         {
-            if (epoch != Generation || ActiveAccount is not { } current) return;
+            if (epoch != Generation || ActiveAccount is not { } current || current.Id != account.Id) return;
             IsBusy = true; Notify();
+            var beforeAutoSignPlans = AutoSignPlans.ToDictionary(x => x.Key);
+            var previous = CoursePreferencesFor(courseId);
+            var wasEnabled = !previous.SignInDisabled && CoursePreferences.Resolve(previous.AutoSign, true);
+            var isEnabled = !preferences.SignInDisabled && CoursePreferences.Resolve(preferences.AutoSign, true);
+            preferences = preferences with { AutoSignEnabledSince = !wasEnabled && isEnabled
+                ? StampAutoSignBoundary("course:" + courseId, clock.GetUtcNow()) : previous.AutoSignEnabledSince };
             var values = new Dictionary<string, CoursePreferences>(current.Preferences.Courses);
             foreach (var alias in ProvenAliases(courseId)) values.Remove(alias);
             if (preferences == new CoursePreferences()) values.Remove(courseId); else values[courseId] = preferences;
             var p = current.Preferences;
-            await CommitAsync(Updated(current with { Settings = new(p.AutoSignEnabled, p.RemindersEnabled, p.ConfirmBeforeSign, p.ReminderLeadMinutes, values) }));
+            await CommitAsync(Updated(current with { Settings = StampParticipation(p,
+                p with { Courses = values, AutoSignRunning = p.AutoSignIsRunning, AutoSignEnabled = p.AutoSignIsRunning }, clock.GetUtcNow()) }));
+            await RecordAutoSignPlanChangesAsync(beforeAutoSignPlans, epoch);
             await UpdateRemindersAsync();
             if (!permissionGranted) Message = "偏好已保存；通知权限未开启，可在系统设置中允许通知";
         }

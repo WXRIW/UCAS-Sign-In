@@ -30,7 +30,9 @@ public sealed record CoursePreferences(
     PreferenceOverride AutoSign = PreferenceOverride.Inherit,
     PreferenceOverride Reminders = PreferenceOverride.Inherit,
     int? ReminderLeadMinutes = null,
-    bool SignInDisabled = false)
+    bool SignInDisabled = false,
+    AutoSignPolicyOverride? AutoSignRule = null,
+    DateTimeOffset? AutoSignEnabledSince = null)
 {
     public CoursePreferences Normalized() => this with
     {
@@ -54,8 +56,41 @@ public sealed record AccountPreferences
     public bool ConfirmBeforeSign { get; init; }
     public int ReminderLeadMinutes { get; init; }
     public Dictionary<string, CoursePreferences> Courses { get; init; }
+    public bool? AutoSignRunning { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool AutoSignIsRunning => AutoSignRunning ??
+        (AutoSignEnabled || Courses.Values.Any(x => !x.SignInDisabled && x.AutoSign == PreferenceOverride.Enabled)
+         || AutoSignOccurrences.Values.Any(x => x.Enabled == true));
+    public AutoSignPolicy AutoSignRule { get; init; }
+    public Dictionary<string, AutoSignOccurrenceOverride> AutoSignOccurrences { get; init; }
+    public DateTimeOffset? AutoSignPausedUntil { get; init; }
+    public bool AutoSignV2Acknowledged { get; init; }
+    public DateTimeOffset? AutoSignRunningSince { get; init; }
+    public DateTimeOffset? AutoSignDefaultSince { get; init; }
+    public bool AutoSignSinceUsesSchoolTime { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool NeedsAutoSignMigrationNotice => !AutoSignV2Acknowledged &&
+        (AutoSignEnabled || Courses.Values.Any(x => x.AutoSign == PreferenceOverride.Enabled));
+    public AccountPreferences UnifyingAutoSign(DateTimeOffset now)
+    {
+        var running = AutoSignIsRunning;
+        if (AutoSignRunning is null && !running && !AutoSignEnabled) return this;
+        return this with
+        {
+            AutoSignRunning = running,
+            AutoSignEnabled = running,
+            AutoSignDefaultSince = running && !AutoSignEnabled
+                ? AutoSignDefaultSince is { } since && since > now ? since : now
+                : AutoSignDefaultSince
+        };
+    }
     public AccountPreferences(bool AutoSignEnabled = false, bool RemindersEnabled = false, bool ConfirmBeforeSign = false,
-        int ReminderLeadMinutes = 10, Dictionary<string, CoursePreferences>? Courses = null)
+        int ReminderLeadMinutes = 10, Dictionary<string, CoursePreferences>? Courses = null,
+        bool? AutoSignRunning = null, AutoSignPolicy? AutoSignRule = null,
+        Dictionary<string, AutoSignOccurrenceOverride>? AutoSignOccurrences = null,
+        DateTimeOffset? AutoSignPausedUntil = null, bool AutoSignV2Acknowledged = false,
+        DateTimeOffset? AutoSignRunningSince = null, DateTimeOffset? AutoSignDefaultSince = null,
+        bool AutoSignSinceUsesSchoolTime = false)
     {
         this.AutoSignEnabled = AutoSignEnabled;
         this.RemindersEnabled = RemindersEnabled;
@@ -63,15 +98,31 @@ public sealed record AccountPreferences
         this.ReminderLeadMinutes = ReminderLeadMinutes is 5 or 10 or 15 or 30 ? ReminderLeadMinutes : 10;
         this.Courses = (Courses ?? []).Where(x => !string.IsNullOrWhiteSpace(x.Key))
             .ToDictionary(x => x.Key, x => (x.Value ?? new()).Normalized());
+        this.AutoSignRunning = AutoSignRunning;
+        this.AutoSignRule = AutoSignRule ?? new();
+        this.AutoSignOccurrences = AutoSignOccurrences ?? [];
+        this.AutoSignPausedUntil = AutoSignPausedUntil;
+        this.AutoSignV2Acknowledged = AutoSignV2Acknowledged;
+        this.AutoSignRunningSince = AutoSignRunningSince;
+        this.AutoSignDefaultSince = AutoSignDefaultSince;
+        this.AutoSignSinceUsesSchoolTime = AutoSignSinceUsesSchoolTime;
     }
     public bool Equals(AccountPreferences? other) => other is not null
         && AutoSignEnabled == other.AutoSignEnabled && RemindersEnabled == other.RemindersEnabled
         && ConfirmBeforeSign == other.ConfirmBeforeSign && ReminderLeadMinutes == other.ReminderLeadMinutes
+        && AutoSignRunning == other.AutoSignRunning && AutoSignRule == other.AutoSignRule
+        && AutoSignPausedUntil == other.AutoSignPausedUntil
+        && AutoSignV2Acknowledged == other.AutoSignV2Acknowledged
+        && AutoSignRunningSince == other.AutoSignRunningSince && AutoSignDefaultSince == other.AutoSignDefaultSince
+        && AutoSignSinceUsesSchoolTime == other.AutoSignSinceUsesSchoolTime
+        && AutoSignOccurrences.Count == other.AutoSignOccurrences.Count && AutoSignOccurrences.All(x => other.AutoSignOccurrences.TryGetValue(x.Key, out var value) && value == x.Value)
         && Courses.Count == other.Courses.Count && Courses.All(x => other.Courses.TryGetValue(x.Key, out var value) && value == x.Value);
     public override int GetHashCode()
     {
-        var hash = HashCode.Combine(AutoSignEnabled, RemindersEnabled, ConfirmBeforeSign, ReminderLeadMinutes);
+        var hash = HashCode.Combine(AutoSignEnabled, RemindersEnabled, ConfirmBeforeSign, ReminderLeadMinutes, AutoSignRunning, AutoSignRule, AutoSignPausedUntil);
+        hash = HashCode.Combine(hash, AutoSignV2Acknowledged, AutoSignRunningSince, AutoSignDefaultSince, AutoSignSinceUsesSchoolTime);
         foreach (var item in Courses.OrderBy(x => x.Key)) hash = HashCode.Combine(hash, item.Key, item.Value);
+        foreach (var item in AutoSignOccurrences.OrderBy(x => x.Key)) hash = HashCode.Combine(hash, item.Key, item.Value);
         return hash;
     }
 }

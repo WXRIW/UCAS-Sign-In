@@ -344,6 +344,13 @@ struct CatalogCourseDetailView: View {
                 preferencePicker("自动签到", symbol: "checkmark.circle", description: automaticSignDescription,
                                  selection: $preferences.autoSign, inherited: model.autoSignEnabled)
                 PreferenceDivider()
+                NavigationLink {
+                    AutoSignCourseRulesView(preferences: $preferences)
+                } label: {
+                    PreferenceNavigationRow(title: "自动签到规则", symbol: "slider.horizontal.3",
+                                            value: preferences.autoSignRule == nil ? "跟随账户" : "课程设置")
+                }.buttonStyle(.plain).accessibilityIdentifier("coursePreference.autoSignRules")
+                PreferenceDivider()
             }
             Toggle(isOn: $preferences.signInDisabled) {
                 HStack(spacing: PreferenceRowLayout.spacing) {
@@ -554,9 +561,9 @@ struct CatalogCourseDetailView: View {
     }
     private var automaticSignDescription: String {
         #if os(macOS)
-        "进入签到时段后自动尝试一次"
+        "按本课程的计划时间与重试规则执行"
         #else
-        "App 在前台时，进入签到时段后自动尝试一次"
+        "App 在前台时，按本课程的计划时间与重试规则执行"
         #endif
     }
 

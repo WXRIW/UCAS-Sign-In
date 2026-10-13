@@ -327,10 +327,21 @@ public sealed class MainActivity : AppCompatActivity
     }
     public async Task SetClassroomPreferences(bool autoSign, bool reminders, bool? confirmation = null, int? reminderLeadMinutes = null)
     {
-        var permissionGranted = !autoSign || Model.Preferences.AutoSignEnabled || await RequestNotificationPermission();
+        var epoch = Model.Generation;
+        var permissionGranted = !autoSign || Model.Preferences.AutoSignIsRunning || await RequestNotificationPermission();
+        if (epoch != Model.Generation) return;
         await Model.SetPreferencesAsync(autoSign, reminders, confirmation, reminderLeadMinutes);
         if (permissionGranted) AndroidAutoSignService.Sync(UiContext, Model);
         else Model.SetMessage("偏好已保存；通知权限未开启，后台自动签到暂不能运行");
+    }
+    public async Task SetAutoSignRunning(bool running)
+    {
+        var epoch = Model.Generation;
+        var permissionGranted = !running || Model.Preferences.AutoSignIsRunning || await RequestNotificationPermission();
+        if (epoch != Model.Generation) return;
+        await Model.SetAutoSignSettingsAsync(running: running);
+        if (permissionGranted) AndroidAutoSignService.Sync(UiContext, Model);
+        else Model.SetMessage("自动签到已开启；请在系统设置中开启通知权限以运行");
     }
     protected override void OnResume()
     {

@@ -14,19 +14,24 @@ public struct CoursePreferences: Codable, Equatable, Sendable {
     public var reminders: PreferenceOverride
     public var reminderLeadMinutes: Int?
     public var signInDisabled: Bool
+    public var autoSignRule: AutoSignPolicyOverride?
+    public var autoSignEnabledSince: Date?
 
     public init(confirmation: PreferenceOverride = .inherit, autoSign: PreferenceOverride = .inherit,
                 reminders: PreferenceOverride = .inherit, reminderLeadMinutes: Int? = nil,
-                signInDisabled: Bool = false) {
+                signInDisabled: Bool = false, autoSignRule: AutoSignPolicyOverride? = nil,
+                autoSignEnabledSince: Date? = nil) {
         self.confirmation = confirmation
         self.autoSign = autoSign
         self.reminders = reminders
         self.reminderLeadMinutes = reminderLeadMinutes
         self.signInDisabled = signInDisabled
+        self.autoSignRule = autoSignRule
+        self.autoSignEnabledSince = autoSignEnabledSince
     }
 
     private enum CodingKeys: String, CodingKey {
-        case confirmation, autoSign, reminders, reminderLeadMinutes, signInDisabled
+        case confirmation, autoSign, reminders, reminderLeadMinutes, signInDisabled, autoSignRule, autoSignEnabledSince
     }
 
     public init(from decoder: Decoder) throws {
@@ -36,6 +41,8 @@ public struct CoursePreferences: Codable, Equatable, Sendable {
         reminders = try values.decodeIfPresent(PreferenceOverride.self, forKey: .reminders) ?? .inherit
         reminderLeadMinutes = try values.decodeIfPresent(Int.self, forKey: .reminderLeadMinutes)
         signInDisabled = try values.decodeIfPresent(Bool.self, forKey: .signInDisabled) ?? false
+        autoSignRule = try values.decodeIfPresent(AutoSignPolicyOverride.self, forKey: .autoSignRule)
+        autoSignEnabledSince = try values.decodeIfPresent(Date.self, forKey: .autoSignEnabledSince)
     }
 }
 
@@ -45,21 +52,66 @@ public struct AccountPreferences: Codable, Equatable, Sendable {
     public var confirmationEnabled: Bool
     public var reminderLeadMinutes: Int
     public var courses: [String: CoursePreferences]
+    public var autoSignRunning: Bool?
+    public var autoSignRunningSince: Date?
+    public var autoSignDefaultSince: Date?
+    public var autoSignSinceUsesSchoolTime: Bool?
+    public var autoSignPendingClockBoundaries: [Date]
+    public var autoSignIsRunning: Bool {
+        autoSignRunning ?? (autoSignEnabled || courses.values.contains { !$0.signInDisabled && $0.autoSign == .enabled }
+            || autoSignOccurrences.values.contains { $0.enabled == true })
+    }
+    public var autoSignRule: AutoSignPolicy
+    public var autoSignOccurrences: [String: AutoSignOccurrenceOverride]
+    public var autoSignPausedUntil: Date?
+    public var autoSignV2Acknowledged: Bool
+    public var needsAutoSignMigrationNotice: Bool {
+        !autoSignV2Acknowledged && (autoSignEnabled || courses.values.contains { $0.autoSign == .enabled })
+    }
+
+    /// Mirror the compatibility fields into one switch without catching up newly included courses.
+    public func unifyingAutoSign(at now: Date) -> AccountPreferences {
+        var value = self
+        let running = autoSignIsRunning
+        value.autoSignRunning = running
+        value.autoSignEnabled = running
+        if running && !autoSignEnabled {
+            value.autoSignDefaultSince = max(autoSignDefaultSince ?? .distantPast, now)
+            value.autoSignSinceUsesSchoolTime = false
+            value.autoSignPendingClockBoundaries = Array(Set(autoSignPendingClockBoundaries + [value.autoSignDefaultSince!])).sorted()
+        }
+        return value
+    }
 
     public init(autoSignEnabled: Bool = false, remindersEnabled: Bool = false,
                 confirmationEnabled: Bool = false, reminderLeadMinutes: Int = 10,
-                courses: [String: CoursePreferences] = [:]) {
+                courses: [String: CoursePreferences] = [:], autoSignRunning: Bool? = nil,
+                autoSignRule: AutoSignPolicy = .init(), autoSignOccurrences: [String: AutoSignOccurrenceOverride] = [:],
+                autoSignPausedUntil: Date? = nil, autoSignV2Acknowledged: Bool = false,
+                autoSignRunningSince: Date? = nil, autoSignDefaultSince: Date? = nil,
+                autoSignSinceUsesSchoolTime: Bool? = nil, autoSignPendingClockBoundaries: [Date] = []) {
         self.autoSignEnabled = autoSignEnabled
         self.remindersEnabled = remindersEnabled
         self.confirmationEnabled = confirmationEnabled
         self.reminderLeadMinutes = Self.validLeadTimes.contains(reminderLeadMinutes) ? reminderLeadMinutes : 10
         self.courses = courses
+        self.autoSignRunning = autoSignRunning
+        self.autoSignRunningSince = autoSignRunningSince
+        self.autoSignDefaultSince = autoSignDefaultSince
+        self.autoSignSinceUsesSchoolTime = autoSignSinceUsesSchoolTime
+        self.autoSignPendingClockBoundaries = autoSignPendingClockBoundaries
+        self.autoSignRule = autoSignRule
+        self.autoSignOccurrences = autoSignOccurrences
+        self.autoSignPausedUntil = autoSignPausedUntil
+        self.autoSignV2Acknowledged = autoSignV2Acknowledged
     }
 
     public static let validLeadTimes = [5, 10, 15, 30]
 
     private enum CodingKeys: String, CodingKey {
-        case autoSignEnabled, remindersEnabled, confirmationEnabled, reminderLeadMinutes, courses
+        case autoSignEnabled, remindersEnabled, confirmationEnabled, reminderLeadMinutes, courses,
+             autoSignRunning, autoSignRule, autoSignOccurrences, autoSignPausedUntil, autoSignV2Acknowledged,
+             autoSignRunningSince, autoSignDefaultSince, autoSignSinceUsesSchoolTime, autoSignPendingClockBoundaries
     }
 
     public init(from decoder: Decoder) throws {
@@ -70,6 +122,15 @@ public struct AccountPreferences: Codable, Equatable, Sendable {
         let lead = try values.decodeIfPresent(Int.self, forKey: .reminderLeadMinutes) ?? 10
         reminderLeadMinutes = Self.validLeadTimes.contains(lead) ? lead : 10
         courses = try values.decodeIfPresent([String: CoursePreferences].self, forKey: .courses) ?? [:]
+        autoSignRunning = try values.decodeIfPresent(Bool.self, forKey: .autoSignRunning)
+        autoSignRunningSince = try values.decodeIfPresent(Date.self, forKey: .autoSignRunningSince)
+        autoSignDefaultSince = try values.decodeIfPresent(Date.self, forKey: .autoSignDefaultSince)
+        autoSignSinceUsesSchoolTime = try values.decodeIfPresent(Bool.self, forKey: .autoSignSinceUsesSchoolTime)
+        autoSignPendingClockBoundaries = try values.decodeIfPresent([Date].self, forKey: .autoSignPendingClockBoundaries) ?? []
+        autoSignRule = try values.decodeIfPresent(AutoSignPolicy.self, forKey: .autoSignRule) ?? .init()
+        autoSignOccurrences = try values.decodeIfPresent([String: AutoSignOccurrenceOverride].self, forKey: .autoSignOccurrences) ?? [:]
+        autoSignPausedUntil = try values.decodeIfPresent(Date.self, forKey: .autoSignPausedUntil)
+        autoSignV2Acknowledged = try values.decodeIfPresent(Bool.self, forKey: .autoSignV2Acknowledged) ?? false
     }
 }
 

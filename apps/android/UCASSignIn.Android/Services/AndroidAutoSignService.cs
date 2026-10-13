@@ -18,6 +18,8 @@ public sealed class AndroidAutoSignService : Service
     const int ResultNotificationId = 0x554342;
     static int running;
     CancellationTokenSource? lifetime;
+    AccountCoordinator? observedModel;
+    Action? observeState;
 
     public static void Sync(Context context, AccountCoordinator model)
     {
@@ -48,7 +50,7 @@ public sealed class AndroidAutoSignService : Service
             var vault = await new AndroidAccountStore(path).LoadAsync();
             if (vault.Accounts.FirstOrDefault(account => account.Id == vault.ActiveAccountId)?.Preferences is { } preferences
                 && NotificationManagerCompat.From(context)!.AreNotificationsEnabled()
-                && (preferences.AutoSignEnabled || preferences.Courses.Any(x => !x.Value.SignInDisabled && x.Value.AutoSign == PreferenceOverride.Enabled)))
+                && preferences.AutoSignIsRunning)
                 Start(context);
         }
         catch
@@ -80,9 +82,19 @@ public sealed class AndroidAutoSignService : Service
     async Task RunAsync(CancellationToken cancellationToken)
     {
         var model = MainViewModel.Get(this).Model;
+        Action? changed = null;
+        var epoch = model.Generation;
+        var accountId = model.ActiveAccount?.Id;
         try
         {
             await model.InitializeAsync();
+            cancellationToken.ThrowIfCancellationRequested();
+            var previous = AutoSignNotificationSnapshot.Capture(model.Generation, model.ActiveAccount?.Id, model.AutoSignHistory);
+            var wake = new AutoSignWakeSignal<string>(AutoSignRuntime.WakeState(model, model.NextAutoSignWakeAt));
+            changed = () => wake.Update(AutoSignRuntime.WakeState(model, model.NextAutoSignWakeAt));
+            observedModel = model;
+            observeState = changed;
+            model.Changed += changed;
             while (!cancellationToken.IsCancellationRequested)
             {
                 if (model.IsDemo || model.ActiveAccount is null || !model.NeedsAutoSignService)
@@ -91,44 +103,71 @@ public sealed class AndroidAutoSignService : Service
                     return;
                 }
 
-                var before = model.Records.FirstOrDefault();
-                var beforeError = model.SignInError?.Id;
+                epoch = model.Generation;
+                accountId = model.ActiveAccount?.Id;
+                var iterationState = wake.State;
+                // Account activation loads its existing journal while busy. Establish
+                // the new baseline only after that load, so history is never replayed.
+                if (model.IsBusy || model.IsRecovering || model.IsRefreshing)
+                {
+                    await wake.WaitAsync(iterationState, TimeSpan.FromSeconds(30), cancellationToken);
+                    continue;
+                }
+                if (previous.Generation != epoch || previous.AccountId != accountId)
+                    previous = AutoSignNotificationSnapshot.Capture(epoch, accountId, model.AutoSignHistory);
                 await model.TickAsync(allowBackground: true);
-                if (model.Records.FirstOrDefault() is { } result && !ReferenceEquals(result, before))
+                cancellationToken.ThrowIfCancellationRequested();
+                if (epoch != model.Generation || accountId != model.ActiveAccount?.Id) continue;
+                var policies = model.AutoSignPlans.ToDictionary(x => x.Key, x => x.Policy.Notification);
+                var results = AutoSignRuntime.Results(previous, epoch, accountId, model.AutoSignHistory,
+                    item => policies.GetValueOrDefault(item.Key,
+                        model.Preferences.AutoSignOccurrences.GetValueOrDefault(item.Key)?.Policy?.Notification
+                            ?? item.NotificationMode ?? model.Preferences.AutoSignRule.Notification));
+                previous = AutoSignNotificationSnapshot.Capture(epoch, accountId, model.AutoSignHistory);
+                foreach (var result in results)
+                {
+                    if (cancellationToken.IsCancellationRequested || epoch != model.Generation || accountId != model.ActiveAccount?.Id) break;
                     NotifyResult(result.CourseName, result.Message, result.Succeeded);
-                else if (model.SignInError is { } error && error.Id != beforeError)
-                    NotifyResult("自动签到", error.Message, false);
+                }
 
-                var status = model.ActiveAccount?.RequiresLogin == true
-                    ? "登录已过期，请打开果壳签到重新验证"
-                    : "后台自动签到运行中";
+                var next = model.AutoSignPlans.Where(x => x.IsParticipating
+                    && x.Stage is AutoSignStage.Planned or AutoSignStage.Checking or AutoSignStage.Submitting or AutoSignStage.Verifying or AutoSignStage.RetryWaiting)
+                    .OrderBy(x => x.NextAt ?? x.PlannedAt).ThenBy(x => x.Key, StringComparer.Ordinal).FirstOrDefault();
+                var runtimeStatus = model.AutoSignRuntimeStatus;
+                var status = runtimeStatus == "运行中"
+                    ? next is null ? runtimeStatus + " · 暂无待执行计划"
+                        : $"{runtimeStatus} · 下一项：{next.Course.Name} {(next.NextAt ?? next.PlannedAt).ToOffset(CourseTime.ShanghaiOffset):HH:mm}"
+                    : runtimeStatus == "需要登录" ? runtimeStatus + " · 请打开果壳签到重新验证" : runtimeStatus;
                 NotificationManagerCompat.From(this)!.Notify(StatusNotificationId, StatusNotification(status));
-                await Task.Delay(NextDelay(model), cancellationToken);
+                // Acknowledge the latest state after this evaluation. Tick's own
+                // progress events then do not cause another immediate iteration.
+                var expectedState = wake.State;
+                await wake.WaitAsync(expectedState, NextDelay(model), cancellationToken);
             }
         }
         catch (System.OperationCanceledException) { }
         catch (Exception error)
         {
-            NotifyResult("自动签到已暂停", error.Message, false);
+            // Infrastructure failures are not course execution results. In
+            // particular they must not bypass an occurrence's notification mode.
+            if (!cancellationToken.IsCancellationRequested && epoch == model.Generation && accountId == model.ActiveAccount?.Id)
+                model.SetMessage("自动签到服务已暂停：" + error.Message);
             StopSelf();
+        }
+        finally
+        {
+            if (changed is not null) model.Changed -= changed;
+            if (ReferenceEquals(observeState, changed)) { observedModel = null; observeState = null; }
         }
     }
 
     static TimeSpan NextDelay(AccountCoordinator model)
     {
         var now = DateTimeOffset.UtcNow;
-        var today = CourseTime.DayKey(CourseTime.Today());
-        var courses = model.Courses.Where(course => course.Day == today && !course.Signed
-            && model.EffectiveAutoSign(model.PreferenceId(course))
-            && course.Start is not null && course.End is not null).ToList();
-        if (courses.Any(course => now >= course.Start!.Value.AddMinutes(-30) && now < course.End!.Value.AddMinutes(5)))
-            return TimeSpan.FromSeconds(30);
-        var next = courses.Select(course => course.Start!.Value.AddMinutes(-30))
-            .Where(start => start > now).DefaultIfEmpty().Min();
-        if (next == default)
-            return TimeSpan.FromMinutes(15);
+        if (model.NextAutoSignWakeAt is not { } next) return TimeSpan.FromMinutes(15);
+        if (next <= now) return TimeSpan.FromSeconds(30);
         var remaining = next - now;
-        return remaining < TimeSpan.FromSeconds(30) ? TimeSpan.FromSeconds(30)
+        return remaining < TimeSpan.FromSeconds(1) ? TimeSpan.FromSeconds(1)
             : remaining < TimeSpan.FromMinutes(15) ? remaining : TimeSpan.FromMinutes(15);
     }
 
@@ -181,6 +220,9 @@ public sealed class AndroidAutoSignService : Service
     public override void OnDestroy()
     {
         Interlocked.Exchange(ref running, 0);
+        if (observedModel is { } model && observeState is { } changed) model.Changed -= changed;
+        observedModel = null;
+        observeState = null;
         lifetime?.Cancel();
         lifetime?.Dispose();
         lifetime = null;
