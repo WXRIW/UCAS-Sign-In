@@ -98,7 +98,10 @@ final class AppModel: ObservableObject {
     }
     var canChangeAccount: Bool { !isAuthenticating && !isRecovering && signingID == nil }
     @Published var notice: String?
-    @Published var errorMessage: String?
+    @Published var errorMessage: String? {
+        // The settings action belongs to a permission message, not later errors.
+        didSet { notificationSettingsNeeded = false }
+    }
     @Published private(set) var notificationSettingsNeeded = false
     @Published var lastUpdated: Date?
     @Published private var courseUpdates: [String: Date] = [:]
@@ -1584,10 +1587,10 @@ final class AppModel: ObservableObject {
                 var occurrences = autoSignOccurrences
                 for key in occurrences.keys where occurrences[key]?.policy?.notification != nil { occurrences[key]?.policy?.notification = AutoSignNotification.none }
                 _ = savePreferences(rule: rule, occurrences: occurrences, courses: courses)
-                notificationSettingsNeeded = true
                 autoSignNotificationIssue = "系统未允许通知，自动签到结果通知已关闭；可在系统设置中开启后重新选择"
                 autoSignError = autoSignNotificationIssue
                 errorMessage = autoSignError
+                notificationSettingsNeeded = true
             } else {
                 autoSignError = "无法检查自动签到通知权限，请稍后重新选择通知设置"
             }
@@ -1701,7 +1704,6 @@ final class AppModel: ObservableObject {
 
     func dismissError() {
         errorMessage = nil
-        notificationSettingsNeeded = false
     }
 
     private enum NotificationAuthorizationResult: Equatable {
@@ -1737,12 +1739,12 @@ final class AppModel: ObservableObject {
     }
 
     private func presentNotificationPermissionMessage() {
-        notificationSettingsNeeded = true
         #if os(macOS)
         errorMessage = "系统已关闭果壳签到的通知权限，课程提醒设置未更改。请前往系统设置 → 通知 → 果壳签到开启通知。"
         #else
         errorMessage = "系统已关闭果壳签到的通知权限，课程提醒设置未更改。请前往设置 → 果壳签到 → 通知开启权限。"
         #endif
+        notificationSettingsNeeded = true
     }
 
     private var hasEnabledReminders: Bool {
@@ -1759,7 +1761,6 @@ final class AppModel: ObservableObject {
         allowed = allowed || authorization == .ephemeral
         #endif
         guard allowed else {
-            if hasEnabledReminders { notificationSettingsNeeded = true }
             await clearCourseReminderNotifications()
             return
         }

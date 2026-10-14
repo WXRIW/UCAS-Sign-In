@@ -385,6 +385,89 @@ final class AppModelTests: XCTestCase {
         XCTAssertFalse(model.errorMessage?.contains("UNErrorDomain") == true)
     }
 
+    func testBackgroundReminderRefreshWithoutPermissionDoesNotAddSettingsActionToSignFailure() async throws {
+        let notifications = TestNotifications()
+        notifications.status = .denied
+        var account = accountA
+        account.preferences.remindersEnabled = true
+        let store = MemoryAccountStore(accounts: [account], active: account.id)
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("甲课程")), .init(courseResponse("甲课程")), .init(courseResponse("甲课程"))],
+            "clock": [.init(clockResponse)],
+            "sign": [.init(#"{"STATUS":"0","result":{"stuSignStatus":"0"}}"#)]
+        ])
+        let model = makeModel(store, transport, notifications: notifications)
+
+        await model.restore()
+        XCTAssertTrue(model.remindersEnabled)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertFalse(model.notificationSettingsNeeded)
+        await model.refresh()
+        XCTAssertNil(model.errorMessage)
+        XCTAssertFalse(model.notificationSettingsNeeded)
+
+        await model.sign(try XCTUnwrap(model.todayCourses.first))
+
+        XCTAssertEqual(model.errorMessage, "学校未明确确认签到完成，请刷新课程状态后再决定是否重试")
+        XCTAssertFalse(model.notificationSettingsNeeded)
+        XCTAssertTrue(store.vault.accounts[0].preferences.remindersEnabled)
+        XCTAssertEqual(notifications.authorizationCalls, 0)
+        let signs = await transport.count("sign")
+        XCTAssertEqual(signs, 1)
+    }
+
+    func testNotificationPermissionMessageDoesNotAddSettingsActionToLaterSignFailure() async throws {
+        for response in [#"{"STATUS":"0","result":{"stuSignStatus":"0"}}"#, "invalid response"] {
+            let notifications = TestNotifications()
+            notifications.status = .denied
+            let transport = PlannedTransport([
+                "courses:session-a": [.init(courseResponse("甲课程")), .init(courseResponse("甲课程"))],
+                "clock": [.init(clockResponse)],
+                "sign": [.init(response)]
+            ])
+            let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), transport,
+                                  notifications: notifications)
+            await model.restore()
+            await model.setReminders(true)
+            let permissionMessage = try XCTUnwrap(model.errorMessage)
+            XCTAssertTrue(model.notificationSettingsNeeded)
+
+            await model.sign(try XCTUnwrap(model.todayCourses.first))
+
+            let signMessage = try XCTUnwrap(model.errorMessage)
+            XCTAssertNotEqual(signMessage, permissionMessage)
+            if response == "invalid response" {
+                XCTAssertTrue(signMessage.hasPrefix("未能确认签到结果："))
+            } else {
+                XCTAssertEqual(signMessage, "学校未明确确认签到完成，请刷新课程状态后再决定是否重试")
+            }
+            XCTAssertFalse(model.notificationSettingsNeeded)
+            let signs = await transport.count("sign")
+            XCTAssertEqual(signs, 1)
+        }
+    }
+
+    func testClearingNotificationPermissionMessageRemovesSettingsAction() async {
+        let notifications = TestNotifications()
+        notifications.status = .denied
+        let transport = PlannedTransport(["courses:session-a": [.init(courseResponse("甲课程"))]])
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), transport,
+                              notifications: notifications)
+        await model.restore()
+
+        await model.setReminders(true)
+        XCTAssertTrue(model.notificationSettingsNeeded)
+        model.dismissError()
+        XCTAssertNil(model.errorMessage)
+        XCTAssertFalse(model.notificationSettingsNeeded)
+
+        await model.setReminders(true)
+        XCTAssertTrue(model.notificationSettingsNeeded)
+        model.errorMessage = nil
+        XCTAssertNil(model.errorMessage)
+        XCTAssertFalse(model.notificationSettingsNeeded)
+    }
+
     func testLateCourseReminderAuthorizationCannotChangeNewAccount() async {
         let permissionGate = ResponseGate()
         let notifications = TestNotifications()
