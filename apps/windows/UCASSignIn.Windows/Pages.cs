@@ -524,6 +524,10 @@ public sealed partial class MainWindow
         Page.Children.Add(preferences);
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(reminders, "课程提醒");
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(confirmation, "手动签到二次确认");
+        var retention = SettingsLink("记录保留", "\uE81C", EditHistoryRetention,
+            Model.HistoryRetention == new HistoryRetentionSettings() ? "数量和时间均不限" : "已设置自定义保留范围");
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetAutomationId(retention, "settings.historyRetention");
+        Page.Children.Add(SettingsGroup("记录", retention));
         var notifications = Button("系统通知设置", async () => { await Launcher.LaunchUriAsync(new("ms-settings:notifications")); });
         notifications.IsEnabled = true;
         Page.Children.Add(SettingsGroup("通知", SettingRow("Windows 通知", "管理通知权限和显示方式", "\uE7F4", notifications)));

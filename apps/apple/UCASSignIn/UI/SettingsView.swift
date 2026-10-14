@@ -30,6 +30,7 @@ struct SettingsView: View {
     @AppStorage("appearanceMode") private var appearance = AppAppearance.system
     @AppStorage(UpdateCoordinator.automaticChecksKey) private var automaticUpdateChecks = true
     @State private var showNotificationSettingsHelp = false
+    @State private var requestingCloudSync = false
 
     var body: some View {
         ScrollView {
@@ -67,6 +68,7 @@ struct SettingsView: View {
                     .accessibilityHint("在周课表中显示非本周课程。")
                     .padding(.vertical, 18)
                 }
+                iCloudSettings
                 settingsSection("课堂偏好", footer: model.isConnected ? nil : disconnectedClassroomPreferences) {
                     VStack(spacing: 0) {
                         Toggle(isOn: Binding(get: { model.remindersEnabled }, set: { enabled in Task { await model.setReminders(enabled) } })) {
@@ -103,6 +105,13 @@ struct SettingsView: View {
                     }.tint(Palette.green)
                         .disabled(!model.isConnected || !model.canChangeAccount)
                 }
+                settingsSection("记录", footer: "默认不限数量和时间，可分别设置操作记录与自动签到历史的保留范围。") {
+                    NavigationLink {
+                        HistoryRetentionSettingsView()
+                    } label: {
+                        PreferenceNavigationRow(title: "记录保留", symbol: "clock.arrow.circlepath", value: historyRetentionSummary)
+                    }.buttonStyle(.plain).accessibilityIdentifier("settings.historyRetention")
+                }
                 settingsSection("通知", footer: "通知权限、声音与横幅可在系统设置中调整。") {
                     notificationSettingsButton
                 }
@@ -134,6 +143,60 @@ struct SettingsView: View {
             Text("在“系统设置 → 通知”中找到“果壳签到”，即可调整通知、声音与横幅。若列表中尚未出现，请先开启本页的“课程提醒”。")
         }
         #endif
+    }
+
+    private var historyRetentionSummary: String {
+        let settings = model.historyRetention
+        return settings.operations.maxCount == nil && settings.operations.maxAgeDays == nil
+            && settings.automatic.maxCount == nil && settings.automatic.maxAgeDays == nil ? "不限" : "自定义"
+    }
+
+    private var iCloudSettings: some View {
+        settingsSection("iCloud 同步", footer: "同步学校账户、登录会话、已记住的密码、普通偏好与签到记录。自动签到设置和执行状态保留在本机；其他设备的历史仅供查看。关闭后保留本地与云端数据，已存入 iCloud 钥匙串的内容仍由系统管理。") {
+            VStack(spacing: 0) {
+                Toggle(isOn: Binding(get: { model.iCloudSyncEnabled }, set: { model.setICloudSyncEnabled($0) })) {
+                    settingsLabel("iCloud 同步", subtitle: "在你的 Apple 设备之间自动同步", symbol: "icloud")
+                }
+                .toggleStyle(.switch).tint(Palette.green)
+                .disabled(model.isDemo)
+                .accessibilityIdentifier("settings.iCloudSync")
+                .padding(.vertical, 18)
+                PreferenceDivider()
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(model.isDemo ? "演示模式不连接 iCloud" : model.iCloudSyncStatus.message)
+                        .font(PreferenceTypography.body).foregroundStyle(Palette.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                        .accessibilityIdentifier("settings.iCloudStatus")
+                    if let date = model.iCloudLastSyncedAt {
+                        Text("最近成功同步：\(SchoolDate.text(date, "M 月 d 日 HH:mm:ss"))")
+                            .font(PreferenceTypography.detail).foregroundStyle(Palette.secondary)
+                    }
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 18)
+                PreferenceDivider()
+                Button {
+                    requestingCloudSync = true
+                    Task {
+                        await model.synchronizeICloud()
+                        requestingCloudSync = false
+                    }
+                } label: {
+                    HStack(spacing: PreferenceRowLayout.spacing) {
+                        Image(systemName: "arrow.triangle.2.circlepath.icloud")
+                            .font(.system(size: 17)).foregroundStyle(Palette.green)
+                            .frame(width: PreferenceRowLayout.iconWidth).accessibilityHidden(true)
+                        Text("立即同步").font(PreferenceTypography.body).foregroundStyle(Palette.ink)
+                        Spacer(minLength: 12)
+                        if requestingCloudSync || model.iCloudSyncStatus == .syncing {
+                            ProgressView().controlSize(.small)
+                        }
+                    }.padding(.vertical, 18).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(!model.iCloudSyncEnabled || model.isDemo || requestingCloudSync || model.iCloudSyncStatus == .syncing)
+                .accessibilityIdentifier("settings.iCloudSyncNow")
+            }
+        }
     }
 
     private func settingsSection<Content: View>(_ title: String, footer: String? = nil,
@@ -220,5 +283,155 @@ struct SettingsView: View {
                     .foregroundStyle(Palette.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+
+private struct HistoryRetentionSettingsView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var baseline = HistoryRetentionSettings()
+    @State private var operations = HistoryRetentionDraft()
+    @State private var automatic = HistoryRetentionDraft()
+    @State private var loaded = false
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                HistoryRetentionPolicyEditor(title: "签到操作记录", identifier: "operations", draft: $operations)
+                HistoryRetentionPolicyEditor(title: "自动签到历史", identifier: "automatic", draft: $automatic)
+                Text("默认不限数量和时间，保留限制按账户分别计算。保存限制后会清理超额或过期记录，已清理的记录不会恢复。正在执行的记录会保留至结束，防止重复签到的状态不受影响。开启 iCloud 后，保留设置会在 Apple 设备间同步。")
+                    .font(PreferenceTypography.detail).lineSpacing(4).foregroundStyle(Palette.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, PreferenceRowLayout.horizontalPadding)
+            }.appPagePadding().frame(maxWidth: 680).frame(maxWidth: .infinity)
+        }
+        .background(Palette.background)
+        .navigationTitle("记录保留")
+        .appNavigationStyle(inline: true)
+        .accessibilityIdentifier("historyRetention.editor")
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("保存") { save() }
+                    .disabled(proposedSettings == nil || !hasChanges || model.isDemo)
+                    .accessibilityIdentifier("historyRetention.save")
+            }
+        }
+        .onAppear {
+            guard !loaded else { return }
+            loadCurrent()
+            loaded = true
+        }
+        .onChange(of: model.historyRetention) { _ in
+            if !hasChanges { loadCurrent() }
+        }
+    }
+
+    private var proposedSettings: HistoryRetentionSettings? {
+        guard let operations = operations.policy, let automatic = automatic.policy else { return nil }
+        return HistoryRetentionSettings(operations: operations, automatic: automatic)
+    }
+
+    private var hasChanges: Bool {
+        guard let proposedSettings else { return true }
+        return proposedSettings != baseline
+    }
+
+    private func loadCurrent() {
+        baseline = model.historyRetention
+        operations = HistoryRetentionDraft(baseline.operations)
+        automatic = HistoryRetentionDraft(baseline.automatic)
+    }
+
+    private func save() {
+        guard let proposed = proposedSettings else { return }
+        if model.setHistoryRetention(proposed, relativeTo: baseline) { dismiss() }
+    }
+}
+
+private struct HistoryRetentionDraft {
+    var limitsCount = false
+    var count = ""
+    var limitsAge = false
+    var days = ""
+
+    init() {}
+    init(_ policy: HistoryRetentionPolicy) {
+        limitsCount = policy.maxCount != nil
+        count = policy.maxCount.map(String.init) ?? ""
+        limitsAge = policy.maxAgeDays != nil
+        days = policy.maxAgeDays.map(String.init) ?? ""
+    }
+
+    var policy: HistoryRetentionPolicy? {
+        let maxCount = Self.positiveInteger(count)
+        let maxAgeDays = Self.positiveInteger(days)
+        guard !limitsCount || maxCount != nil, !limitsAge || maxAgeDays != nil else { return nil }
+        return HistoryRetentionPolicy(maxCount: limitsCount ? maxCount : nil, maxAgeDays: limitsAge ? maxAgeDays : nil)
+    }
+
+    static func positiveInteger(_ value: String) -> Int? {
+        guard let number = Int(value.trimmingCharacters(in: .whitespacesAndNewlines)), number > 0 else { return nil }
+        return number
+    }
+}
+
+private struct HistoryRetentionPolicyEditor: View {
+    let title: String
+    let identifier: String
+    @Binding var draft: HistoryRetentionDraft
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title).font(PreferenceTypography.section).foregroundStyle(Palette.secondary)
+                .padding(.horizontal, PreferenceRowLayout.horizontalPadding)
+                .accessibilityAddTraits(.isHeader)
+            VStack(spacing: 0) {
+                Toggle(isOn: $draft.limitsCount) {
+                    Label("限制数量", systemImage: "number")
+                        .font(PreferenceTypography.body).foregroundStyle(Palette.ink)
+                }.toggleStyle(.switch).padding(.vertical, 18)
+                    .accessibilityIdentifier("historyRetention.\(identifier).limitsCount")
+                if draft.limitsCount {
+                    PreferenceDivider()
+                    numberInput("最多保留", text: $draft.count, unit: "条", placeholder: "例如 1000", field: "count")
+                }
+                PreferenceDivider()
+                Toggle(isOn: $draft.limitsAge) {
+                    Label("限制保留时间", systemImage: "calendar")
+                        .font(PreferenceTypography.body).foregroundStyle(Palette.ink)
+                }.toggleStyle(.switch).padding(.vertical, 18)
+                    .accessibilityIdentifier("historyRetention.\(identifier).limitsAge")
+                if draft.limitsAge {
+                    PreferenceDivider()
+                    numberInput("保留最近", text: $draft.days, unit: "天", placeholder: "例如 365", field: "days")
+                }
+            }.tint(Palette.green)
+                .padding(.horizontal, PreferenceRowLayout.horizontalPadding).cardSurface()
+        }
+    }
+
+    private func numberInput(_ title: String, text: Binding<String>, unit: String, placeholder: String, field: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                Text(title).font(PreferenceTypography.body).foregroundStyle(Palette.ink)
+                Spacer(minLength: 12)
+                TextField(placeholder, text: text)
+                    .textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.trailing)
+                    #if os(iOS)
+                    .keyboardType(.numberPad)
+                    #endif
+                    .frame(maxWidth: 150)
+                    .accessibilityLabel("\(self.title)\(title)\(unit)")
+                    .accessibilityIdentifier("historyRetention.\(identifier).\(field)")
+                Text(unit).font(PreferenceTypography.detail).foregroundStyle(Palette.secondary)
+            }
+            if HistoryRetentionDraft.positiveInteger(text.wrappedValue) == nil {
+                Text("请输入大于 0 的整数")
+                    .font(PreferenceTypography.detail).foregroundStyle(.red)
+                    .accessibilityIdentifier("historyRetention.\(identifier).\(field).error")
+            }
+        }.padding(.vertical, 18)
     }
 }

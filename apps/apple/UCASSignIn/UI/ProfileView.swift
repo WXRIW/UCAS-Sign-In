@@ -28,7 +28,7 @@ struct ProfileView: View {
                                 .disabled(!model.canChangeAccount)
                                 .accessibilityIdentifier("accounts.manage")
                             PreferenceDivider()
-                            Button { path.append(.records) } label: { PreferenceNavigationRow(title: "本机签到记录", symbol: "clock.arrow.circlepath") }.buttonStyle(.plain)
+                            Button { path.append(.records) } label: { PreferenceNavigationRow(title: recordsTitle, symbol: "clock.arrow.circlepath") }.buttonStyle(.plain)
                                 .accessibilityIdentifier("profile.records")
                         }.padding(.horizontal, PreferenceRowLayout.horizontalPadding).cardSurface()
                         VStack(spacing: 0) {
@@ -104,6 +104,10 @@ struct ProfileView: View {
         }
     }
     private var canConnectAccount: Bool { model.isDemo || !model.isConnected }
+
+    private var recordsTitle: String {
+        model.iCloudSyncEnabled && !model.isDemo ? "签到记录" : "本机签到记录"
+    }
 
     private var accountDisplayName: String {
         guard accountDetailsHidden, model.isConnected else { return model.accountName }
@@ -208,7 +212,7 @@ struct ProfileView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Palette.background)
         .accessibilityIdentifier("records.content")
-        .navigationTitle(model.isDemo ? "演示签到记录" : "本机签到记录")
+        .navigationTitle(model.isDemo ? "演示签到记录" : recordsTitle)
         .appNavigationStyle(inline: true)
     }
 }

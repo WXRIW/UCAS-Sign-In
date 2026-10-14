@@ -242,6 +242,56 @@ final class AppModelTests: XCTestCase {
         XCTAssertTrue(model.canChangeAccount)
     }
 
+    func testExpiredRenewedAttendanceSessionRequiresLoginAndRevokesTheRenewedToken() async throws {
+        let renewed = SchoolSession(userId: "user-a", sessionId: "renewed-a", studentNo: accountA.id, name: "林清")
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("甲课程"))],
+            "attendance:session-a": [.init(expiredResponse)],
+            "login": [.init(loginResponse(renewed))],
+            "attendance:renewed-a": [.init(expiredResponse)]
+        ])
+        let cloudState = MemoryCloudSyncStateStore()
+        let coordinator = CloudSyncCoordinator(client: MemoryCloudSyncClient(), credentials: MemorySyncCredentialStore(),
+            store: cloudState, deviceID: "attendance-recovery-test", deviceName: "Test Mac", enabled: false)
+        defaults.set(false, forKey: "iCloudSyncEnabled")
+        let store = MemoryAccountStore(accounts: [rememberedAccountA], active: accountA.id)
+        let model = makeModel(store, transport, cloudSync: coordinator)
+        await model.restore()
+        model.setICloudSyncEnabled(true)
+        await model.synchronizeICloud()
+        // Keep the bound replica, without a background exchange racing the expiry assertions.
+        model.setICloudSyncEnabled(false)
+        defer { coordinator.setEnabled(false) }
+        let identity = try XCTUnwrap(coordinator.state.identity)
+        let course = try XCTUnwrap(model.todayCourses.first)
+
+        await model.refreshAttendance(for: "stable-course", force: true)
+
+        XCTAssertEqual(model.session, renewed)
+        XCTAssertTrue(try XCTUnwrap(model.accounts.first).requiresLogin)
+        XCTAssertTrue(try XCTUnwrap(store.vault.accounts.first).requiresLogin)
+        XCTAssertEqual(model.loginRequest?.accountID, accountA.id)
+        XCTAssertTrue(model.showLogin)
+        XCTAssertEqual(model.notice, "登录已过期，请重新登录账户。")
+        XCTAssertFalse(model.canSign(course))
+        let logins = await transport.count("login")
+        let originalReads = await transport.count("attendance:session-a")
+        let renewedReads = await transport.count("attendance:renewed-a")
+        let signs = await transport.count("sign")
+        XCTAssertEqual(logins, 1)
+        XCTAssertEqual(originalReads, 1)
+        XCTAssertEqual(renewedReads, 1)
+        XCTAssertEqual(signs, 0)
+
+        let persisted = try XCTUnwrap(cloudState.load()?.replicas[identity])
+        let revocations = try persisted.records.values.filter { $0.kind == .invalidSession }.map {
+            try SyncCodec.decode(SyncCredentialReference.self, from: XCTUnwrap($0.resolvedCandidate?.value))
+        }
+        let renewedFingerprint = try coordinator.sessionFingerprint(renewed, incarnation: coordinator.incarnation(for: accountA.id))
+        XCTAssertEqual(revocations.map(\.fingerprint), [renewedFingerprint],
+                       "Revoke the token that failed the retry, rather than the superseded original token")
+    }
+
     func testFailedRecoveryDoesNotLoopAndRequiresOriginalAccountLogin() async {
         let transport = PlannedTransport([
             "courses:session-a": [.init(expiredResponse)],
@@ -2387,11 +2437,12 @@ final class AppModelTests: XCTestCase {
     }
 
     private func makeModel(_ store: MemoryAccountStore, _ transport: PlannedTransport,
-                           notifications: TestNotifications? = nil, widgets: TestWidgets? = nil, clock: TestClock? = nil) -> AppModel {
+                           notifications: TestNotifications? = nil, widgets: TestWidgets? = nil, clock: TestClock? = nil,
+                           cloudSync: CloudSyncCoordinator? = nil) -> AppModel {
         let now = CourseTime.parse(day: SchoolDate.key(.now), time: "08:30")!
         let localClock = clock ?? TestClock(now)
         let model = AppModel(service: QingxinService(transport: transport, now: { localClock.get() }, monotonicNow: { localClock.elapsed() }), accountStore: store, defaults: defaults,
-                             notifications: notifications ?? TestNotifications(), widgets: widgets ?? TestWidgets())
+                             notifications: notifications ?? TestNotifications(), widgets: widgets ?? TestWidgets(), cloudSync: cloudSync)
         model.attendanceNow = { localClock.get() }
         model.autoSignMonotonicNow = { localClock.elapsed() }
         return model
@@ -2485,6 +2536,7 @@ private final class TestNotifications: NotificationClient {
         await authorizationGate?.wait()
         if let authorizationError { throw authorizationError }
         if authorizationFails { throw TestFailure.expected }
+        status = .authorized
         return true
     }
     func add(_ request: UNNotificationRequest) async throws {

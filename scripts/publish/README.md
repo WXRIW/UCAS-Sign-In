@@ -62,6 +62,8 @@ pwsh scripts/signing/windows/new-certificate.ps1
 
 统一发布默认生成未签名 iOS IPA，以及临时签名的 macOS 通用包，不要求开发者证书。若需要真机开发签名，可配置被 Git 忽略的 `apps/apple/Config/Signing.local.xcconfig`。
 
+普通和最新 SDK 的未签名 iOS 打包均固定使用发布 App Group `group.cn.ucas.signin`，本机内部测试可以在本地配置中使用其他组。正式签名打包使用其指定的签名配置。
+
 ## 3. 正式构建
 
 ### 在 macOS 生成 Apple 产物
@@ -76,6 +78,54 @@ scripts/publish/all-on-macos.sh
 - macOS arm64 + x86_64 通用 ZIP，以及安装到 `/Applications` 的 PKG；包内 App 使用临时签名。
 
 也可只执行 `scripts/publish/platforms/apple.sh`，结果相同。
+
+### Apple 正式签名、iCloud 与公证
+
+在普通入口增加 `--signed`，或使用 `latest-apple-sdk.sh --signed`，启用独立的 archive/export 通道。默认无签名行为和原隐私扫描保持不变。正式通道的配置不完整或签名/公证失败会直接失败，不生成无签名替代包。
+
+在开发者门户创建同一 Team 下的 iOS App/Widget、Mac App/Widget 标识和匹配的发行描述文件；两主 App 共享 CloudKit 容器及 iCloud 钥匙串访问组，Widget 保留 App Groups。生产 schema 的配置与部署见 [Apple 开发说明](../../apps/apple/README.md#开发者容器与-production-schema)。Mac 需 Developer ID Application 与 Developer ID Installer 两个证书及私钥；iOS 需 Apple Distribution 证书及私钥。
+
+把 `scripts/signing/apple/` 的 `Archive.xcconfig.example`、`IOSExportOptions.plist.example`、`MacExportOptions.plist.example` 复制到 `.local/apple-signing/` 并修改：四个 profile 名称、已注册 Bundle IDs、App Groups、Team ID。示例 iOS 使用 `release-testing`，仅安装到 profile 已登记设备；App Store 发行改用 `app-store-connect` 并换相应 profiles。两个 ExportOptions 都必须指定 `iCloudContainerEnvironment=Production`、`destination=export` 及相同 `teamID`；Mac method 必须为 `developer-id`。
+
+先把证书/私钥与四份 profiles 导入本机，并通过 `xcrun notarytool store-credentials` 配置钥匙串中的公证凭据。随后在仓库根目录运行（替换示例值）：
+
+```sh
+export UCAS_APPLE_TEAM_ID=YOURTEAMID
+export UCAS_APPLE_ARCHIVE_XCCONFIG="$PWD/.local/apple-signing/Archive.xcconfig"
+export UCAS_IOS_EXPORT_OPTIONS="$PWD/.local/apple-signing/IOSExportOptions.plist"
+export UCAS_MACOS_EXPORT_OPTIONS="$PWD/.local/apple-signing/MacExportOptions.plist"
+export UCAS_MACOS_INSTALLER_IDENTITY='Developer ID Installer: Your Organization (YOURTEAMID)'
+export UCAS_NOTARY_PROFILE=your-notary-profile
+scripts/publish/all-on-macos.sh --signed
+# 或以本机最新已安装的 Xcode / SDK 构建同一签名通道：
+bash scripts/publish/latest-apple-sdk.sh --signed
+```
+
+`UCAS_NOTARY_KEYCHAIN` 可指定保存公证凭据的钥匙串路径。脚本不会自动更新开发者门户、上传 App Store 或创建 GitHub Release。它依次 archive/export 两个平台、检查代码签名与嵌入 profiles、核对两个主 App 的 Production 容器和共享钥匙串组、对 Mac App 公证和 staple，再制作与公证签名 PKG。`Archive.xcconfig` 示例按 target 选择 profile，不要把单个 `PROVISIONING_PROFILE_SPECIFIER` 强制套给 App 和 Widget。
+
+输出文件为 `*-ios-signed.ipa`、`*-macos-universal-signed.zip`、`*-macos-universal-signed.pkg` 及 SHA-256；最新 SDK 版本增加 `latest-sdk` 标记。两平台验证和公证全部成功后才将产物放入发布目录。签名日志仅保存在本地 `logs/*-signed.log`，可能包含签名身份，不应公开上传。签名包允许经过验证的 App/Widget 固定位置包含 provisioning profile，其他私钥、本机配置和私人路径仍被隐私扫描拒绝。
+
+正式验收必须使用有效签名设备与同一 Apple 账户检查双向资料/凭据恢复、离线冲突自动合并、密码清除及删除传播；无签名构建通过不代表 iCloud 权限或 Production schema 可用。
+
+#### 受保护的手动 Apple 签名 CI
+
+`.github/workflows/package-apple-signed.yml` 仅响应 `main` 分支的 `workflow_dispatch`，不处理 PR、push 或计划任务，也不创建 Release。仓库管理员需先创建 **`apple-release` Environment**，设置 required reviewers 与只允许 `main` 的 deployment branch 规则；这些远端规则不是工作流文件自动创建的。
+
+在该 Environment 中配置以下 Secrets（不要放入源码）：
+
+| Secret | 内容 |
+| --- | --- |
+| `APPLE_TEAM_ID` | Team ID |
+| `APPLE_INSTALLER_IDENTITY` | 完整 Developer ID Installer 证书名称 |
+| `APPLE_CERTIFICATES_P12_BASE64` | 含 Apple Distribution、Developer ID Application、Developer ID Installer 证书及私钥的加密 P12 的单行 Base64 |
+| `APPLE_CERTIFICATES_PASSWORD` | P12 导出密码 |
+| `APPLE_PROFILES_ZIP_BASE64` | 四个 target 发行 profiles 的 ZIP，单行 Base64；仅包含 `.mobileprovision` / `.provisionprofile` |
+| `APPLE_ARCHIVE_XCCONFIG_BASE64` | 填好的 `Archive.xcconfig` 的单行 Base64 |
+| `APPLE_IOS_EXPORT_OPTIONS_BASE64` / `APPLE_MACOS_EXPORT_OPTIONS_BASE64` | 两个已配置 ExportOptions 的单行 Base64 |
+| `APPLE_NOTARY_KEY_BASE64` | App Store Connect team API 私钥 `.p8` 的单行 Base64 |
+| `APPLE_NOTARY_KEY_ID` / `APPLE_NOTARY_ISSUER_ID` | 对应 API key ID 和 issuer ID |
+
+选择 `stable` 使用 Xcode 16.4，`latest` 使用 runner 上已安装的最高 Xcode。CI 建立临时钥匙串并安装 profiles，结束后恢复钥匙串搜索列表、删除本次安装的 profiles 和敏感文件；不会输出证书、密码或私钥内容。Artifacts 仅包含验证过的安装包和校验文件，不上传签名日志。现有 PR 工作流仍运行无签名构建。尚未配置 Secrets、环境保护或 Production schema 时，手动签名运行不会被视为已完成验收。
 
 ### 使用最新 Apple SDK 构建兼容性包
 

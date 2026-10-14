@@ -87,6 +87,7 @@ struct RootView: View {
                 await model.foregroundTick()
                 #endif
                 await model.maintainScheduleCache()
+                await model.iCloudForegroundTick()
                 do { try await Task.sleep(for: .seconds(30)) } catch { break }
             }
         }

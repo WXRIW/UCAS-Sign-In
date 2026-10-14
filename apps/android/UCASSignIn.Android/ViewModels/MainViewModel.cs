@@ -20,6 +20,7 @@ public sealed class MainViewModel
     public Course?[] Details { get; } = new Course?[4];
     public CatalogCourse?[] CatalogDetails { get; } = new CatalogCourse?[4];
     public string CourseSearch { get; set; } = "";
+    public HistoryRetentionDraft? HistoryRetentionDraft { get; set; }
     public Dictionary<string, int> ScrollPositions { get; } = [];
     public bool HideIdentity
     {

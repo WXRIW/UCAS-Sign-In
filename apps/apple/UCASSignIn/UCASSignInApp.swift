@@ -2,12 +2,25 @@ import SwiftUI
 
 @main
 struct UCASSignInApp: App {
-    @StateObject private var model = AppLaunchEnvironment.makeModel()
+    #if os(macOS)
+    @NSApplicationDelegateAdaptor(ICloudNotificationAppDelegate.self) private var notificationDelegate
+    #else
+    @UIApplicationDelegateAdaptor(ICloudNotificationAppDelegate.self) private var notificationDelegate
+    #endif
+    @StateObject private var model: AppModel
     @StateObject private var updates = UpdateCoordinator(defaults: AppLaunchEnvironment.defaults)
     #if os(macOS)
     @StateObject private var automaticAttendance = MacAutomaticAttendanceRunner()
     #endif
     @State private var selection = 0
+
+    init() {
+        let model = AppLaunchEnvironment.makeModel()
+        _model = StateObject(wrappedValue: model)
+        // Bind before any scene task runs, including a silent push cold launch.
+        ICloudNotificationBridge.shared.configure(model: model)
+    }
+
     var body: some Scene {
         #if os(macOS)
         Window("果壳签到", id: "main") {

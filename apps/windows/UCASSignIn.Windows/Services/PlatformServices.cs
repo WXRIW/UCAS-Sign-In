@@ -42,14 +42,15 @@ internal static class WindowsAutoSignNotifications
     internal static ToastNotification Create(AutoSignResultNotification result, AutoSignExecution? execution, string? accountId)
     {
         var builder = new ToastContentBuilder();
-        // The execution key preserves the original account/day/lesson identity,
-        // even after the lesson has left the current seven-day plan.
-        if (execution is not null && execution.Key == result.Key && accountId is not null)
+        // The live result retains the original account/day/lesson identity even
+        // when display-history retention has already discarded its execution.
+        if (!string.IsNullOrWhiteSpace(accountId) && (execution is null || execution.Key == result.Key))
         {
-            var identity = execution.Key.Split('|');
+            var identity = result.Key.Split('|');
             if (identity.Length == 3 && identity[0] == accountId
-                && CourseTime.NormalizeDay(identity[1]) is { } day && !string.IsNullOrWhiteSpace(identity[2])
-                && (execution.ClassStartAt is null || CourseTime.DayKey(DateOnly.FromDateTime(
+                && CourseTime.NormalizeDay(identity[1]) is { } day && day == identity[1]
+                && !string.IsNullOrWhiteSpace(identity[2]) && identity[2] == identity[2].Trim()
+                && (execution?.ClassStartAt is null || CourseTime.DayKey(DateOnly.FromDateTime(
                     execution.ClassStartAt.Value.ToOffset(CourseTime.ShanghaiOffset).DateTime)) == day))
                 builder.AddArgument("account", accountId).AddArgument("course", identity[2]).AddArgument("day", day);
         }

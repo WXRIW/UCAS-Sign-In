@@ -1,8 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-# Self-contained: uses Xcode and system tools, without invoking other scripts
-# or reading a separate export-options plist.
+# The default unsigned path uses Xcode/system tools without export options.
+# Explicit --signed delegates to the distribution archive/export pipeline.
 repo_root="$(cd "$(dirname "$0")/../../.." && pwd)"
 apple_root="$repo_root/apps/apple"
 . "$repo_root/scripts/lib/release-version.sh"
@@ -17,14 +17,18 @@ macos_name="UCAS-SignIn-$release_version-macos-universal.zip"
 macos_pkg_name="UCAS-SignIn-$release_version-macos-universal.pkg"
 
 if [[ "$#" -eq 1 && ( "$1" == --help || "$1" == -h ) ]]; then
-    printf '用法：%s\n独立生成未签名的 iOS IPA，以及包含临时签名 App 的 macOS 通用 ZIP 和 PKG。\n' "$0"
+    printf '用法：%s [--signed]\n独立生成未签名的 iOS IPA，以及包含临时签名 App 的 macOS 通用 ZIP 和 PKG。\n' "$0"
+    printf '添加 --signed 使用正式签名、公证和 iCloud 权限；配置见 scripts/publish/README.md。\n'
     printf '无需开发者证书；IPA 需要由签名或侧载工具签名后安装。\n'
     printf '所有产物保存在 %s。\n' "$release_root"
     printf '构建日志保存在 logs，校验文件保存在 sha256。\n'
     exit 0
 fi
+if [[ "$#" -eq 1 && "$1" == --signed ]]; then
+    exec bash "$repo_root/scripts/signing/apple/package-signed.sh"
+fi
 if [[ "$#" -ne 0 ]]; then
-    printf '用法：%s [--help]\n' "$0" >&2
+    printf '用法：%s [--signed | --help]\n' "$0" >&2
     exit 2
 fi
 
@@ -188,7 +192,7 @@ export_ios() {
     local binary signature_info
     local binary_count=0
 
-    # Build device products without using the project's signing configuration.
+    # Keep the public IPA's group stable despite local internal signing overrides.
     xcodebuild -project "$apple_root/UCASSignIn.xcodeproj" \
         -scheme UCASSignIn -configuration Release -sdk iphoneos \
         -destination 'generic/platform=iOS' \
@@ -196,6 +200,7 @@ export_ios() {
         ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
         CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
         CODE_SIGN_IDENTITY= CODE_SIGN_ENTITLEMENTS= DEVELOPMENT_TEAM= \
+        APP_GROUP_IDENTIFIER=group.cn.ucas.signin \
         "${privacy_build_args[@]}" build
 
     mkdir -p "$payload_dir"

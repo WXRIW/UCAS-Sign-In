@@ -10,12 +10,15 @@
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$(MARKETING_VERSION)</string>
     <key>CFBundleVersion</key><string>$(CURRENT_PROJECT_VERSION)</string>
+    <key>CloudContainerIdentifier</key><string>$(ICLOUD_CONTAINER_IDENTIFIER)</string>
+    <key>CloudKeychainAccessGroup</key><string>$(ICLOUD_KEYCHAIN_ACCESS_GROUP)</string>
     <key>AppGroupIdentifier</key><string>$(APP_GROUP_IDENTIFIER)</string>
     <key>CFBundleURLTypes</key><array><dict>
         <key>CFBundleURLName</key><string>cn.ucas.signin</string>
         <key>CFBundleURLSchemes</key><array><string>ucas-signin</string></array>
     </dict></array>
     <key>LSRequiresIPhoneOS</key><true/>
+    <key>UIBackgroundModes</key><array><string>remote-notification</string></array>
     <key>UIApplicationSceneManifest</key><dict><key>UIApplicationSupportsMultipleScenes</key><false/></dict>
     <key>UILaunchScreen</key><dict/>
     <key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string></array>

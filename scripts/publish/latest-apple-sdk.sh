@@ -5,13 +5,18 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$script_dir/../.." && pwd)"
 
 usage() {
-    printf '用法：%s [--xcode /Applications/Xcode.app]\n' "$0"
+    printf '用法：%s [--xcode /Applications/Xcode.app] [--signed]\n' "$0"
     printf '使用本机最高版本 Xcode/Apple SDK，同时保留工程配置的最低系统版本。\n'
 }
 
+signed_mode=0
 xcode_app="${UCAS_XCODE_APP:-}"
 while [[ "$#" -gt 0 ]]; do
     case "$1" in
+        --signed)
+            signed_mode=1
+            shift
+            ;;
         --xcode)
             if [[ "$#" -lt 2 ]]; then usage >&2; exit 2; fi
             xcode_app="$2"
@@ -84,8 +89,13 @@ printf 'iOS SDK: %s (deployment target: project default)\n' "$ios_sdk_version"
 printf 'macOS SDK: %s (deployment target: project default)\n' "$macos_sdk_version"
 printf 'Swift compiler %s / language mode %s\n' "$swift_compiler_version" "$swift_language_version"
 
-UCAS_LATEST_SWIFT_LANGUAGE_VERSION="$swift_language_version" \
-    bash "$script_dir/platforms/apple-latest-sdk.sh"
+if [[ "$signed_mode" == 1 ]]; then
+    UCAS_LATEST_SWIFT_LANGUAGE_VERSION="$swift_language_version" \
+        bash "$script_dir/platforms/apple-latest-sdk.sh" --signed
+else
+    UCAS_LATEST_SWIFT_LANGUAGE_VERSION="$swift_language_version" \
+        bash "$script_dir/platforms/apple-latest-sdk.sh"
+fi
 
 . "$repo_root/scripts/lib/release-version.sh"
 release_root="$repo_root/artifacts/publish/$release_version"
@@ -98,6 +108,7 @@ cleanup() {
 trap cleanup EXIT
 {
     printf 'mode=latest-sdk\n'
+    printf 'signed=%s\n' "$signed_mode"
     printf 'xcode_version=%s\n' "$xcode_version"
     printf 'xcode_build=%s\n' "$xcode_build"
     printf 'swift_compiler_version=%s\n' "$swift_compiler_version"

@@ -89,7 +89,9 @@ public sealed class AndroidAutoSignService : Service
         {
             await model.InitializeAsync();
             cancellationToken.ThrowIfCancellationRequested();
-            var previous = AutoSignNotificationSnapshot.Capture(model.Generation, model.ActiveAccount?.Id, model.AutoSignHistory);
+            // Begin with a fresh live-result baseline. Display-history cleanup must
+            // not remove results completed during the next background evaluation.
+            model.ConsumeAutoSignResults();
             var wake = new AutoSignWakeSignal<string>(AutoSignRuntime.WakeState(model, model.NextAutoSignWakeAt));
             changed = () => wake.Update(AutoSignRuntime.WakeState(model, model.NextAutoSignWakeAt));
             observedModel = model;
@@ -106,24 +108,17 @@ public sealed class AndroidAutoSignService : Service
                 epoch = model.Generation;
                 accountId = model.ActiveAccount?.Id;
                 var iterationState = wake.State;
-                // Account activation loads its existing journal while busy. Establish
-                // the new baseline only after that load, so history is never replayed.
+                // Account activation loads its existing journal while busy. Live
+                // result queues reset with the account and never replay that history.
                 if (model.IsBusy || model.IsRecovering || model.IsRefreshing)
                 {
                     await wake.WaitAsync(iterationState, TimeSpan.FromSeconds(30), cancellationToken);
                     continue;
                 }
-                if (previous.Generation != epoch || previous.AccountId != accountId)
-                    previous = AutoSignNotificationSnapshot.Capture(epoch, accountId, model.AutoSignHistory);
                 await model.TickAsync(allowBackground: true);
                 cancellationToken.ThrowIfCancellationRequested();
                 if (epoch != model.Generation || accountId != model.ActiveAccount?.Id) continue;
-                var policies = model.AutoSignPlans.ToDictionary(x => x.Key, x => x.Policy.Notification);
-                var results = AutoSignRuntime.Results(previous, epoch, accountId, model.AutoSignHistory,
-                    item => policies.GetValueOrDefault(item.Key,
-                        model.Preferences.AutoSignOccurrences.GetValueOrDefault(item.Key)?.Policy?.Notification
-                            ?? item.NotificationMode ?? model.Preferences.AutoSignRule.Notification));
-                previous = AutoSignNotificationSnapshot.Capture(epoch, accountId, model.AutoSignHistory);
+                var results = model.ConsumeAutoSignResults();
                 foreach (var result in results)
                 {
                     if (cancellationToken.IsCancellationRequested || epoch != model.Generation || accountId != model.ActiveAccount?.Id) break;

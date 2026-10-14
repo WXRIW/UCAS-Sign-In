@@ -2,10 +2,21 @@
 DEVELOPMENT_TEAM =
 
 // Use unique identifiers registered under your team.
-// The widget and UI tests derive their bundle IDs from this app identifier.
+// Keep this base stable for the Mac app, CloudKit container and shared keychain.
 APP_BUNDLE_IDENTIFIER = com.example.guokesignin
+// The iOS app, widget and UI tests derive their bundle IDs from this value.
+IOS_APP_BUNDLE_IDENTIFIER = $(APP_BUNDLE_IDENTIFIER)
 APP_GROUP_IDENTIFIER = group.com.example.guokesignin
 
 // macOS App Group is $(TeamIdentifierPrefix)$(MAC_APP_GROUP_SUFFIX).
 // Mac bundle identifiers derive .mac, .mac.widget and .mac.uitests automatically.
 MAC_APP_GROUP_SUFFIX = com.example.guokesignin
+
+// Enable CloudKit and Push Notifications for BOTH main App IDs and associate the same container.
+// Regenerate their provisioning profiles after enabling Push Notifications.
+// Widgets need only their existing App Groups capability.
+ICLOUD_CONTAINER_IDENTIFIER = iCloud.$(APP_BUNDLE_IDENTIFIER)
+ICLOUD_KEYCHAIN_ACCESS_GROUP = $(AppIdentifierPrefix)$(APP_BUNDLE_IDENTIFIER).icloud-credentials
+// Development for local builds; signed release scripts use Production.
+ICLOUD_CONTAINER_ENVIRONMENT = Development
+APS_ENVIRONMENT = development

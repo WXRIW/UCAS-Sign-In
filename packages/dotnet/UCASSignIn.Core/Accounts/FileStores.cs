@@ -63,8 +63,26 @@ public static class AtomicFile
     public static void WriteJson<T>(string path, T value) => Write(path, JsonSerializer.SerializeToUtf8Bytes(value));
     public static T? ReadJson<T>(string path) => File.Exists(path) ? JsonSerializer.Deserialize<T>(File.ReadAllBytes(path)) : default;
 }
-public sealed class FileDataStore(string root) : ICourseStore, IRecordStore, ICourseCatalogStore, IScheduleStore, IAttendanceStateStore, IAutoSignStore
+public sealed class FileDataStore(string root) : ICourseStore, IRecordStore, ICourseCatalogStore, IScheduleStore, IAttendanceStateStore, IAutoSignStore, IHistoryRetentionStore
 {
+    public Task<HistoryRetentionSettings> LoadHistoryRetentionAsync(CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        var path = Path.Combine(root, "history-retention.json");
+        var settings = File.Exists(path)
+            ? AtomicFile.ReadJson<HistoryRetentionSettings>(path) ?? throw new IOException("记录保留设置无法读取，原始数据已保留")
+            : new HistoryRetentionSettings();
+        settings.Validate();
+        return Task.FromResult(settings);
+    }
+    public async Task SaveHistoryRetentionAsync(HistoryRetentionSettings settings, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        settings.Validate();
+        _ = await LoadHistoryRetentionAsync(ct); // Never overwrite corrupt existing settings.
+        ct.ThrowIfCancellationRequested();
+        AtomicFile.WriteJson(Path.Combine(root, "history-retention.json"), settings);
+    }
     static T? ReadCache<T>(string path)
     {
         try { return AtomicFile.ReadJson<T>(path); }
@@ -84,7 +102,7 @@ public sealed class FileDataStore(string root) : ICourseStore, IRecordStore, ICo
     public Task SaveAsync(string accountId, IReadOnlyList<AttendanceRecord> records, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
-        AtomicFile.WriteJson(Path.Combine(AccountPath(accountId), "records.json"), records.Take(100).ToArray());
+        AtomicFile.WriteJson(Path.Combine(AccountPath(accountId), "records.json"), records);
         return Task.CompletedTask;
     }
     public Task RemoveAsync(string accountId, CancellationToken ct = default)

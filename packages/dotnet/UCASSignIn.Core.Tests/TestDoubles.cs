@@ -55,8 +55,20 @@ public sealed class MemoryAccounts : IAccountStore
         return Task.CompletedTask;
     }
 }
-public class MemoryData : ICourseStore, IRecordStore, ICourseCatalogStore, IAttendanceStateStore, IAutoSignStore
+public class MemoryData : ICourseStore, IRecordStore, ICourseCatalogStore, IAttendanceStateStore, IAutoSignStore, IHistoryRetentionStore
 {
+    public HistoryRetentionSettings HistoryRetention = new();
+    public bool FailHistoryRetentionWrites;
+    public int HistoryRetentionWrites;
+    public Task<HistoryRetentionSettings> LoadHistoryRetentionAsync(CancellationToken ct = default) => Task.FromResult(HistoryRetention);
+    public Task SaveHistoryRetentionAsync(HistoryRetentionSettings settings, CancellationToken ct = default)
+    {
+        settings.Validate();
+        if (FailHistoryRetentionWrites) throw new IOException("simulated retention setting write failure");
+        HistoryRetention = settings;
+        HistoryRetentionWrites++;
+        return Task.CompletedTask;
+    }
     public bool FailCacheWrites;
     public Dictionary<string, AttendanceEvidenceCache> States = [];
     public Dictionary<string, AutoSignLedger> AutoSign = [];

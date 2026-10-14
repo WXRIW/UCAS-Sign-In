@@ -47,14 +47,14 @@ struct LoginView: View {
                                 .background(Palette.surface, in: RoundedRectangle(cornerRadius: 14))
                         }
                         Toggle(isOn: $remember) {
-                            Text("在此设备记住密码").font(.system(size: 12)).foregroundStyle(Palette.secondary)
+                            Text(model.iCloudSyncEnabled ? "记住密码并通过 iCloud 同步" : "在此设备记住密码").font(.system(size: 12)).foregroundStyle(Palette.secondary)
                         }.toggleStyle(.switch).tint(Palette.green)
                     }.disabled(submitting)
                     if let loginError { Text(loginError).font(.system(size: 12)).foregroundStyle(.red).accessibilityLabel("登录失败：\(loginError)") }
                     PrimaryButton(title: "登录并同步课程", loading: submitting, action: submit)
                         .disabled(username.trimmingCharacters(in: .whitespaces).isEmpty || password.isEmpty || submitting || !model.canChangeAccount)
                         .opacity(username.isEmpty || password.isEmpty ? 0.5 : 1)
-                    Label("此账户的登录会话会保存在 Apple Keychain；勾选后也会保存密码，供登录过期时自动恢复。", systemImage: "lock.shield")
+                    Label(model.iCloudSyncEnabled ? "会话与勾选保存的密码由 iCloud 钥匙串保护，可在你的 Apple 设备间同步，用于登录恢复。账户资料和普通偏好也将同步，自动签到设置保留在本机。" : "此账户的登录会话会保存在本机 Apple Keychain；勾选后也会保存密码，供登录过期时自动恢复。", systemImage: "lock.shield")
                         .font(.system(size: 11)).foregroundStyle(Palette.secondary).lineSpacing(4)
                     Button { model.enterDemo() } label: {
                         Text("先体验演示模式").font(.system(size: 13, weight: .medium)).frame(maxWidth: .infinity)
@@ -73,7 +73,7 @@ struct LoginView: View {
                 guard !attemptedAutofill else { return }
                 attemptedAutofill = true
                 if let accountID = request.accountID {
-                    username = model.accounts.first(where: { $0.id == accountID })?.loginUsername ?? accountID
+                    username = model.loginUsername(for: accountID)
                 }
                 if request.accountID != nil, let credentials = model.savedCredentials(for: request.accountID) {
                     username = credentials.username; password = credentials.password; remember = true

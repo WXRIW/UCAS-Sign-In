@@ -35,7 +35,8 @@ public sealed partial class AccountCoordinator
         : "运行中";
 
     public IReadOnlyList<AutoSignExecution> AutoSignHistory => autoSignExecutions.Values
-        .Where(x => x.HasExecutionActivity).OrderByDescending(x => x.Events.LastOrDefault()?.At)
+        .Where(x => x.HasExecutionActivity && !x.HistoryDiscarded).OrderByDescending(x => x.HistoryDate)
+        .ThenBy(x => x.Key, StringComparer.Ordinal)
         .Select(x =>
         {
             var course = Courses.Concat(snapshots.Values.SelectMany(s => s.Courses))
@@ -328,13 +329,12 @@ public sealed partial class AccountCoordinator
         try
         {
             if (epoch != Generation || ActiveAccount?.Id != account.Id) return false;
-            var cutoff = clock.GetUtcNow().AddDays(-90);
-            foreach (var key in autoSignExecutions.Where(x => x.Value.Events.LastOrDefault()?.At < cutoff)
-                .Select(x => x.Key).ToArray()) autoSignExecutions.Remove(key);
             var items = new Dictionary<string, AutoSignExecution>(autoSignExecutions);
-            var ledger = new AutoSignLedger(AutoSignLedger.CurrentVersion, account.Id, items);
+            var source = new AutoSignLedger(AutoSignLedger.CurrentVersion, account.Id, items);
+            var ledger = source.RetainHistory(HistoryRetention.Automatic, clock.GetUtcNow());
             ledger.Validate(account.Id);
             await autoSignStore.SaveAutoSignAsync(ledger, lifetime.Token);
+            if (epoch == Generation) ApplySavedHistoryCompaction(source, ledger);
             return true;
         }
         catch (Exception e) when (e is not OperationCanceledException)
@@ -352,9 +352,15 @@ public sealed partial class AccountCoordinator
         execution = autoSignExecutions.GetValueOrDefault(execution.Key) ?? execution;
         if (execution.Stage is AutoSignStage.Skipped or AutoSignStage.Signed && stage != execution.Stage) return false;
         if (execution.Stage == stage && execution.Message == message && execution.NextAt == nextAt) return true;
-        autoSignExecutions[execution.Key] = execution.Transition(stage, clock.GetUtcNow(), message, nextAt);
+        var at = clock.GetUtcNow();
+        var next = execution.Transition(stage, at, message, nextAt);
+        autoSignExecutions[execution.Key] = next;
         var saved = await SaveAutoSignAsync(epoch);
-        if (saved) Notify();
+        if (saved && epoch == Generation)
+        {
+            QueueAutoSignResult(next, new(at, stage, message, AutoSignExecution.TransitionKind(stage)));
+            Notify();
+        }
         return saved;
     }
 
@@ -364,7 +370,7 @@ public sealed partial class AccountCoordinator
         var changed = false;
         foreach (var plan in AutoSignPlans)
         {
-            if (!autoSignExecutions.TryGetValue(plan.Key, out var execution) || !execution.HasExecutionActivity) continue;
+            if (!autoSignExecutions.TryGetValue(plan.Key, out var execution) || !execution.HasExecutionActivity || execution.HistoryDiscarded) continue;
             if (before.TryGetValue(plan.Key, out var previous)
                 && previous.PlannedAt == plan.PlannedAt && previous.Policy == plan.Policy
                 && previous.Stage == plan.Stage && previous.Source == plan.Source) continue;

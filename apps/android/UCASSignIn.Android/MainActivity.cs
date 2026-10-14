@@ -213,7 +213,10 @@ public sealed class MainActivity : AppCompatActivity
                 page?.CloseSchedulePickers();
                 if (!Model.IsBusy)
                     ActiveDialog?.Dismiss();
-                Array.Clear(Vm.Routes);
+                // Record retention is an app-level draft, independent of the
+                // account/session generation that invalidates classroom pages.
+                for (var index = 0; index < Vm.Routes.Length; index++)
+                    if (Vm.Routes[index] != MainPageFragment.HistoryRetentionRoute) Vm.Routes[index] = null;
                 Array.Clear(Vm.Details);
                 Array.Clear(Vm.CatalogDetails);
                 Vm.ScrollPositions.Clear(); Vm.CourseSearch = "";

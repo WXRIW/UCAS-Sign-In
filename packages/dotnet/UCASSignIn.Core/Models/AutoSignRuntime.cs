@@ -50,7 +50,7 @@ public static class AutoSignRuntime
             // This fingerprint only signals changes; the actual wait keeps full precision.
             NextWakeAt = nextWakeAt is { } wake
                 ? (long?)((wake.UtcTicks + TimeSpan.TicksPerSecond / 2) / TimeSpan.TicksPerSecond) : null,
-            Running = preferences.AutoSignIsRunning,
+            Running = preferences.AutoSignIsRunning, model.AutoSignResultRevision,
             preferences.AutoSignPausedUntil, preferences.AutoSignRule,
             Courses = preferences.Courses.Where(x => x.Value.AutoSign != PreferenceOverride.Inherit
                 || x.Value.SignInDisabled || x.Value.AutoSignRule?.HasValues == true || x.Value.AutoSignEnabledSince is not null)

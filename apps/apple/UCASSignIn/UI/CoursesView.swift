@@ -227,12 +227,13 @@ struct CatalogCourseDetailView: View {
     @Environment(\.scenePhase) private var scenePhase
     let course: CatalogCourse
     @State private var preferences = CoursePreferences()
-    @State private var preferencesLoaded = false
+    @State private var preferencesBaseline = CoursePreferences()
+    @State private var preferenceSaveTask: Task<Void, Never>?
 
     init(course: CatalogCourse, initialPreferences: CoursePreferences) {
         self.course = course
         _preferences = State(initialValue: initialPreferences)
-        _preferencesLoaded = State(initialValue: true)
+        _preferencesBaseline = State(initialValue: initialPreferences)
     }
 
     var body: some View {
@@ -248,7 +249,7 @@ struct CatalogCourseDetailView: View {
                     courseSection("签到") { signInSettingsContent }
                     courseSection("学校考勤", footer: attendanceFooter) { attendanceContent }
                 }
-                courseSection("本机操作记录", footer: "这些记录来自本机操作，不代表学校最终考勤状态。") {
+                courseSection("签到操作记录", footer: "包含本机操作和 iCloud 同步记录，不代表学校最终考勤状态。") {
                     localRecordsContent
                 }
             }
@@ -260,6 +261,7 @@ struct CatalogCourseDetailView: View {
         .background(Palette.background)
         .navigationTitle(course.name).appNavigationStyle(inline: true)
         .onAppear {
+            refreshPreferences()
             #if os(macOS)
             model.visibleCatalogCourseId = course.id.isEmpty ? nil : course.id
             #endif
@@ -269,21 +271,40 @@ struct CatalogCourseDetailView: View {
             if model.visibleCatalogCourseId == course.id { model.visibleCatalogCourseId = nil }
             #endif
         }
-        .onChange(of: preferences) { value in
-            guard preferencesLoaded, !course.id.isEmpty else { return }
-            Task {
-                if !(await model.setCoursePreferences(value, for: course.id)), preferences == value {
-                    preferencesLoaded = false
-                    preferences = model.coursePreferences(for: course.id)
-                    preferencesLoaded = true
-                }
-            }
+        .onChange(of: model.syncedPreferencesRevision) { _ in
+            refreshPreferences()
         }
         .task { await model.refreshAttendance(for: course.id) }
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
             await model.refreshAttendance(for: course.id)
         }
+    }
+
+    private var editablePreferences: Binding<CoursePreferences> {
+        Binding(get: { preferences }, set: { proposed in
+            let previous = preferencesBaseline
+            let patch = CoursePreferencesPatch(previous: previous, proposed: proposed)
+            guard !patch.isEmpty, !course.id.isEmpty else { return }
+            preferences = proposed
+            preferencesBaseline = proposed
+            let previousSave = preferenceSaveTask
+            let generation = model.accountGeneration
+            preferenceSaveTask = Task { @MainActor in
+                // Preserve quick edits to different fields even when a notification check suspends a save.
+                await previousSave?.value
+                guard !Task.isCancelled, model.accountGeneration == generation else { return }
+                _ = await model.setCoursePreferences(proposed, for: course.id, relativeTo: previous)
+                guard !Task.isCancelled, model.accountGeneration == generation else { return }
+                if preferences == proposed { refreshPreferences() }
+            }
+        })
+    }
+
+    private func refreshPreferences() {
+        let latest = model.coursePreferences(for: course.id)
+        preferencesBaseline = latest
+        preferences = latest
     }
 
     private func courseSection<Content: View>(_ title: String, footer: String? = nil,
@@ -325,7 +346,7 @@ struct CatalogCourseDetailView: View {
     private var notificationSettingsContent: some View {
         VStack(spacing: 0) {
             preferencePicker("课前提醒", symbol: "bell", description: "在上课前发送本地通知",
-                             selection: $preferences.reminders, inherited: model.remindersEnabled)
+                             selection: editablePreferences.reminders, inherited: model.remindersEnabled)
             if resolvedReminders {
                 PreferenceDivider()
                 reminderTimeRow
@@ -339,20 +360,20 @@ struct CatalogCourseDetailView: View {
             if !preferences.signInDisabled {
                 preferencePicker("手动签到二次确认", symbol: "questionmark.circle",
                                  description: "提交前弹窗确认，避免误触签到",
-                                 selection: $preferences.confirmation, inherited: model.confirmationEnabled)
+                                 selection: editablePreferences.confirmation, inherited: model.confirmationEnabled)
                 PreferenceDivider()
                 preferencePicker("自动签到", symbol: "checkmark.circle", description: automaticSignDescription,
-                                 selection: $preferences.autoSign, inherited: model.autoSignEnabled)
+                                 selection: editablePreferences.autoSign, inherited: model.autoSignEnabled)
                 PreferenceDivider()
                 NavigationLink {
-                    AutoSignCourseRulesView(preferences: $preferences)
+                    AutoSignCourseRulesView(preferences: editablePreferences)
                 } label: {
                     PreferenceNavigationRow(title: "自动签到规则", symbol: "slider.horizontal.3",
                                             value: preferences.autoSignRule == nil ? "跟随账户" : "课程设置")
                 }.buttonStyle(.plain).accessibilityIdentifier("coursePreference.autoSignRules")
                 PreferenceDivider()
             }
-            Toggle(isOn: $preferences.signInDisabled) {
+            Toggle(isOn: editablePreferences.signInDisabled) {
                 HStack(spacing: PreferenceRowLayout.spacing) {
                     Image(systemName: "xmark.circle")
                         .font(.system(size: 17)).foregroundStyle(Palette.green)
@@ -389,7 +410,7 @@ struct CatalogCourseDetailView: View {
                     .font(PreferenceTypography.detail).foregroundStyle(Palette.secondary)
             }
             Spacer(minLength: 12)
-            Picker("提醒时间", selection: $preferences.reminderLeadMinutes) {
+            Picker("提醒时间", selection: editablePreferences.reminderLeadMinutes) {
                 Text("跟随全局").tag(Int?.none)
                 ForEach(AccountPreferences.validLeadTimes, id: \.self) { Text("\($0) 分钟").tag(Int?.some($0)) }
             }
@@ -474,7 +495,7 @@ struct CatalogCourseDetailView: View {
         }.prefix(20)
         return VStack(spacing: 0) {
             if records.isEmpty {
-                Text("本机尚无这门课程的签到操作记录")
+                Text("尚无这门课程的签到操作记录")
                     .font(PreferenceTypography.detail)
                     .foregroundStyle(Palette.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)

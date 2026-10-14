@@ -187,6 +187,7 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
         }
         if (RetainCourseSchedule()) return;
         if (RetainCatalogDetail()) return;
+        if (RetainHistoryRetentionEditor()) return;
         if (activeScene is not null) activeScene.ContentVersion++;
         body!.RemoveAllViews();
         if (activeScene is not null) activeScene.LargeTitle = null;
@@ -209,6 +210,7 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
         if (Route is not null)
         {
             if (Route == "settings") SettingsPage();
+            else if (Route == HistoryRetentionRoute) HistoryRetentionPage();
             else if (AutoSignPage(Route)) { }
             else InformationPage();
             return;
@@ -613,6 +615,11 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
         classroom.AddView(SettingsRule());
         classroom.AddView(AutoSignLink(Resource.Drawable.ic_clock, "自动签到", "autosign", Model.AutoSignSettingsStatus));
         Add(MaterialSettingsSection("课堂偏好", classroom));
+        var retention = Model.HistoryRetention;
+        var retentionLimited = retention.Operations.MaxCount is not null || retention.Operations.MaxAgeDays is not null
+            || retention.Automatic.MaxCount is not null || retention.Automatic.MaxAgeDays is not null;
+        Add(MaterialSettingsSection("数据", AutoSignLink(Resource.Drawable.ic_history, "记录保留", HistoryRetentionRoute,
+            retentionLimited ? "已设置限制" : "不限", "分别设置操作记录与自动签到执行记录的保留数量和天数")));
         Add(MaterialSettingsSection("通知", Button("系统通知设置", OpenNotificationSettings)));
         var automaticUpdates = new MaterialSwitch(Ui)
         {
@@ -660,6 +667,8 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
     }
     Task Navigate(string route)
     {
+        if (route == HistoryRetentionRoute && Route != HistoryRetentionRoute)
+            Host.Vm.HistoryRetentionDraft = new(Model.HistoryRetention);
         Route = route;
         Render();
         scroll?.ScrollTo(0, 0);
@@ -669,6 +678,12 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
     {
         if (Route is null)
             return false;
+        if (Route == HistoryRetentionRoute)
+        {
+            if (Host.Vm.HistoryRetentionDraft?.IsSaving == true) return true;
+            Host.Vm.HistoryRetentionDraft = null;
+            DetachHistoryRetentionEditor();
+        }
         Route = ParentRoute(Route);
         CurrentDetail = null;
         if (Route != "catalog-detail") CurrentCatalogDetail = null;

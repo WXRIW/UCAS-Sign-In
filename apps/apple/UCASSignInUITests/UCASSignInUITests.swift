@@ -451,9 +451,9 @@ final class UCASSignInUITests: XCTestCase {
 
         selectTab("账户", in: app)
         tapAfterScrolling(app.buttons["profile.records"], in: app)
-        XCTAssertTrue(app.navigationBars["本机签到记录"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["签到记录"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["还没有签到记录"].exists)
-        returnToParent(from: "本机签到记录", to: "账户", in: app)
+        returnToParent(from: "签到记录", to: "账户", in: app)
     }
 
     @MainActor
@@ -1050,7 +1050,7 @@ final class UCASSignInUITests: XCTestCase {
     @MainActor
     private func launchDemo() -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments = ["--demo", "-scheduleViewMode", "day", "-appearanceMode", "light", "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
+        app.launchArguments = ["--demo", "-scheduleViewMode", "day", "-appearanceMode", "light", "-iCloudSyncEnabled", "YES", "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
         app.launch()
         XCTAssertTrue(app.staticTexts["演示模式"].waitForExistence(timeout: 10))
         return app

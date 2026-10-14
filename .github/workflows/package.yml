@@ -163,6 +163,9 @@ jobs:
       - name: Select Xcode 16.4
         run: sudo xcode-select --switch /Applications/Xcode_16.4.app/Contents/Developer
 
+      - name: Verify Apple signing guards and privacy checks
+        run: python3 -B -m unittest discover -s scripts/signing/apple
+
       - name: Package Apple apps
         run: scripts/publish/all-on-macos.sh
 

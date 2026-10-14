@@ -1,0 +1,18 @@
+// Copy outside the tracked tree and pass UCAS_APPLE_ARCHIVE_XCCONFIG.
+// Each value must match registered identifiers and installed distribution profiles.
+CODE_SIGN_STYLE = Manual
+APP_BUNDLE_IDENTIFIER = com.example.guokesignin
+APP_GROUP_IDENTIFIER = group.com.example.guokesignin
+MAC_APP_GROUP_SUFFIX = com.example.guokesignin
+ICLOUD_CONTAINER_IDENTIFIER = iCloud.$(APP_BUNDLE_IDENTIFIER)
+ICLOUD_KEYCHAIN_ACCESS_GROUP = $(AppIdentifierPrefix)$(APP_BUNDLE_IDENTIFIER).icloud-credentials
+ICLOUD_CONTAINER_ENVIRONMENT = Production
+// Both main App IDs/profiles must authorize Push Notifications; widgets do not need it.
+APS_ENVIRONMENT = production
+CODE_SIGN_IDENTITY[sdk=iphoneos*] = Apple Distribution
+CODE_SIGN_IDENTITY[sdk=macosx*] = Developer ID Application
+PROVISIONING_PROFILE_SPECIFIER = $(UCAS_PROFILE_$(TARGET_NAME))
+UCAS_PROFILE_UCASSignIn = Your iOS distribution app profile name
+UCAS_PROFILE_UCASSignInWidget = Your iOS distribution widget profile name
+UCAS_PROFILE_UCASSignInMac = Your Developer ID app profile name
+UCAS_PROFILE_UCASSignInMacWidget = Your Developer ID widget profile name

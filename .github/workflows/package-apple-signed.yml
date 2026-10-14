@@ -1,0 +1,66 @@
+name: Package signed Apple apps
+
+on:
+  workflow_dispatch:
+    inputs:
+      toolchain:
+        description: Installed Xcode toolchain
+        type: choice
+        options:
+          - stable
+          - latest
+        default: stable
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apple-signed-release
+  cancel-in-progress: false
+
+jobs:
+  signed:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: macos-15
+    timeout-minutes: 120
+    # Configure required reviewers and main-only deployment branches in repository settings.
+    environment: apple-release
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Select stable Xcode
+        if: inputs.toolchain == 'stable'
+        run: sudo xcode-select --switch /Applications/Xcode_16.4.app/Contents/Developer
+      - name: Import temporary signing assets, archive, export and notarize
+        shell: bash
+        env:
+          UCAS_SIGNED_TOOLCHAIN: ${{ inputs.toolchain }}
+          UCAS_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          UCAS_MACOS_INSTALLER_IDENTITY: ${{ secrets.APPLE_INSTALLER_IDENTITY }}
+          APPLE_CERTIFICATES_P12_BASE64: ${{ secrets.APPLE_CERTIFICATES_P12_BASE64 }}
+          APPLE_CERTIFICATES_PASSWORD: ${{ secrets.APPLE_CERTIFICATES_PASSWORD }}
+          APPLE_PROFILES_ZIP_BASE64: ${{ secrets.APPLE_PROFILES_ZIP_BASE64 }}
+          APPLE_ARCHIVE_XCCONFIG_BASE64: ${{ secrets.APPLE_ARCHIVE_XCCONFIG_BASE64 }}
+          APPLE_IOS_EXPORT_OPTIONS_BASE64: ${{ secrets.APPLE_IOS_EXPORT_OPTIONS_BASE64 }}
+          APPLE_MACOS_EXPORT_OPTIONS_BASE64: ${{ secrets.APPLE_MACOS_EXPORT_OPTIONS_BASE64 }}
+          APPLE_NOTARY_KEY_BASE64: ${{ secrets.APPLE_NOTARY_KEY_BASE64 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: bash scripts/signing/apple/ci-release.sh
+      - name: Upload verified distribution packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: UCAS-SignIn-Apple-Signed
+          path: |
+            artifacts/publish/*/*-signed.ipa
+            artifacts/publish/*/*-signed.zip
+            artifacts/publish/*/*-signed.pkg
+            artifacts/publish/*/sha256/*-signed.*.sha256
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+      - name: Remove private build logs
+        if: always()
+        shell: bash
+        run: rm -f artifacts/publish/*/logs/*-signed.log

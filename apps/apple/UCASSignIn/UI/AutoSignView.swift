@@ -61,10 +61,10 @@ struct AutoSignView: View {
                             PreferenceNavigationRow(title: "未来七天计划", symbol: "calendar.badge.clock")
                         }.buttonStyle(.plain).accessibilityIdentifier("autoSign.plans")
                     }
-                    if !model.autoSignHistory.isEmpty {
+                    if !model.displayAutoSignHistory.isEmpty {
                         PreferenceDivider()
                         NavigationLink { AutoSignHistoryView() } label: {
-                            PreferenceNavigationRow(title: "执行记录", symbol: "clock", value: "\(model.autoSignHistory.count) 条")
+                            PreferenceNavigationRow(title: "执行记录", symbol: "clock", value: "\(model.displayAutoSignHistory.count) 条")
                         }.buttonStyle(.plain).accessibilityIdentifier("autoSign.history")
                     }
                 }
@@ -78,6 +78,7 @@ struct AutoSignView: View {
                     }.padding(.vertical, 18)
                 }
             }
+            AutoSignFootnote("自动签到开关、规则、暂停和单次设置仅在这台设备生效。")
             if model.autoSignRunning { AutoSignFootnote(AutoSignCopy.runtimeExplanation) }
         }
     }
@@ -351,14 +352,14 @@ private struct AutoSignHistoryView: View {
     @EnvironmentObject private var model: AppModel
     var body: some View {
         AutoSignPage(title: "执行记录", identifier: "autoSign.historyList") {
-            if model.autoSignHistory.isEmpty {
+            if model.displayAutoSignHistory.isEmpty {
                 AutoSignEmptyState("暂无执行记录", subtitle: "课次实际开始处理后，才会在这里显示。", symbol: "clock")
             } else {
-                AutoSignSection("最近 90 天") {
+                AutoSignSection("执行历史") {
                     VStack(spacing: 0) {
-                        ForEach(Array(model.autoSignHistory.enumerated()), id: \.element.key) { index, execution in
+                        ForEach(Array(model.displayAutoSignHistory.enumerated()), id: \.element.id) { index, execution in
                             if index > 0 { PreferenceDivider() }
-                            NavigationLink { AutoSignExecutionDetail(key: execution.key) } label: {
+                            NavigationLink { AutoSignExecutionDetail(key: execution.occurrenceKey, historyID: execution.id) } label: {
                                 HStack(spacing: PreferenceRowLayout.spacing) {
                                     Image(systemName: "clock").font(.system(size: 17)).foregroundStyle(Palette.green)
                                         .frame(width: PreferenceRowLayout.iconWidth).accessibilityHidden(true)
@@ -369,6 +370,8 @@ private struct AutoSignHistoryView: View {
                                                 .font(PreferenceTypography.detail).foregroundStyle(Palette.secondary)
                                         }
                                         Text(execution.message).font(PreferenceTypography.detail).foregroundStyle(Palette.secondary)
+                                        Text("来源：\(execution.sourceDeviceName)\(execution.sourceDeviceID == model.cloudDeviceID ? " · 本机" : "")")
+                                            .font(PreferenceTypography.caption).foregroundStyle(Palette.secondary)
                                     }.fixedSize(horizontal: false, vertical: true)
                                     Spacer(minLength: 8)
                                     Image(systemName: "chevron.right").font(.system(size: 11, weight: .medium))
@@ -379,22 +382,26 @@ private struct AutoSignHistoryView: View {
                     }
                 }
             }
-            AutoSignFootnote("这些记录来自本机自动执行过程，不代表学校最终考勤。学校考勤可在课程详情中查看。")
+            AutoSignFootnote("这些记录包含本机与 iCloud 同步的执行历史，不代表学校最终考勤。其他设备的记录仅供查看，不会触发本机签到或重试；学校考勤可在课程详情中查看。")
         }
     }
-    private func courseName(_ value: AutoSignExecution) -> String {
-        value.courseName ?? model.autoSignPlans.first { $0.key == value.key }?.course.name ?? "课程签到"
+    private func courseName(_ value: SyncAutoSignHistory) -> String {
+        value.courseName ?? model.autoSignPlans.first { $0.key == value.occurrenceKey }?.course.name ?? "课程签到"
     }
 }
 
 private struct AutoSignExecutionDetail: View {
     @EnvironmentObject private var model: AppModel
     let key: String
-    private var execution: AutoSignExecution? { model.autoSignExecutions[key] }
+    var historyID: String? = nil
+    private var execution: SyncAutoSignHistory? {
+        if let historyID { return model.displayAutoSignHistory.first { $0.id == historyID } }
+        return model.displayAutoSignHistory.first { $0.occurrenceKey == key && $0.sourceDeviceID == model.cloudDeviceID }
+    }
 
     var body: some View {
         AutoSignPage(title: "执行详情", identifier: "autoSign.executionDetail") {
-            if let execution, execution.hasExecutionActivity {
+            if let execution {
                 AutoSignSection("结果") {
                     VStack(alignment: .leading, spacing: 10) {
                         Text(execution.courseName ?? model.autoSignPlans.first { $0.key == key }?.course.name ?? "课程签到")
@@ -405,6 +412,8 @@ private struct AutoSignExecutionDetail: View {
                         }
                         Text(execution.message).font(PreferenceTypography.detail).foregroundStyle(Palette.ink)
                         Text("已自动提交 \(execution.submissions) 次")
+                            .font(PreferenceTypography.detail).foregroundStyle(Palette.secondary)
+                        Text("来源：\(execution.sourceDeviceName)\(execution.sourceDeviceID == model.cloudDeviceID ? " · 本机" : "")")
                             .font(PreferenceTypography.detail).foregroundStyle(Palette.secondary)
                     }.fixedSize(horizontal: false, vertical: true).padding(.vertical, 18)
                 }

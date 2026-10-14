@@ -1,0 +1,6 @@
+// Pass with -xcconfig for the App Store Connect / TestFlight iOS identity.
+// Local internal builds keep cn.ucas.signin; Mac and shared cloud names stay unchanged.
+IOS_APP_BUNDLE_IDENTIFIER = cn.ucas.signin.ios
+APP_GROUP_IDENTIFIER = group.cn.ucas.signin.ios
+ICLOUD_CONTAINER_ENVIRONMENT = Production
+APS_ENVIRONMENT = production

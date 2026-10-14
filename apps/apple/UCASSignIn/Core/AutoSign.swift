@@ -99,10 +99,12 @@ public struct AutoSignExecution: Codable, Equatable, Sendable {
     public var courseName: String?
     public var classStartAt: Date?
     public var classEndAt: Date?
+    /// Device-local marker: display content was cleared, but execution evidence remains.
+    public var historyDiscarded: Bool?
     public init(key: String, now: Date) {
         self.key = key; submissions = 0; stage = .planned; lastSubmissionAt = nil; lastSchoolSubmissionAt = nil; nextAt = nil; nextSchoolVerificationAt = nil
         firstNegativeAt = nil; firstSchoolNegativeAt = nil; negativeReads = 0; message = "等待计划时间"
-        events = []; startedAt = nil; courseName = nil; classStartAt = nil; classEndAt = nil
+        events = []; startedAt = nil; courseName = nil; classStartAt = nil; classEndAt = nil; historyDiscarded = nil
     }
     public var hasExecutionActivity: Bool {
         startedAt != nil || submissions > 0 || lastSubmissionAt != nil || lastSchoolSubmissionAt != nil
@@ -115,14 +117,24 @@ public struct AutoSignExecution: Codable, Equatable, Sendable {
     }
     public mutating func begin(course: Course, now: Date) {
         guard !hasExecutionActivity else { return }
-        startedAt = now; courseName = course.name; classStartAt = course.startDate; classEndAt = course.endDate
+        startedAt = now; courseName = historyDiscarded == true ? nil : course.name
+        classStartAt = course.startDate; classEndAt = course.endDate
         transition(.checking, now: now, message: "开始核实学校签到状态", kind: .executionStarted)
+    }
+    /// Clear display details without forgetting submissions, verification evidence or cancellation.
+    public mutating func discardHistory() {
+        events = []
+        courseName = nil
+        message = "历史已清理"
+        historyDiscarded = true
     }
     public mutating func transition(_ stage: AutoSignStage, now: Date, message: String, nextAt: Date? = nil,
                                     kind: AutoSignEventKind? = nil) {
-        guard self.stage != stage || self.message != message || self.nextAt != nextAt else { return }
-        self.stage = stage; self.message = message; self.nextAt = nextAt
+        let storedMessage = historyDiscarded == true ? "历史已清理" : message
+        guard self.stage != stage || self.message != storedMessage || self.nextAt != nextAt else { return }
+        self.stage = stage; self.message = storedMessage; self.nextAt = nextAt
         if [.signed, .missed, .skipped].contains(stage) { nextSchoolVerificationAt = nil }
+        guard historyDiscarded != true else { return }
         let resolved = kind ?? {
             switch stage {
             case .checking, .verifying, .retryWaiting: AutoSignEventKind.verification
@@ -277,12 +289,9 @@ public final class UserDefaultsAutoSignStore: AutoSignStore {
     }
     public func save(accountID: String, executions: [String: AutoSignExecution]) throws {
         try AutoSignLedger(accountID: accountID, executions: executions).validate(accountID: accountID)
-        let cutoff = Date().addingTimeInterval(-90 * 86_400)
-        let retained = executions.filter {
-            let last = $0.value.events.last?.at ?? $0.value.lastSubmissionAt ?? $0.value.startedAt ?? $0.value.firstNegativeAt
-            return last.map { $0 >= cutoff } ?? true
-        }
-        defaults.set(try JSONEncoder().encode(AutoSignLedger(accountID: accountID, executions: retained)), forKey: key(accountID))
+        // This ledger is execution evidence, including unfinished work and duplicate guards.
+        // Display-history retention must never discard its records.
+        defaults.set(try JSONEncoder().encode(AutoSignLedger(accountID: accountID, executions: executions)), forKey: key(accountID))
     }
     public func remove(accountID: String) { defaults.removeObject(forKey: key(accountID)) }
 }
@@ -313,13 +322,9 @@ public final class FileAutoSignStore: AutoSignStore {
     }
     public func save(accountID: String, executions: [String: AutoSignExecution]) throws {
         try AutoSignLedger(accountID: accountID, executions: executions).validate(accountID: accountID)
-        let cutoff = Date().addingTimeInterval(-90 * 86_400)
-        let retained = executions.filter {
-            let last = $0.value.events.last?.at ?? $0.value.lastSubmissionAt ?? $0.value.startedAt ?? $0.value.firstNegativeAt
-            return last.map { $0 >= cutoff } ?? true
-        }
+        // Retain the complete execution ledger independently of display-history limits.
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try JSONEncoder().encode(AutoSignLedger(accountID: accountID, executions: retained))
+        try JSONEncoder().encode(AutoSignLedger(accountID: accountID, executions: executions))
             .write(to: url(accountID), options: .atomic)
     }
     public func remove(accountID: String) { try? FileManager.default.removeItem(at: url(accountID)) }

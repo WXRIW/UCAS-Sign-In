@@ -113,17 +113,17 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
             return;
         vault = await accounts.LoadAsync();
         vault.Validate();
+        await LoadHistoryRetentionAsync();
         loaded = true;
         if (ActiveAccount is { } a)
         {
             await ActivateAsync(a);
         }
-        else
-            Notify();
+        else { await MaintainHistoryRetentionIfDueAsync(true); Notify(); }
     }
     public async Task InitializeDemoAsync()
     {
-        if (!loaded) { vault = await accounts.LoadAsync(); vault.Validate(); loaded = true; }
+        if (!loaded) { vault = await accounts.LoadAsync(); vault.Validate(); await LoadHistoryRetentionAsync(); loaded = true; }
         await EnterDemoAsync();
     }
     async Task CommitAsync(AccountVault next)
@@ -195,12 +195,15 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
         versions.Clear();
         Courses = [];
         Records = [];
+        loadedHistoryAccountId = null;
         LastSyncAt = null;
         SelectedDate = CourseTime.Today(clock);
         school.ClearClock();
         Message = null;
         SignInError = null;
         autoSignExecutions.Clear(); autoSignQueryStartedAt.Clear();
+        pendingAutoSignResults.Clear();
+        AutoSignResultRevision = 0;
         autoSignQuerySchoolStartedAt.Clear(); autoSignQuerySchoolVerifiedAt.Clear(); autoSignVerifiedQuerySequence.Clear();
         autoSignSchoolOffset = null; autoSignSchoolSample = null; autoSignActivationMarks.Clear();
         autoSignClockRetryTimestamp = null;
@@ -221,6 +224,9 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
         await LoadAttendanceStateAsync(a.Id, epoch);
         if (epoch != Generation) return;
         await LoadAutoSignAsync(a.Id, epoch);
+        if (epoch != Generation) return;
+        loadedHistoryAccountId = a.Id;
+        await MaintainActivatedHistoryAsync(epoch);
         if (epoch != Generation) return;
         await UnifyAutoSignPreferencesAsync(epoch);
         if (epoch != Generation) return;
@@ -544,7 +550,7 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
                 authorizeAt: automatically ? ReserveAutomaticSubmission : null);
             if (epoch != Generation)
                 return;
-            Records = new[] { new AttendanceRecord(course.Name, clock.GetUtcNow(), result.Message, result.Outcome == SignOutcome.Signed, course.CourseId, course.Id) }.Concat(Records).Take(100).ToList();
+            Records = new[] { new AttendanceRecord(course.Name, clock.GetUtcNow(), result.Message, result.Outcome == SignOutcome.Signed, course.CourseId, course.Id) }.Concat(Records).ToList();
             if (result.Outcome == SignOutcome.Signed)
             {
                 invalidatedDays.Add(course.Day);
@@ -565,7 +571,7 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
                         ? null : clock.GetUtcNow().AddMinutes(AutoSignPlans.FirstOrDefault(x => x.Key == attemptKey)?.Policy.RetryMinutes ?? Preferences.AutoSignRule.RetryMinutes));
             if (!IsDemo)
             {
-                try { await records.SaveAsync(id, Records, lifetime.Token); }
+                try { await SaveOperationRecordsAsync(id, epoch); }
                 catch (Exception e) { if (epoch == Generation) Message = "操作记录保存失败：" + e.Message; }
             }
             if (!IsDemo)
@@ -611,6 +617,7 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
     async Task TickCoreAsync(bool allowBackground)
     {
         bool Active() => IsForeground || allowBackground;
+        if (Active()) await MaintainHistoryRetentionIfDueAsync();
         if (IsDemo && IsForeground)
         {
             var demoToday = CourseTime.Today(clock);

@@ -54,16 +54,29 @@ public sealed record AutoSignExecution(string Key, int Submissions, AutoSignStag
     DateTimeOffset? LastVerificationAttemptAt = null, AutoSignNotification? NotificationMode = null,
     DateTimeOffset? LastSchoolSubmissionAt = null, DateTimeOffset? FirstSchoolNegativeAt = null,
     DateTimeOffset? LastSchoolVerificationAttemptAt = null,
-    long? LastSubmissionQuerySequence = null, long? LastNegativeQuerySequence = null)
+    long? LastSubmissionQuerySequence = null, long? LastNegativeQuerySequence = null, bool HistoryDiscarded = false)
 {
     [System.Text.Json.Serialization.JsonIgnore]
-    public bool HasExecutionActivity => StartedAt is not null || Submissions > 0 || LastSubmissionAt is not null
+    public bool HasExecutionActivity => HistoryDiscarded || StartedAt is not null || Submissions > 0 || LastSubmissionAt is not null
         || NegativeReads > 0 || FirstNegativeAt is not null || LastVerificationAttemptAt is not null
         || LastSchoolSubmissionAt is not null || FirstSchoolNegativeAt is not null
         || Events.Any(e => !e.IsPreview && !e.IsManualTakeover)
         || Stage is not (AutoSignStage.Planned or AutoSignStage.Skipped);
     [System.Text.Json.Serialization.JsonIgnore]
     public bool IsPurePreview => !HasExecutionActivity && Events.Count > 0 && Events.All(e => e.IsPreview);
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool IsHistoryProtected => Stage is not (AutoSignStage.Signed or AutoSignStage.Missed or AutoSignStage.Skipped);
+    [System.Text.Json.Serialization.JsonIgnore]
+    public DateTimeOffset HistoryDate => Events.LastOrDefault()?.At
+        ?? new[] { LastSubmissionAt, LastVerificationAttemptAt, FirstNegativeAt, StartedAt, ClassEndAt }.Max()
+        ?? DateTimeOffset.MinValue;
+    public AutoSignExecution DiscardHistory() => !HistoryDiscarded && IsHistoryProtected
+        || HistoryDiscarded && Events.Count == 0 && Message == "" && CourseName is null
+            && ClassStartAt is null && ClassEndAt is null && NotificationMode is null ? this : this with
+    {
+        HistoryDiscarded = true, Events = [], Message = "", CourseName = null,
+        ClassStartAt = null, ClassEndAt = null, NotificationMode = null
+    };
     public static AutoSignExecution New(string key, DateTimeOffset now) => new(key, 0, AutoSignStage.Planned,
         null, null, null, 0, "等待计划时间", []);
     public AutoSignExecution Begin(Course course, DateTimeOffset now, AutoSignNotification? notificationMode = null) => HasExecutionActivity ? this : this with
@@ -76,16 +89,17 @@ public sealed record AutoSignExecution(string Key, int Submissions, AutoSignStag
     public AutoSignExecution Transition(AutoSignStage stage, DateTimeOffset now, string message,
         DateTimeOffset? nextAt = null, AutoSignEventKind? kind = null) => this with
         {
-            Stage = stage, NextAt = nextAt, Message = message,
-            Events = [.. Events, new(now, stage, message, kind ?? (stage switch
-            {
-                AutoSignStage.Submitting => AutoSignEventKind.Submission,
-                AutoSignStage.Checking or AutoSignStage.Verifying or AutoSignStage.RetryWaiting => AutoSignEventKind.Verification,
-                AutoSignStage.Missed => AutoSignEventKind.Missed,
-                AutoSignStage.Skipped => AutoSignEventKind.ManualTakeover,
-                _ => AutoSignEventKind.Result
-            }))]
+            Stage = stage, NextAt = nextAt, Message = HistoryDiscarded ? "" : message,
+            Events = HistoryDiscarded ? [] : [.. Events, new(now, stage, message, kind ?? TransitionKind(stage))]
         };
+    internal static AutoSignEventKind TransitionKind(AutoSignStage stage) => stage switch
+    {
+        AutoSignStage.Submitting => AutoSignEventKind.Submission,
+        AutoSignStage.Checking or AutoSignStage.Verifying or AutoSignStage.RetryWaiting => AutoSignEventKind.Verification,
+        AutoSignStage.Missed => AutoSignEventKind.Missed,
+        AutoSignStage.Skipped => AutoSignEventKind.ManualTakeover,
+        _ => AutoSignEventKind.Result
+    };
 }
 public sealed record AutoSignPlan(string Key, Course Course, DateTimeOffset PlannedAt, DateTimeOffset Deadline,
     AutoSignPolicy Policy, string Source, AutoSignStage Stage, string Reason, DateTimeOffset? NextAt,
@@ -129,6 +143,18 @@ public sealed record AutoSignLedger(int Version, string AccountId, Dictionary<st
     }
     public AutoSignLedger Cleaned() => new(CurrentVersion, AccountId,
         Executions.Where(x => !x.Value.IsPurePreview).ToDictionary(x => x.Key, x => x.Value));
+
+    public AutoSignLedger RetainHistory(HistoryRetentionPolicy policy, DateTimeOffset now)
+    {
+        policy.Validate();
+        if (policy.IsUnlimited) return this;
+        var visible = Executions.Values.Where(x => x.HasExecutionActivity && !x.HistoryDiscarded).ToArray();
+        var kept = policy.Retain(visible, now, x => x.HistoryDate, x => x.Key, x => x.IsHistoryProtected)
+            .Select(x => x.Key).ToHashSet(StringComparer.Ordinal);
+        return this with { Executions = Executions.ToDictionary(x => x.Key,
+            x => x.Value.HistoryDiscarded || x.Value.HasExecutionActivity && !kept.Contains(x.Key)
+                ? x.Value.DiscardHistory() : x.Value) };
+    }
 }
 
 public static class AutoSignPlanner

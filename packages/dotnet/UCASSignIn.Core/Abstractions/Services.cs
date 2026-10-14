@@ -47,6 +47,11 @@ public interface IAutoSignStore
     Task<AutoSignLedger?> LoadAutoSignAsync(string accountId, CancellationToken ct = default);
     Task SaveAutoSignAsync(AutoSignLedger ledger, CancellationToken ct = default);
 }
+public interface IHistoryRetentionStore
+{
+    Task<HistoryRetentionSettings> LoadHistoryRetentionAsync(CancellationToken ct = default);
+    Task SaveHistoryRetentionAsync(HistoryRetentionSettings settings, CancellationToken ct = default);
+}
 public interface IReminderScheduler
 {
     Task<bool> RequestPermissionAsync();

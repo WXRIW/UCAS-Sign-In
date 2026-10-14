@@ -20,7 +20,9 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
-	<key>AppGroupIdentifier</key>
+	<key>CloudContainerIdentifier</key><string>$(ICLOUD_CONTAINER_IDENTIFIER)</string>
+    <key>CloudKeychainAccessGroup</key><string>$(ICLOUD_KEYCHAIN_ACCESS_GROUP)</string>
+    <key>AppGroupIdentifier</key>
 	<string>$(TeamIdentifierPrefix)$(MAC_APP_GROUP_SUFFIX)</string>
 	<key>CFBundleURLTypes</key>
 	<array>

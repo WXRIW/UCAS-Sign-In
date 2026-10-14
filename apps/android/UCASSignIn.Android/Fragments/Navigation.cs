@@ -33,8 +33,8 @@ public sealed partial class MainPageFragment
     bool scenePrivacy, backPreview;
     ITransitionSeekController? backSeek;
     bool AnimationsEnabled => !OperatingSystem.IsAndroidVersionAtLeast(26) || ValueAnimator.AreAnimatorsEnabled();
-    static int Depth(string? route) => AutoSignDepth(route) ?? (route is null ? 0 : route is "source" or "course-schedule" ? 2 : 1);
-    static string? ParentRoute(string? route) => AutoSignParentRoute(route) ?? (route == "source" ? "about" : route == "course-schedule" ? "catalog-detail" : null);
+    static int Depth(string? route) => AutoSignDepth(route) ?? (route is null ? 0 : route is "source" or "course-schedule" or HistoryRetentionRoute ? 2 : 1);
+    static string? ParentRoute(string? route) => AutoSignParentRoute(route) ?? (route == "source" ? "about" : route == "course-schedule" ? "catalog-detail" : route == HistoryRetentionRoute ? "settings" : null);
     string SceneKey(string? route) => Host.Vm.Page + ":" + (route ?? "root");
     public MaterialToolbar ActiveToolbar => activeScene!.Toolbar;
 
@@ -141,6 +141,7 @@ public sealed partial class MainPageFragment
     }
     void ClearScenes()
     {
+        DetachHistoryRetentionEditor();
         if (sceneHost is not null) TransitionManager.EndTransitions(sceneHost);
         sceneHost?.RemoveAllViews();
         foreach (var scene in scenes.Values) { scene.ContentVersion++; scene.ContentReady?.TrySetResult(); }
@@ -185,6 +186,7 @@ public sealed partial class MainPageFragment
     public void BeginBackPreview(int edge)
     {
         if (Route is null || activeScene is null || Host.DialogOpen || backPreview || !AnimationsEnabled) return;
+        if (Route == HistoryRetentionRoute && Host.Vm.HistoryRetentionDraft?.IsSaving == true) return;
         var current = activeScene;
         var route = Route;
         var parent = ParentRoute(route);
@@ -229,6 +231,11 @@ public sealed partial class MainPageFragment
     public void CompleteBackPreview()
     {
         if (!backPreview || previewScene is null) { Back(); return; }
+        if (Route == HistoryRetentionRoute)
+        {
+            Host.Vm.HistoryRetentionDraft = null;
+            DetachHistoryRetentionEditor();
+        }
         Route = previewScene.Route;
         CurrentDetail = null;
         if (Route != "catalog-detail") CurrentCatalogDetail = null;
@@ -284,6 +291,7 @@ public sealed partial class MainPageFragment
         "catalog-detail" => CurrentCatalogDetail?.Name ?? "课程详情",
         "course-schedule" => "排课信息",
         "settings" => "设置",
+        HistoryRetentionRoute => "记录保留",
         var autoRoute when AutoSignPageTitle(autoRoute) is { } title => title,
         "records" => Model.IsDemo ? "演示签到记录" : "本机签到记录",
         "about" => "关于",

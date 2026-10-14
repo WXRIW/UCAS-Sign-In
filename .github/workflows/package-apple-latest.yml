@@ -14,6 +14,7 @@ on:
       - scripts/lib/release-version.sh
       - scripts/publish/latest-apple-sdk.sh
       - scripts/publish/platforms/apple-latest-sdk.sh
+      - scripts/signing/apple/**
   pull_request:
     paths:
       - .github/workflows/package-apple-latest.yml
@@ -22,6 +23,7 @@ on:
       - scripts/lib/release-version.sh
       - scripts/publish/latest-apple-sdk.sh
       - scripts/publish/platforms/apple-latest-sdk.sh
+      - scripts/signing/apple/**
 
 permissions:
   contents: read

@@ -1,27 +1,21 @@
 import SwiftUI
 import UserNotifications
+import CloudKit
 
-struct AttendanceRecord: Codable, Identifiable {
-    var id = UUID()
-    let courseId: String?
-    let courseName: String
-    let date: Date
-    let message: String
-    let succeeded: Bool
-
-    init(courseId: String? = nil, courseName: String, date: Date, message: String, succeeded: Bool) {
-        self.courseId = courseId
-        self.courseName = courseName
-        self.date = date
-        self.message = message
-        self.succeeded = succeeded
-    }
-}
+typealias AttendanceRecord = SyncAttendanceRecord
 
 struct PendingSignConfirmation: Identifiable {
     let id = UUID()
     let course: Course
     let accountGeneration: UUID
+}
+
+/// NotificationCenter tokens may be removed from any thread. This owner keeps
+/// destruction outside AppModel's actor-isolated state under Swift 6.
+private final class CloudSyncNotificationObservation: @unchecked Sendable {
+    private let token: NSObjectProtocol
+    init(_ token: NSObjectProtocol) { self.token = token }
+    deinit { NotificationCenter.default.removeObserver(token) }
 }
 
 @MainActor
@@ -56,12 +50,13 @@ final class AppModel: ObservableObject {
     private var scheduleColors: [String: ScheduleColors] = [:]
     @Published var selectedDate = Date()
     @Published var scheduleMode: ScheduleMode = .day {
-        didSet { defaults.set(scheduleMode.rawValue, forKey: "scheduleViewMode") }
+        didSet { defaults.set(scheduleMode.rawValue, forKey: "scheduleViewMode"); recordCloudChanges() }
     }
     @Published var showOutsideWeekCourses = false {
         didSet {
             defaults.set(showOutsideWeekCourses, forKey: "showOutsideWeekCourses")
             weekPresentations.removeAll()
+            recordCloudChanges()
         }
     }
     @Published private(set) var semesterSchedules: [String: SemesterScheduleCache] = [:] {
@@ -89,6 +84,13 @@ final class AppModel: ObservableObject {
     @Published private(set) var accounts: [StoredAccount] = []
     @Published private(set) var activeAccountID: String?
     @Published private(set) var accountGeneration = UUID()
+    @Published private(set) var iCloudSyncEnabled = true
+    @Published private(set) var iCloudSyncStatus = CloudSyncStatus.syncing
+    @Published private(set) var iCloudLastSyncedAt: Date?
+    @Published private(set) var iCloudPendingAccounts: [SyncAccountProfile] = []
+    @Published private(set) var syncedAutoSignHistory: [String: [SyncAutoSignHistory]] = [:]
+    @Published private(set) var syncedPreferencesRevision = 0
+    @Published private(set) var historyRetention = HistoryRetentionSettings()
     @Published private var isRecovering = false
     var showLogin: Bool {
         get { loginRequest != nil }
@@ -156,6 +158,14 @@ final class AppModel: ObservableObject {
     private let defaults: UserDefaults
     private let notifications: any NotificationClient
     private let widgets: any WidgetClient
+    private var cloudSync: CloudSyncCoordinator
+    private var cloudDefaultsObserver: CloudSyncNotificationObservation?
+    private var cloudAccountObserver: CloudSyncNotificationObservation?
+    private var isApplyingCloudSync = false
+    private var cloudVerifiedSessions: Set<String> = []
+    private var cloudDeletedAccounts: Set<String> = []
+    private var cloudAppliedIdentity: String?
+    private var cloudSessionValidationIssue: String?
     private var vault = AccountVault()
     private var accountsLoaded = false
     private var recoveryTask: Task<SchoolSession?, Never>?
@@ -180,11 +190,15 @@ final class AppModel: ObservableObject {
 
     init(service: QingxinService = QingxinService(), accountStore: (any AccountStore)? = nil,
          defaults: UserDefaults = .standard, notifications: (any NotificationClient)? = nil,
-         widgets: (any WidgetClient)? = nil) {
+         widgets: (any WidgetClient)? = nil, cloudSync: CloudSyncCoordinator? = nil) {
         self.service = service
         self.defaults = defaults
         self.scheduleMode = ScheduleMode(rawValue: defaults.string(forKey: "scheduleViewMode") ?? "") ?? .day
         self.showOutsideWeekCourses = defaults.bool(forKey: "showOutsideWeekCourses")
+        self.historyRetention = (try? HistoryRetentionSettings.from(applicationPreferences:
+            Dictionary(uniqueKeysWithValues: HistoryRetentionSettings.applicationKeys.compactMap { key in
+                defaults.data(forKey: key).map { (key, $0) }
+            }))) ?? .init()
         self.notifications = notifications ?? LiveNotificationClient()
         self.widgets = widgets ?? LiveWidgetClient()
         #if os(macOS)
@@ -194,6 +208,30 @@ final class AppModel: ObservableObject {
         #endif
         self.accountStore = accountStore ?? KeychainAccountStore(keychain: keychain, defaults: defaults)
         self.autoSignStore = accountStore == nil ? FileAutoSignStore() : UserDefaultsAutoSignStore(defaults: defaults)
+        self.cloudSync = cloudSync ?? CloudSyncEnvironment.make(defaults: defaults,
+            allowLive: accountStore == nil && !AppLaunchEnvironment.isUnitTestHost
+                && !ProcessInfo.processInfo.arguments.contains("--demo"))
+        self.iCloudSyncEnabled = defaults.object(forKey: "iCloudSyncEnabled") as? Bool ?? true
+        self.cloudSync.setEnabled(iCloudSyncEnabled)
+        self.cloudSync.snapshot = { [weak self] in try self?.cloudSnapshot() ?? CloudSyncLocalSnapshot() }
+        self.cloudSync.apply = { [weak self] changes in try await self?.applyCloudChanges(changes) }
+        self.cloudSync.onChange = { [weak self] in self?.updateCloudStatus() }
+        self.cloudDefaultsObserver = CloudSyncNotificationObservation(NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification,
+            object: defaults, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.recordCloudChanges() }
+            })
+        self.cloudAccountObserver = CloudSyncNotificationObservation(NotificationCenter.default.addObserver(forName: .CKAccountChanged,
+            object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.iCloudPendingAccounts = []
+                    self?.syncedAutoSignHistory = [:]
+                    self?.cloudVerifiedSessions = []
+                    self?.cloudDeletedAccounts = []
+                    self?.cloudSessionValidationIssue = nil
+                    self?.cloudSync.accountDidChange()
+                }
+            })
+        updateCloudStatus()
     }
 
     var isCached: Bool { isCached(on: selectedDate) }
@@ -264,6 +302,7 @@ final class AppModel: ObservableObject {
     func effectiveReminders(for course: Course) -> Bool { effectiveReminders(for: preferenceID(for: course)) }
     func effectiveReminderLead(for course: Course) -> Int { effectiveReminderLead(for: preferenceID(for: course)) }
     func isSignInDisabled(for courseId: String?) -> Bool {
+        if let activeAccountID, cloudDeletedAccounts.contains(activeAccountID) { return true }
         guard let courseId else { return false }
         return coursePreferences(for: courseId).signInDisabled
     }
@@ -303,6 +342,7 @@ final class AppModel: ObservableObject {
         try accountStore.save(updated)
         vault = updated
         updateAccountList()
+        recordCloudChanges()
     }
 
     func restore() async {
@@ -312,22 +352,27 @@ final class AppModel: ObservableObject {
         if ProcessInfo.processInfo.arguments.contains("--demo") { enterDemo(); return }
         do {
             try loadAccounts()
+            let captured = recordCloudChanges()
+            // Shared retention choices must be fetched before expiring startup history.
+            if !iCloudSyncEnabled, captured { maintainHistoryRetention(recordCleanup: true) }
             if let account = vault.accounts.first(where: { $0.id == vault.activeAccountID }) {
                 activate(account)
                 if account.requiresLogin { requestLogin(for: account.id) }
                 else { await refresh() }
             }
+            if iCloudSyncEnabled { Task { await self.synchronizeICloud() } }
         } catch { errorMessage = "无法读取本机登录信息：\(error.localizedDescription)" }
     }
 
     func presentLogin(accountID: String? = nil) {
         guard canChangeAccount else { return }
-        if let accountID, !accounts.contains(where: { $0.id == accountID }) { return }
+        if let accountID, !accounts.contains(where: { $0.id == accountID }),
+           !iCloudPendingAccounts.contains(where: { $0.studentNo == accountID }) { return }
         loginRequest = LoginRequest(accountID: accountID)
     }
 
     private func requestLogin(for accountID: String) {
-        guard activeAccountID == accountID else { return }
+        guard activeAccountID == accountID, accounts.contains(where: { $0.id == accountID && $0.requiresLogin }) else { return }
         showAccountManagement = false
         // An old refresh must not replace a form the user is already submitting.
         if loginRequest == nil { loginRequest = LoginRequest(accountID: accountID) }
@@ -355,6 +400,9 @@ final class AppModel: ObservableObject {
             account.lastUsedAt = .now
             updated.upsert(account)
             try commit(updated)
+            cloudDeletedAccounts.remove(account.id)
+            recordCloudChanges(explicitLogin: account.id)
+            iCloudPendingAccounts.removeAll { $0.studentNo == account.id }
             recoveryAttempts = recoveryAttempts.filter { !$0.hasPrefix("\(account.id)|") }
             loginRequest = nil
             activate(account)
@@ -515,6 +563,7 @@ final class AppModel: ObservableObject {
         }
         session = account.session
         activeAccountID = account.id
+        cloudSync.setEnabled(iCloudSyncEnabled)
         autoSignEnabled = account.preferences.autoSignIsRunning
         autoSignRunning = account.preferences.autoSignIsRunning
         autoSignRunningSince = account.preferences.autoSignRunningSince
@@ -557,6 +606,7 @@ final class AppModel: ObservableObject {
         guard canChangeAccount else { return }
         resetAccountState()
         isDemo = true
+        cloudSync.setEnabled(false)
         courses = Self.demoCourses(on: selectedDate)
         semesters = [Self.demoSemester(containing: selectedDate)]
         selectedSemester = semesters.first
@@ -688,7 +738,7 @@ final class AppModel: ObservableObject {
                   self.session?.sessionId == requestSession.sessionId else { return }
             if error is CancellationError { return }
             if let apiError = error as? APIError, apiError.isSessionExpired {
-                markLoginRequired(for: session.studentNo)
+                markLoginRequired(for: session.studentNo, failedSession: requestSession)
                 requestLogin(for: session.studentNo)
                 return
             }
@@ -706,8 +756,9 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func markLoginRequired(for accountID: String) {
-        guard activeAccountID == accountID else { return }
+    private func markLoginRequired(for accountID: String, failedSession: SchoolSession) {
+        try? cloudSync.invalidateLocalSession(failedSession)
+        guard activeAccountID == accountID, session?.sessionId == failedSession.sessionId else { return }
         automaticRefreshPaused = true
         courseFreshness = courseFreshness.mapValues { _ in false }
         reminderGeneration = UUID()
@@ -736,14 +787,14 @@ final class AppModel: ObservableObject {
         if let recoveryTask { return await recoveryTask.value }
         if let current = session, current.sessionId != failedSession.sessionId { return current }
         if loginRequest != nil || isAuthenticating {
-            markLoginRequired(for: failedSession.studentNo)
+            markLoginRequired(for: failedSession.studentNo, failedSession: failedSession)
             return nil
         }
         let attemptKey = "\(failedSession.studentNo)|\(failedSession.sessionId)"
         guard let account = accounts.first(where: { $0.id == failedSession.studentNo }),
               !account.requiresLogin, let credentials = account.credentials,
               recoveryAttempts.insert(attemptKey).inserted else {
-            markLoginRequired(for: failedSession.studentNo)
+            markLoginRequired(for: failedSession.studentNo, failedSession: failedSession)
             requestLogin(for: failedSession.studentNo)
             return nil
         }
@@ -775,7 +826,7 @@ final class AppModel: ObservableObject {
                 return result
             } catch {
                 guard !Task.isCancelled, self.generation == accountToken else { return nil }
-                self.markLoginRequired(for: failedSession.studentNo)
+                self.markLoginRequired(for: failedSession.studentNo, failedSession: failedSession)
                 self.requestLogin(for: failedSession.studentNo)
                 return nil
             }
@@ -1115,7 +1166,7 @@ final class AppModel: ObservableObject {
         return "运行中"
     }
     var autoSignHistory: [AutoSignExecution] {
-        autoSignExecutions.values.filter(\.hasExecutionActivity).sorted {
+        autoSignExecutions.values.filter { $0.hasExecutionActivity && $0.historyDiscarded != true }.sorted {
             let left = $0.events.last?.at ?? $0.startedAt ?? .distantPast
             let right = $1.events.last?.at ?? $1.startedAt ?? .distantPast
             return left == right ? $0.key < $1.key : left > right
@@ -1126,12 +1177,10 @@ final class AppModel: ObservableObject {
         guard let id = activeAccountID, autoSignStoreAvailable else {
             throw APIError(code: "AUTO_SIGN_STORE", message: "自动签到记录不可用")
         }
-        let cutoff = attendanceNow().addingTimeInterval(-90 * 86_400)
-        autoSignExecutions = autoSignExecutions.filter {
-            let last = $0.value.events.last?.at ?? $0.value.lastSubmissionAt ?? $0.value.startedAt ?? $0.value.firstNegativeAt
-            return last.map { $0 >= cutoff } ?? true
+        do {
+            try autoSignStore.save(accountID: id, executions: autoSignExecutions)
+            if recordCloudChanges() { maintainHistoryRetention(recordCleanup: true) }
         }
-        do { try autoSignStore.save(accountID: id, executions: autoSignExecutions) }
         catch {
             autoSignStoreAvailable = false
             autoSignError = "自动签到已暂停：记录保存失败：\(error.localizedDescription)"
@@ -1143,7 +1192,8 @@ final class AppModel: ObservableObject {
         guard autoSignStoreAvailable else { return }
         var changed = false
         for plan in autoSignPlans {
-            guard var execution = autoSignExecutions[plan.key], execution.hasExecutionActivity else { continue }
+            guard var execution = autoSignExecutions[plan.key], execution.hasExecutionActivity,
+                  execution.historyDiscarded != true else { continue }
             if let previous = before[plan.key], previous.plannedAt == plan.plannedAt,
                previous.policy == plan.policy, previous.stage == plan.stage, previous.source == plan.source { continue }
             let message = plan.stage == .skipped ? "计划已暂停或跳过：\(plan.reason)"
@@ -1601,8 +1651,10 @@ final class AppModel: ObservableObject {
     }
 
     @discardableResult
-    func setCoursePreferences(_ preferences: CoursePreferences, for courseId: String) async -> Bool {
-        var preferences = preferences
+    func setCoursePreferences(_ preferences: CoursePreferences, for courseId: String,
+                              relativeTo previous: CoursePreferences? = nil) async -> Bool {
+        let patch = previous.map { CoursePreferencesPatch(previous: $0, proposed: preferences) }
+        var preferences = patch?.applying(to: coursePreferences(for: courseId)) ?? preferences
         guard !courseId.isEmpty else { return false }
         if let rule = preferences.autoSignRule, !rule.resolve(autoSignRule).isValid {
             errorMessage = "自动签到规则超出允许范围"
@@ -1627,6 +1679,7 @@ final class AppModel: ObservableObject {
             }
         }
         guard generation == accountToken, reminderGeneration == settingToken else { return false }
+        if let patch { preferences = patch.applying(to: coursePreferences(for: courseId)) }
         if let lead = preferences.reminderLeadMinutes,
            !AccountPreferences.validLeadTimes.contains(lead) { preferences.reminderLeadMinutes = nil }
         let enablesAutoNotification = preferences.autoSignRule?.notification != nil
@@ -1699,6 +1752,17 @@ final class AppModel: ObservableObject {
     private func scheduleReminders() async {
         guard !isDemo, session != nil, !automaticRefreshPaused else { return }
         let accountToken = generation
+        let authorization = await notifications.authorizationStatus()
+        guard generation == accountToken else { return }
+        var allowed = authorization == .authorized || authorization == .provisional
+        #if os(iOS)
+        allowed = allowed || authorization == .ephemeral
+        #endif
+        guard allowed else {
+            if hasEnabledReminders { notificationSettingsNeeded = true }
+            await clearCourseReminderNotifications()
+            return
+        }
         let requestToken = UUID()
         reminderGeneration = requestToken
         await refreshCourseIdentityIfNeeded(for: courses)
@@ -1734,14 +1798,28 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func removeAccount(id: String) {
-        guard canChangeAccount else { return }
+    func removeAccount(id: String, everywhere: Bool = false) {
+        guard canChangeAccount || isApplyingCloudSync else { return }
         do {
             try loadAccounts()
-            guard vault.accounts.contains(where: { $0.id == id }) else { return }
+            guard vault.accounts.contains(where: { $0.id == id }) || iCloudPendingAccounts.contains(where: { $0.studentNo == id }) else { return }
             var updated = vault
             updated.remove(id: id)
-            try commit(updated)
+            // A failed local Keychain transaction must not advertise a successful removal.
+            try accountStore.save(updated)
+            do {
+                if !isApplyingCloudSync {
+                    if everywhere { try cloudSync.removeEverywhere(accountID: id) }
+                    else { try cloudSync.removeLocally(accountID: id) }
+                }
+            } catch {
+                try accountStore.save(vault)
+                throw error
+            }
+            vault = updated
+            updateAccountList()
+            iCloudPendingAccounts.removeAll { $0.studentNo == id }
+            syncedAutoSignHistory.removeValue(forKey: id)
             for key in defaults.dictionaryRepresentation().keys
                 where key.hasPrefix("courses-\(id)-") || key == "semester-schedules-\(id)" || key == "schedule-pending-\(id)" || key == "catalog-\(id)" || key.hasPrefix("catalog-\(id)-") ||
                       key.hasPrefix("attendance-\(id)-") || key == "records-\(id)" || key == "attendance-state-\(id)" {
@@ -1827,8 +1905,9 @@ final class AppModel: ObservableObject {
         }
     }
     private func saveRecords() {
-        guard let session, let data = try? JSONEncoder().encode(Array(records.prefix(100))) else { return }
+        guard let session, let data = try? JSONEncoder().encode(records) else { return }
         defaults.set(data, forKey: "records-\(session.studentNo)")
+        if recordCloudChanges() { maintainHistoryRetention(recordCleanup: true) }
     }
     private func loadRecords() {
         guard let session, let data = defaults.data(forKey: "records-\(session.studentNo)"),
@@ -1915,7 +1994,7 @@ final class AppModel: ObservableObject {
         } catch {
             guard !Task.isCancelled, generation == accountToken else { return }
             if let apiError = error as? APIError, apiError.isSessionExpired {
-                markLoginRequired(for: session.studentNo)
+                markLoginRequired(for: session.studentNo, failedSession: session)
                 requestLogin(for: session.studentNo)
                 return
             }
@@ -2000,7 +2079,7 @@ final class AppModel: ObservableObject {
         } catch {
             guard !Task.isCancelled, generation == accountToken else { return }
             if let apiError = error as? APIError, apiError.isSessionExpired {
-                markLoginRequired(for: session.studentNo)
+                markLoginRequired(for: session.studentNo, failedSession: requestSession)
                 requestLogin(for: session.studentNo)
                 return
             }
@@ -2296,12 +2375,12 @@ extension AppModel {
         do { value = try await operation(session) }
         catch let error as APIError where error.isSessionExpired {
             guard let renewed = await recoverSession(session, accountToken: token) else {
-                if generation == token { markLoginRequired(for: session.studentNo); requestLogin(for: session.studentNo) }
+                if generation == token { markLoginRequired(for: session.studentNo, failedSession: session); requestLogin(for: session.studentNo) }
                 throw error
             }
             do { value = try await operation(renewed) }
             catch let error as APIError where error.isSessionExpired {
-                if generation == token { markLoginRequired(for: session.studentNo); requestLogin(for: session.studentNo) }
+                if generation == token { markLoginRequired(for: session.studentNo, failedSession: renewed); requestLogin(for: session.studentNo) }
                 throw error
             }
         }
@@ -2722,5 +2801,439 @@ extension AppModel {
         }
         courseSchedulePresentations.removeAll()
         return values
+    }
+}
+
+// Applying shared preferences is deliberately separate from savePreferences(), whose
+// transaction also owns this device's automatic attendance rules and activation clock.
+extension AppModel {
+    var cloudDeviceID: String { cloudSync.deviceID }
+
+    @discardableResult
+    func setHistoryRetention(_ value: HistoryRetentionSettings,
+                             relativeTo previous: HistoryRetentionSettings? = nil) -> Bool {
+        var next = historyRetention
+        if previous == nil || previous?.operations.maxCount != value.operations.maxCount { next.operations.maxCount = value.operations.maxCount }
+        if previous == nil || previous?.operations.maxAgeDays != value.operations.maxAgeDays { next.operations.maxAgeDays = value.operations.maxAgeDays }
+        if previous == nil || previous?.automatic.maxCount != value.automatic.maxCount { next.automatic.maxCount = value.automatic.maxCount }
+        if previous == nil || previous?.automatic.maxAgeDays != value.automatic.maxAgeDays { next.automatic.maxAgeDays = value.automatic.maxAgeDays }
+        do {
+            let encoded = try next.applicationPreferences()
+            if isDemo { historyRetention = next; return true }
+            let previousEncoded = try historyRetention.applicationPreferences()
+            try loadAccounts()
+            for (key, data) in encoded where previousEncoded[key] != data { defaults.set(data, forKey: key) }
+            historyRetention = next
+            // Capture the rows before cleanup so an immediate return to unlimited
+            // retention cannot revive their earlier cloud copies.
+            try cloudSync.recordLocalChanges(cloudSnapshot())
+            maintainHistoryRetention(recordCleanup: true)
+            recordCloudChanges()
+            return true
+        } catch {
+            errorMessage = "无法保存记录保留设置：\(error.localizedDescription)"
+            return false
+        }
+    }
+
+    private func automaticHistoryRows(_ executions: [String: AutoSignExecution], accountID: String) -> [SyncAutoSignHistory] {
+        let incarnation = cloudSync.incarnation(for: accountID)
+        let local = executions.values.compactMap {
+            SyncAutoSignHistory(execution: $0, accountID: accountID, incarnation: incarnation,
+                sourceDeviceID: cloudDeviceID, sourceDeviceName: cloudSync.deviceName, revision: 0)
+        }
+        let discardedKeys = Set(executions.values.filter { $0.historyDiscarded == true }.map(\.key))
+        var rows = Dictionary((syncedAutoSignHistory[accountID] ?? []).filter {
+            $0.sourceDeviceID != cloudDeviceID || !discardedKeys.contains($0.occurrenceKey)
+        }.map { ($0.id, $0) },
+            uniquingKeysWith: { a, b in a.revision >= b.revision ? a : b })
+        for row in local { rows[row.id] = row }
+        return Array(rows.values)
+    }
+
+    private func compactAutomaticHistory(_ executions: [String: AutoSignExecution], accountID: String,
+                                         deletedIDs: Set<String> = []) throws -> [String: AutoSignExecution] {
+        let rows = automaticHistoryRows(executions, accountID: accountID)
+        let retained = try historyRetention.automatic.retained(rows, now: attendanceNow(), date: \.updatedAt, id: \.id,
+            protected: { ![.signed, .missed, .skipped].contains($0.stage) })
+        let retainedIDs = Set(retained.map(\.id)).subtracting(deletedIDs)
+        let retiredKeys = Set(rows.filter { $0.sourceDeviceID == cloudDeviceID && !retainedIDs.contains($0.id) }.map(\.occurrenceKey))
+        var result = executions
+        for key in retiredKeys {
+            // Only display content is discarded. Submission evidence remains durable so
+            // tightening a history limit cannot make an already handled class run again.
+            result[key]?.discardHistory()
+        }
+        return result
+    }
+
+    private func maintainHistoryRetention(deletedHistory: [String: Set<String>] = [:], recordCleanup: Bool = false) {
+        guard accountsLoaded, !isDemo else { return }
+        guard historyRetention.operations.maxCount != nil || historyRetention.operations.maxAgeDays != nil
+            || historyRetention.automatic.maxCount != nil || historyRetention.automatic.maxAgeDays != nil
+            || deletedHistory.values.contains(where: { !$0.isEmpty }) else { return }
+        do {
+            for account in vault.accounts {
+                let id = account.id
+                let existing: [SyncAttendanceRecord]
+                if id == activeAccountID { existing = records }
+                else { existing = try defaults.data(forKey: "records-\(id)")
+                    .map { try JSONDecoder().decode([SyncAttendanceRecord].self, from: $0) } ?? [] }
+                let retained = try historyRetention.operations.retained(existing, now: attendanceNow(), date: \.date, id: { $0.id.uuidString })
+                let executions = id == activeAccountID ? autoSignExecutions : try autoSignStore.load(accountID: id)
+                let historyRows = automaticHistoryRows(executions, accountID: id)
+                let retainedHistory = try historyRetention.automatic.retained(historyRows, now: attendanceNow(),
+                    date: \.updatedAt, id: \.id, protected: { ![.signed, .missed, .skipped].contains($0.stage) })
+                let keptHistoryIDs = Set(retainedHistory.map(\.id)).subtracting(deletedHistory[id] ?? [])
+                if recordCleanup {
+                    try cloudSync.recordHistoryCleanup(accountID: id,
+                        attendanceIDs: Set(existing.map(\.id)).subtracting(retained.map(\.id)),
+                        historyIDs: Set(historyRows.map(\.id)).subtracting(keptHistoryIDs))
+                }
+                if retained != existing {
+                    defaults.set(try JSONEncoder().encode(retained), forKey: "records-\(id)")
+                    if id == activeAccountID { records = retained }
+                }
+                let compacted = try compactAutomaticHistory(executions, accountID: id, deletedIDs: deletedHistory[id] ?? [])
+                if compacted != executions {
+                    try autoSignStore.save(accountID: id, executions: compacted)
+                    if id == activeAccountID { autoSignExecutions = compacted }
+                }
+                if let remote = syncedAutoSignHistory[id] {
+                    syncedAutoSignHistory[id] = remote.filter { keptHistoryIDs.contains($0.id) }
+                }
+            }
+        } catch { errorMessage = "记录保留设置已保存，部分记录尚未清理：\(error.localizedDescription)" }
+    }
+
+    func loginUsername(for accountID: String?) -> String {
+        guard let accountID else { return "" }
+        return accounts.first { $0.id == accountID }?.loginUsername
+            ?? iCloudPendingAccounts.first { $0.studentNo == accountID }?.loginUsername ?? accountID
+    }
+
+    func setICloudSyncEnabled(_ enabled: Bool) {
+        iCloudSyncEnabled = enabled
+        defaults.set(enabled, forKey: "iCloudSyncEnabled")
+        cloudSync.setEnabled(enabled && !isDemo)
+        recordCloudChanges()
+        updateCloudStatus()
+    }
+
+    func synchronizeICloud() async {
+        guard !isDemo else { return }
+        retryCloudBootstrapIfNeeded()
+        do { try loadAccounts(); recordCloudChanges() }
+        catch { iCloudSyncStatus = .failed(error.localizedDescription); return }
+        await cloudSync.synchronize(force: true)
+        updateCloudStatus()
+    }
+
+    func handleICloudRemoteNotification(_ userInfo: [AnyHashable: Any]) async -> CloudSyncRemoteRefreshResult {
+        let container = Bundle.main.object(forInfoDictionaryKey: "CloudContainerIdentifier") as? String ?? ""
+        guard !isDemo, iCloudSyncEnabled,
+              !ProcessInfo.processInfo.arguments.contains("--demo"),
+              CloudKitSyncSubscription.matches(userInfo: userInfo, containerIdentifier: container) else { return .noData }
+        retryCloudBootstrapIfNeeded()
+        // A silent push can launch the process before the root view restores it.
+        // Load only the local vault here; normal UI restoration owns school refreshes.
+        do { try loadAccounts() }
+        catch {
+            iCloudSyncStatus = .failed(error.localizedDescription)
+            return .failed
+        }
+        guard recordCloudChanges() else { return .failed }
+        let result = await cloudSync.remoteChangesAvailable()
+        maintainHistoryRetention(recordCleanup: true)
+        updateCloudStatus()
+        return result
+    }
+
+    func iCloudForegroundTick() async {
+        guard !isDemo, accountsLoaded else { return }
+        retryCloudBootstrapIfNeeded()
+        // Fetch and merge a newer retention choice before applying an older local limit.
+        let captured = recordCloudChanges()
+        await cloudSync.tick()
+        if captured { maintainHistoryRetention(recordCleanup: true) }
+        updateCloudStatus()
+    }
+
+    private func updateCloudStatus() {
+        if cloudSync.status == .ready, let cloudSessionValidationIssue {
+            iCloudSyncStatus = .failed(cloudSessionValidationIssue)
+        } else {
+            iCloudSyncStatus = cloudSync.status == .ready && !iCloudPendingAccounts.isEmpty ? .waitingForCredentials : cloudSync.status
+        }
+        iCloudLastSyncedAt = cloudSync.lastSuccessfulSync
+    }
+
+    private func retryCloudBootstrapIfNeeded() {
+        guard iCloudSyncEnabled, cloudSync.requiresBootstrapRetry else { return }
+        cloudSync.setEnabled(false)
+        cloudSync = CloudSyncEnvironment.make(defaults: defaults, allowLive: true)
+        cloudSync.snapshot = { [weak self] in try self?.cloudSnapshot() ?? .init() }
+        cloudSync.apply = { [weak self] in try await self?.applyCloudChanges($0) }
+        cloudSync.onChange = { [weak self] in self?.updateCloudStatus() }
+    }
+
+    @discardableResult
+    private func recordCloudChanges(explicitLogin: String? = nil) -> Bool {
+        guard accountsLoaded, !isDemo, !isApplyingCloudSync else { return false }
+        do {
+            try cloudSync.recordLocalChanges(cloudSnapshot(), explicitLogin: explicitLogin)
+            return true
+        } catch {
+            iCloudSyncStatus = .failed(error.localizedDescription)
+            return false
+        }
+    }
+
+    private func cloudSnapshot() throws -> CloudSyncLocalSnapshot {
+        guard accountsLoaded, !isDemo else { return .init() }
+        var app: [String: Data] = [:]
+        for key in SyncPreferenceProjection.applicationKeys where defaults.object(forKey: key) != nil {
+            if HistoryRetentionSettings.applicationKeys.contains(key) {
+                app[key] = defaults.data(forKey: key)
+                continue
+            }
+            switch key {
+            case "appearanceMode", "scheduleViewMode": app[key] = try SyncCodec.encode(defaults.string(forKey: key) ?? "")
+            default: app[key] = try SyncCodec.encode(defaults.bool(forKey: key))
+            }
+        }
+        var attendance: [String: [SyncAttendanceRecord]] = [:]
+        var executions: [String: [AutoSignExecution]] = [:]
+        for account in vault.accounts {
+            if account.id == activeAccountID {
+                attendance[account.id] = records
+                executions[account.id] = Array(autoSignExecutions.values)
+            } else {
+                attendance[account.id] = try defaults.data(forKey: "records-\(account.id)")
+                    .map { try JSONDecoder().decode([SyncAttendanceRecord].self, from: $0) } ?? []
+                // Unreadable execution storage never erases previously shared display history.
+                executions[account.id] = (try? autoSignStore.load(accountID: account.id)).map { Array($0.values) } ?? []
+            }
+        }
+        return .init(accounts: vault.accounts, applicationPreferences: app, attendance: attendance, executions: executions)
+    }
+
+    var displayAutoSignHistory: [SyncAutoSignHistory] {
+        guard let id = activeAccountID else { return [] }
+        let rows = automaticHistoryRows(autoSignExecutions, accountID: id)
+        return (try? historyRetention.automatic.retained(rows, now: attendanceNow(), date: \.updatedAt, id: \.id,
+            protected: { ![.signed, .missed, .skipped].contains($0.stage) })) ?? rows
+    }
+
+    private func validatedCloudApplicationPreferences(_ fields: [String: Data]) throws -> [String: Any] {
+        var result: [String: Any] = [:]
+        for (key, data) in fields {
+            if HistoryRetentionSettings.applicationKeys.contains(key) {
+                _ = try HistoryRetentionSettings.from(applicationPreferences: [key: data])
+                result[key] = data
+                continue
+            }
+            switch key {
+            case "appearanceMode":
+                let value = try SyncCodec.decode(String.self, from: data)
+                guard AppAppearance(rawValue: value) != nil else { throw CloudSyncStateError.invalidData }
+                result[key] = value
+            case "scheduleViewMode":
+                let value = try SyncCodec.decode(String.self, from: data)
+                guard ScheduleMode(rawValue: value) != nil else { throw CloudSyncStateError.invalidData }
+                result[key] = value
+            case "accountDetailsHidden", "showOutsideWeekCourses", "update.automaticChecks":
+                result[key] = try SyncCodec.decode(Bool.self, from: data)
+            default: throw CloudSyncStateError.invalidData
+            }
+        }
+        return result
+    }
+
+    private func applyCloudChanges(_ changes: CloudSyncIncoming) async throws {
+        guard !isDemo, iCloudSyncEnabled else { throw CancellationError() }
+        try loadAccounts()
+        let firstAccountRestore = vault.accounts.isEmpty && activeAccountID == nil
+            && changes.deletedAccountIDs.isEmpty
+        let application = try validatedCloudApplicationPreferences(changes.applicationPreferences)
+        let incomingRetention = try HistoryRetentionSettings.from(applicationPreferences:
+            historyRetention.applicationPreferences().merging(changes.applicationPreferences) { _, received in received })
+        // Validate the entire ordinary-preference projection before changing any local state.
+        for change in changes.accounts {
+            var preferences = AccountPreferences()
+            try SyncPreferenceProjection.applyAccount(change.preferences, to: &preferences)
+            for fields in change.courses.values {
+                var course = CoursePreferences()
+                try SyncPreferenceProjection.applyCourse(fields, to: &course)
+            }
+        }
+        // A tombstone cancels work immediately, including an in-flight account operation.
+        isApplyingCloudSync = true
+        if cloudAppliedIdentity != cloudSync.state.identity {
+            iCloudPendingAccounts = []
+            syncedAutoSignHistory = [:]
+            cloudVerifiedSessions = []
+            cloudAppliedIdentity = cloudSync.state.identity
+        }
+        for id in changes.deletedAccountIDs {
+            cloudDeletedAccounts.insert(id)
+            if activeAccountID == id { pendingSignConfirmation = nil }
+            removeAccount(id: id)
+            if vault.accounts.contains(where: { $0.id == id }) {
+                isApplyingCloudSync = false
+                throw CloudSyncStateError.unavailable
+            }
+        }
+        isApplyingCloudSync = false
+
+        let token = generation
+        var expectedReplica = cloudSync.state
+        var accepted: [String: SchoolSession] = [:]
+        var acceptedVersions: [String: SyncVersion] = [:]
+        var rejected: [String: Set<String>] = [:]
+        var validationIssue: String?
+        for change in changes.accounts {
+            let id = change.profile.studentNo
+            let current = vault.accounts.first { $0.id == id }
+            // A shared token is tested with a school read. It cannot submit attendance.
+            for candidate in change.sessions {
+                if current?.session == candidate.session && current?.requiresLogin == false {
+                    accepted[id] = candidate.session
+                    acceptedVersions[id] = candidate.reference.version
+                    break
+                }
+                if id == activeAccountID && !canChangeAccount { break }
+                do {
+                    if !cloudVerifiedSessions.contains(candidate.reference.id) {
+                        _ = try await service.courses(session: candidate.session, date: attendanceNow())
+                        try Task.checkCancellation()
+                        guard generation == token, cloudSync.state == expectedReplica, !isDemo, iCloudSyncEnabled else {
+                            throw CloudSyncStateError.deferred
+                        }
+                        cloudVerifiedSessions.insert(candidate.reference.id)
+                    }
+                    accepted[id] = candidate.session
+                    acceptedVersions[id] = candidate.reference.version
+                    break
+                } catch let error as APIError where error.isSessionExpired {
+                    try Task.checkCancellation()
+                    guard generation == token, cloudSync.state == expectedReplica else { throw CloudSyncStateError.deferred }
+                    try cloudSync.invalidateSession(accountID: id, reference: candidate.reference)
+                    rejected[id, default: []].insert(candidate.reference.fingerprint)
+                    expectedReplica = cloudSync.state
+                } catch {
+                    // Network failures are not credential revocations. Preserve the local session.
+                    if error is CancellationError || error is CloudSyncStateError { throw error }
+                    validationIssue = "登录信息验证暂不可用，将自动重试：\(error.localizedDescription)"
+                    break
+                }
+            }
+        }
+        try Task.checkCancellation()
+        guard generation == token, cloudSync.state == expectedReplica, !isDemo, iCloudSyncEnabled else {
+            throw CloudSyncStateError.deferred
+        }
+        // There are no suspension points inside the local transaction: user edits that
+        // happened during validation are either retained above or retried in the next pass.
+        isApplyingCloudSync = true
+        defer { isApplyingCloudSync = false }
+        var updated = vault
+        var pending: [SyncAccountProfile] = []
+        var mergedRecords: [String: [SyncAttendanceRecord]] = [:]
+        var boundaries: [Date] = []
+        for change in changes.accounts {
+            let id = change.profile.studentNo
+            var account = updated.accounts.first { $0.id == id }
+            if account == nil, let session = accepted[id] {
+                account = StoredAccount(session: session, loginUsername: change.profile.loginUsername,
+                    lastUsedAt: .distantPast, preferences: AccountPreferences(autoSignRunning: false, autoSignV2Acknowledged: true))
+            }
+            guard var account else { pending.append(change.profile); continue }
+            if let session = accepted[id], id != activeAccountID || canChangeAccount {
+                account.session = session
+                account.requiresLogin = false
+            } else {
+                let fingerprint = try cloudSync.sessionFingerprint(account.session, incarnation: change.profile.incarnation)
+                if change.invalidSessionFingerprints.contains(fingerprint) || rejected[id]?.contains(fingerprint) == true { account.requiresLogin = true }
+            }
+            account.loginUsername = change.profile.loginUsername
+            switch change.password {
+            case .unchanged: break
+            case .clear: account.credentials = nil
+            case .value(let value): account.credentials = value
+            }
+            try SyncPreferenceProjection.applyAccount(change.preferences, to: &account.preferences)
+            for (courseID, fields) in change.courses {
+                var course = account.preferences.courses[courseID] ?? CoursePreferences()
+                let wasDisabled = course.signInDisabled
+                try SyncPreferenceProjection.applyCourse(fields, to: &course)
+                if wasDisabled && !course.signInDisabled {
+                    let boundary = id == activeAccountID ? autoSignSchoolNow : attendanceNow()
+                    course.autoSignEnabledSince = boundary
+                    if id != activeAccountID || autoSignClockSchoolAt == nil {
+                        account.preferences.autoSignPendingClockBoundaries = Array(Set(account.preferences.autoSignPendingClockBoundaries + [boundary])).sorted()
+                        if id == activeAccountID { boundaries.append(boundary) }
+                    }
+                }
+                account.preferences.courses[courseID] = course
+            }
+            updated.upsert(account, makeActive: false)
+            let existing: [SyncAttendanceRecord]
+            if id == activeAccountID { existing = records }
+            else { existing = try defaults.data(forKey: "records-\(id)").map { try JSONDecoder().decode([SyncAttendanceRecord].self, from: $0) } ?? [] }
+            var rows = Dictionary(existing.filter { !change.deletedAttendanceIDs.contains($0.id) }.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            for row in change.attendance { rows[row.id] = row }
+            mergedRecords[id] = try incomingRetention.operations.retained(Array(rows.values), now: attendanceNow(),
+                date: \.date, id: { $0.id.uuidString })
+        }
+        if firstAccountRestore, updated.activeAccountID == nil,
+           let selected = acceptedVersions.max(by: { $0.value < $1.value })?.key,
+           updated.accounts.contains(where: { $0.id == selected }) {
+            updated.activeAccountID = selected
+        }
+        let oldSession = session
+        if updated != vault { try accountStore.save(updated); vault = updated; updateAccountList() }
+        for (key, value) in application { defaults.set(value, forKey: key) }
+        historyRetention = incomingRetention
+        if let mode = application["scheduleViewMode"] as? String, let value = ScheduleMode(rawValue: mode) { scheduleMode = value }
+        if let value = application["showOutsideWeekCourses"] as? Bool { showOutsideWeekCourses = value }
+        iCloudPendingAccounts = pending
+        cloudSessionValidationIssue = validationIssue
+        for change in changes.accounts {
+            let id = change.profile.studentNo
+            syncedAutoSignHistory[id] = change.history
+            if vault.accounts.contains(where: { $0.id == id }) { cloudDeletedAccounts.remove(id) }
+        }
+        for (id, rows) in mergedRecords {
+            defaults.set(try JSONEncoder().encode(rows), forKey: "records-\(id)")
+            if id == activeAccountID { records = rows }
+        }
+        if let account = vault.accounts.first(where: { $0.id == vault.activeAccountID }) {
+            if activeAccountID != account.id || oldSession != account.session {
+                activate(account)
+                if loginRequest?.accountID == account.id { loginRequest = nil }
+            } else {
+                remindersEnabled = account.preferences.remindersEnabled
+                confirmationEnabled = account.preferences.confirmationEnabled
+                reminderLeadMinutes = account.preferences.reminderLeadMinutes
+                coursePreferences = account.preferences.courses
+                for boundary in boundaries {
+                    autoSignUncalibratedBoundaries.insert(boundary)
+                    autoSignActivationUptimes[boundary] = autoSignMonotonicNow()
+                }
+                if account.requiresLogin { automaticRefreshPaused = true; courseFreshness = courseFreshness.mapValues { _ in false } }
+                if let confirmation = pendingSignConfirmation, isSignInDisabled(for: confirmation.course) { pendingSignConfirmation = nil }
+            }
+        }
+        syncedPreferencesRevision &+= 1
+        maintainHistoryRetention(deletedHistory: Dictionary(changes.accounts.map { ($0.profile.studentNo, $0.deletedHistoryIDs) },
+            uniquingKeysWith: { $0.union($1) }))
+        // Permission is device-local; scheduling consults authorization and never prompts.
+        let reminderToken = generation
+        Task { [weak self] in
+            guard let self, self.generation == reminderToken else { return }
+            if self.hasEnabledReminders { await self.scheduleReminders() }
+            else { await self.clearCourseReminderNotifications() }
+        }
     }
 }

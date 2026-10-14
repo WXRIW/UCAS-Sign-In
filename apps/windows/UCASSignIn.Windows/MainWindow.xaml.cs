@@ -19,7 +19,6 @@ public sealed partial class MainWindow : Window
     readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromSeconds(15) };
     string section = "today";
     bool dialogOpen, ready, tickRunning, closed;
-    AutoSignNotificationSnapshot? autoSignNotificationBaseline;
     ContentDialog? activeDialog;
     Guid renderedGeneration;
     string? notification;
@@ -84,7 +83,7 @@ public sealed partial class MainWindow : Window
             ApplyTheme();
             Navigation.SelectedItem = Navigation.MenuItems[0];
             await Run(Environment.GetCommandLineArgs().Contains("--demo") ? Model.InitializeDemoAsync : Model.InitializeAsync);
-            autoSignNotificationBaseline = AutoSignNotificationSnapshot.Capture(Model.Generation, Model.ActiveAccount?.Id, Model.AutoSignHistory);
+            _ = Model.ConsumeAutoSignResults();
             ready = true;
             timer.Start();
             Render();
@@ -104,22 +103,11 @@ public sealed partial class MainWindow : Window
             // minimized or another app is active. Closing the app still stops it.
             var epoch = Model.Generation;
             var accountId = Model.ActiveAccount?.Id;
-            var previous = autoSignNotificationBaseline;
-            if (previous is null || previous.Generation != epoch || previous.AccountId != accountId)
-            {
-                previous = AutoSignNotificationSnapshot.Capture(epoch, accountId, Model.AutoSignHistory);
-                autoSignNotificationBaseline = previous;
-            }
             await Model.TickAsync(allowBackground: true);
             if (closed || epoch != Model.Generation || accountId != Model.ActiveAccount?.Id) return;
-            var policies = Model.AutoSignPlans.ToDictionary(x => x.Key, x => x.Policy.Notification);
             var history = Model.AutoSignHistory;
             var executions = history.ToDictionary(x => x.Key);
-            var results = AutoSignRuntime.Results(previous, epoch, accountId, history,
-                item => policies.GetValueOrDefault(item.Key,
-                    Model.Preferences.AutoSignOccurrences.GetValueOrDefault(item.Key)?.Policy?.Notification
-                        ?? item.NotificationMode ?? Model.Preferences.AutoSignRule.Notification));
-            autoSignNotificationBaseline = AutoSignNotificationSnapshot.Capture(epoch, accountId, history);
+            var results = Model.ConsumeAutoSignResults();
             foreach (var result in results)
             {
                 if (closed || epoch != Model.Generation || accountId != Model.ActiveAccount?.Id) return;
