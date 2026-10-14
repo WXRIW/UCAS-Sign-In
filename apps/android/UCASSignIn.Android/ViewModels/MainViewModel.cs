@@ -38,7 +38,9 @@ public sealed class MainViewModel
         prefs = context.GetSharedPreferences("appearance", FileCreationMode.Private)!;
         var root = context.FilesDir!.AbsolutePath;
         var store = new FileDataStore(Path.Combine(root, "data"));
-        Model = new(new SchoolClient(), new AndroidAccountStore(Path.Combine(root, "accounts.dat")), store, store, new AndroidReminderScheduler(context));
+        var clock = new AndroidElapsedTimeProvider();
+        Model = new(new SchoolClient(timeProvider: clock), new AndroidAccountStore(Path.Combine(root, "accounts.dat")),
+            store, store, new AndroidReminderScheduler(context), clock);
         Model.ScheduleMode = prefs.GetString("scheduleMode", "day") == "week" ? ScheduleMode.Week : ScheduleMode.Day;
         Model.ShowOtherWeeks = prefs.GetBoolean("showOtherWeeks", false);
     }

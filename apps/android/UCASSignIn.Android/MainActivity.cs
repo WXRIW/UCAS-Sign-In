@@ -351,7 +351,13 @@ public sealed class MainActivity : AppCompatActivity
         foreground?.Cancel();
         foreground = new();
         _ = Ticks(foreground.Token);
-        if (ready) page?.EnsureCurrentPage();
+        if (ready)
+        {
+            // Notification access may have changed in system settings without a model event.
+            AndroidAutoSignService.Sync(UiContext, Model);
+            page?.Render();
+            page?.EnsureCurrentPage();
+        }
     }
     async Task Ticks(CancellationToken ct)
     {

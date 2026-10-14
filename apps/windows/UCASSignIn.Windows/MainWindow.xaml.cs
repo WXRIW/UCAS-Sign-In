@@ -6,10 +6,10 @@ using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.Toolkit.Uwp.Notifications;
 using QRCoder;
 using UCASSignIn.Core;
+using UCASSignIn.Windows.Services;
 using UCASSignIn.Windows.ViewModels;
 using Windows.System;
 using Windows.Storage.Streams;
-using Windows.UI.Notifications;
 namespace UCASSignIn.Windows;
 
 public sealed partial class MainWindow : Window
@@ -113,17 +113,18 @@ public sealed partial class MainWindow : Window
             await Model.TickAsync(allowBackground: true);
             if (closed || epoch != Model.Generation || accountId != Model.ActiveAccount?.Id) return;
             var policies = Model.AutoSignPlans.ToDictionary(x => x.Key, x => x.Policy.Notification);
-            var results = AutoSignRuntime.Results(previous, epoch, accountId, Model.AutoSignHistory,
+            var history = Model.AutoSignHistory;
+            var executions = history.ToDictionary(x => x.Key);
+            var results = AutoSignRuntime.Results(previous, epoch, accountId, history,
                 item => policies.GetValueOrDefault(item.Key,
                     Model.Preferences.AutoSignOccurrences.GetValueOrDefault(item.Key)?.Policy?.Notification
                         ?? item.NotificationMode ?? Model.Preferences.AutoSignRule.Notification));
-            autoSignNotificationBaseline = AutoSignNotificationSnapshot.Capture(epoch, accountId, Model.AutoSignHistory);
+            autoSignNotificationBaseline = AutoSignNotificationSnapshot.Capture(epoch, accountId, history);
             foreach (var result in results)
             {
                 if (closed || epoch != Model.Generation || accountId != Model.ActiveAccount?.Id) return;
-                var content = new ToastContentBuilder().AddText("果壳签到 · 自动签到")
-                    .AddText(result.CourseName).AddText(result.Message).GetToastContent();
-                ToastNotificationManagerCompat.CreateToastNotifier().Show(new ToastNotification(content.GetXml()));
+                var toast = WindowsAutoSignNotifications.Create(result, executions.GetValueOrDefault(result.Key), accountId);
+                ToastNotificationManagerCompat.CreateToastNotifier().Show(toast);
             }
         }
         finally { tickRunning = false; }
