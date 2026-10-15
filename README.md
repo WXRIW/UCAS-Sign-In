@@ -25,7 +25,7 @@
 - **课程偏好**：每门课程的提醒、手动签到二次确认和自动签到可跟随账户默认值，也可单独启用或停用；还可禁用某门课程的签到，保留二维码显示。
 - **课程提醒**：为已同步课程发送课前本地通知，默认提前 10 分钟，可选择 5、10、15 或 30 分钟，并为单门课程单独设置。
 - **版本更新**：自动检查新版本，也可在设置中手动检查；Windows 商店版通过 Microsoft Store 更新。
-- **桌面小组件（仅 Apple 平台）**：小号、中号课程卡片，展示今日课程与签到状态。
+- **桌面小组件（仅 Apple 平台）**：支持小号、中号、大号、超大号，以及新系统上的竖向超大号，展示今日课程与签到状态；课程结束后自动向后递补，时间格式跟随系统，超大号可用双列展示更多课程。
 - **账户隐私**：一键将姓名脱敏、隐藏学号；Apple 平台开启 iCloud 同步时也同步隐藏偏好。
 - **演示模式**：无需账号即可体验课表和模拟签到，支持浅色、深色外观。
 
@@ -202,6 +202,40 @@
     <td><img src="docs/screenshots/android/source.png" width="250" alt="Android 项目源码与致谢"></td>
   </tr>
 </table>
+
+</details>
+
+### 桌面小组件
+
+以下演示图使用本地示例数据，由实际小组件视图渲染。小号展示一门课程，中号最多两门，大号按可用高度展示更多课程；超大号由支持的 iPad 和 Mac 提供，课程较多时使用双列；竖向超大号使用单列展示更多课程。
+
+<table>
+  <tr><th>小号</th><th>中号</th></tr>
+  <tr>
+    <td align="center"><img src="docs/screenshots/widgets/small.png" width="158" alt="小号小组件：完整的下午时间、课程名称、教室与签到状态"></td>
+    <td align="center"><img src="docs/screenshots/widgets/medium.png" width="338" alt="中号小组件：两门课程与后续课程数量"></td>
+  </tr>
+</table>
+
+<details>
+<summary>大号与超大号小组件</summary>
+
+<table>
+  <tr><th>大号</th><th>超大号（iPad / Mac）</th></tr>
+  <tr>
+    <td valign="top"><img src="docs/screenshots/widgets/large.png" width="250" alt="大号小组件：按可用高度排列的多门课程"></td>
+    <td valign="top"><img src="docs/screenshots/widgets/extra-large.png" width="532" alt="超大号小组件：按时间先左列后右列排列的双列课程"></td>
+  </tr>
+</table>
+
+<table>
+  <tr><th>竖向超大号</th></tr>
+  <tr>
+    <td align="center"><img src="docs/screenshots/widgets/extra-large-portrait.png" width="300" alt="竖向超大号小组件：单列展示更多课程"></td>
+  </tr>
+</table>
+
+竖向超大号需要使用 Xcode 27 或更新的 SDK 构建，并运行在支持该尺寸的 iOS 27、iPadOS 27 或 macOS 27 设备上；使用 Xcode 16.4 构建时仍提供前四种尺寸。
 
 </details>
 
