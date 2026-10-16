@@ -64,10 +64,11 @@ public sealed partial class MainPageFragment
     { AutoSignNotification.All => "成功与异常", AutoSignNotification.None => "关闭", _ => "仅异常" };
     View AutoSignLink(int icon, string title, string page, string? value = null, string? description = null)
     {
-        var row = Tap(Across(SettingLabel(icon, title, description ?? ""),
+        var row = Tap(Across(SettingLabel(icon, title, description),
             string.IsNullOrWhiteSpace(value) ? Icon(Resource.Drawable.ic_chevron_right, 11, Secondary) : Text(value + "  ›", 13, color: Secondary)),
             () => Navigate(page), title);
         row.SetPadding(0, D(8), 0, D(8));
+        row.SetMinimumHeight(D(48));
         return row;
     }
     View AutoSignChoiceRow(int icon, string title, string value, string[] labels, int selected, Func<int, Task> save)

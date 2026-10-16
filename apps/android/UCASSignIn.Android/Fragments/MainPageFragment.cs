@@ -272,14 +272,16 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
         number.TextFormatted = content;
         return Column(Text(label, 11, color: Secondary), number);
     }
-    View SettingLabel(int icon, string title, string subtitle)
+    View SettingLabel(int icon, string title, string? subtitle = null)
     {
         var row = Layout(Orientation.Horizontal, GravityFlags.CenterVertical);
         var image = new ImageView(Ui);
         image.SetImageResource(icon);
         image.ImageTintList = ColorStateList.ValueOf(Green);
         row.AddView(image, new LinearLayout.LayoutParams(D(22), D(22)) { MarginEnd = D(12) });
-        row.AddView(Column(Text(title, 14, true), Text(subtitle, 10, color: Secondary)), new LinearLayout.LayoutParams(0, -2, 1));
+        var label = Text(title, 14, true);
+        var copy = string.IsNullOrWhiteSpace(subtitle) ? Column(label) : Column(label, Text(subtitle, 10, color: Secondary));
+        row.AddView(copy, new LinearLayout.LayoutParams(0, -2, 1));
         return row;
     }
     void Today()
