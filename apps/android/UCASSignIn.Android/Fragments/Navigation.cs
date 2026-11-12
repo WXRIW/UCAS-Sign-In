@@ -33,8 +33,15 @@ public sealed partial class MainPageFragment
     bool scenePrivacy, backPreview;
     ITransitionSeekController? backSeek;
     bool AnimationsEnabled => !OperatingSystem.IsAndroidVersionAtLeast(26) || ValueAnimator.AreAnimatorsEnabled();
-    static int Depth(string? route) => AutoSignDepth(route) ?? (route is null ? 0 : route is "source" or "course-schedule" or HistoryRetentionRoute ? 2 : 1);
-    static string? ParentRoute(string? route) => AutoSignParentRoute(route) ?? (route == "source" ? "about" : route == "course-schedule" ? "catalog-detail" : route == HistoryRetentionRoute ? "settings" : null);
+    // A retained meeting identifies the QR page beneath its catalog and schedule pages.
+    int Depth(string? route) => AutoSignDepth(route) ?? (route is null ? 0
+        : route == "catalog-detail" && CurrentDetail is not null ? 2
+        : route == "course-schedule" ? CurrentDetail is not null ? 3 : 2
+        : route is "source" or HistoryRetentionRoute ? 2 : 1);
+    string? ParentRoute(string? route) => AutoSignParentRoute(route) ?? (route == "source" ? "about"
+        : route == "course-schedule" ? "catalog-detail"
+        : route == "catalog-detail" && CurrentDetail is not null ? "detail"
+        : route == HistoryRetentionRoute ? "settings" : null);
     string SceneKey(string? route) => Host.Vm.Page + ":" + (route ?? "root");
     public MaterialToolbar ActiveToolbar => activeScene!.Toolbar;
 
@@ -83,6 +90,8 @@ public sealed partial class MainPageFragment
         var root = new LinearLayout(Ui) { Orientation = global::Android.Widget.Orientation.Vertical };
         root.SetBackgroundColor(C(Dark ? "111A16" : "F6F7F2"));
         var (toolbar, brand) = Host.CreatePageToolbar(Host.Vm.Page, PageTitle(route));
+        if (route == "detail")
+            toolbar.Menu!.Add(0, 13, 0, "查看课程详情")!.SetIcon(Resource.Drawable.ic_info)!.SetShowAsAction(ShowAsAction.Always);
         root.AddView(toolbar, new LinearLayout.LayoutParams(-1, D(48)));
         root.AddView(pull, new LinearLayout.LayoutParams(-1, 0, 1));
         var scene = new Scene(SceneKey(route), Host.Vm.Page, route, root, toolbar, brand, scroller, content, pull);
@@ -107,6 +116,8 @@ public sealed partial class MainPageFragment
     public void Render()
     {
         if (sceneHost is null || !IsAdded) return;
+        if (activeScene is { } current && (current.Tab != Host.Vm.Page || current.Route != Route))
+            courseInformationRequest = null;
         if (sceneGeneration != Model.Generation || scenePrivacy != Host.Vm.HideIdentity)
         {
             ClearScenes();
@@ -141,6 +152,7 @@ public sealed partial class MainPageFragment
     }
     void ClearScenes()
     {
+        courseInformationRequest = null;
         DetachHistoryRetentionEditor();
         if (sceneHost is not null) TransitionManager.EndTransitions(sceneHost);
         sceneHost?.RemoveAllViews();
@@ -187,6 +199,7 @@ public sealed partial class MainPageFragment
     {
         if (Route is null || activeScene is null || Host.DialogOpen || backPreview || !AnimationsEnabled) return;
         if (Route == HistoryRetentionRoute && Host.Vm.HistoryRetentionDraft?.IsSaving == true) return;
+        courseInformationRequest = null;
         var current = activeScene;
         var route = Route;
         var parent = ParentRoute(route);
@@ -236,10 +249,7 @@ public sealed partial class MainPageFragment
             Host.Vm.HistoryRetentionDraft = null;
             DetachHistoryRetentionEditor();
         }
-        Route = previewScene.Route;
-        CurrentDetail = null;
-        if (Route != "catalog-detail") CurrentCatalogDetail = null;
-        Host.DetailCourseId = Host.DetailCourseDay = null;
+        ReturnToRoute(previewScene.Route);
         UseScene(previewScene);
         backSeek?.AnimateToEnd();
         backSeek = null;
@@ -251,6 +261,7 @@ public sealed partial class MainPageFragment
     void UpdatePageToolbar()
     {
         Host.SetBackEnabled(Route is not null);
+        activeScene?.Toolbar.Menu?.FindItem(13)?.SetEnabled(CurrentDetail is not null && courseInformationRequest is null);
         if (Route is not null && activeScene is { } current) current.Toolbar.Title = PageTitle(Route);
         UpdateScheduleNavigation();
         if (activeScene is { } scene) UpdateScrolledTitle(scene);

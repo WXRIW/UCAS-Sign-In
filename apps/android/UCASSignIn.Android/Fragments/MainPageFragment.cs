@@ -22,6 +22,7 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
     LinearLayout? coursePageBody;
     Action? updateCoursePage;
     CancellationTokenSource? qrCancellation;
+    Guid? courseInformationRequest;
     string? Route
     {
         get => Host.Vm.Routes[Host.Vm.Page]; set => Host.Vm.Routes[Host.Vm.Page] = value;
@@ -669,6 +670,7 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
     }
     Task Navigate(string route)
     {
+        courseInformationRequest = null;
         if (route == HistoryRetentionRoute && Route != HistoryRetentionRoute)
             Host.Vm.HistoryRetentionDraft = new(Model.HistoryRetention);
         Route = route;
@@ -686,28 +688,70 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
             Host.Vm.HistoryRetentionDraft = null;
             DetachHistoryRetentionEditor();
         }
-        Route = ParentRoute(Route);
-        CurrentDetail = null;
-        if (Route != "catalog-detail") CurrentCatalogDetail = null;
-        Host.DetailCourseId = null;
-        Host.DetailCourseDay = null;
+        ReturnToRoute(ParentRoute(Route));
         Render();
         return true;
+    }
+    void ReturnToRoute(string? route)
+    {
+        courseInformationRequest = null;
+        Route = route;
+        if (route is not ("detail" or "catalog-detail" or "course-schedule")) CurrentDetail = null;
+        if (route is not ("catalog-detail" or "course-schedule")) CurrentCatalogDetail = null;
+        Host.DetailCourseId = CurrentDetail?.Id;
+        Host.DetailCourseDay = CurrentDetail?.Day;
     }
     public void Detail(Course course)
     {
         CurrentDetail = course;
+        CurrentCatalogDetail = null;
         Host.DetailCourseId = course.Id;
         Host.DetailCourseDay = course.Day;
         _ = Navigate("detail");
     }
-    public void CatalogDetail(CatalogCourse course)
+    public void CatalogDetail(CatalogCourse course) => ShowCatalogDetail(course, fromDetail: false);
+    void ShowCatalogDetail(CatalogCourse course, bool fromDetail)
     {
+        if (!fromDetail)
+        {
+            CurrentDetail = null;
+            Host.DetailCourseId = Host.DetailCourseDay = null;
+        }
         if (CurrentCatalogDetail is not { } prior || !CourseSchedule.SameCourse(prior, course))
             foreach (var childRoute in new[] { "catalog-detail", "course-schedule" })
             { var key = SceneKey(childRoute); scenes.Remove(key); Host.Vm.ScrollPositions.Remove(key); }
         CurrentCatalogDetail = course;
         _ = Navigate("catalog-detail");
+    }
+    async Task OpenCourseInformation()
+    {
+        if (courseInformationRequest is not null || backPreview || Route != "detail" || CurrentDetail is not { } course) return;
+        var request = Guid.NewGuid();
+        var generation = Model.Generation;
+        var tab = Host.Vm.Page;
+        var origin = activeScene;
+        courseInformationRequest = request;
+        UpdatePageToolbar();
+        try
+        {
+            var date = CourseTime.Date(course.Day);
+            await Model.EnsureCatalogForDateAsync(date);
+            if (!IsAdded || sceneHost is null || courseInformationRequest != request || backPreview
+                || generation != Model.Generation || Host.Vm.Page != tab
+                || activeScene != origin || Route != "detail" || CurrentDetail is not { } current
+                || current.Id != course.Id || current.Day != course.Day) return;
+            var latest = Model.Courses.FirstOrDefault(c => c.Id == course.Id && c.Day == course.Day) ?? current;
+            ShowCatalogDetail(Model.CatalogFor(latest) ?? new CatalogCourse("", latest.CourseNumber ?? "", latest.Name, latest.Teacher,
+                latest.Classroom, CourseIdentity.Semester(date, Model.Semesters)?.Id ?? "", latest.Day, latest.Day), fromDetail: true);
+        }
+        finally
+        {
+            if (courseInformationRequest == request)
+            {
+                courseInformationRequest = null;
+                if (IsAdded && sceneHost is not null) UpdatePageToolbar();
+            }
+        }
     }
     public void ToolbarAction(int id)
     {
@@ -718,6 +762,8 @@ public sealed partial class MainPageFragment : AndroidX.Fragment.App.Fragment
             _ = Host.Run(PickDate);
         else if (id == 12)
             PickSemester();
+        else if (id == 13)
+            _ = Host.Run(OpenCourseInformation);
         else
             _ = Host.Run(() => Route == "catalog-detail" && CurrentCatalogDetail is { } course ? Model.RefreshAttendanceAsync(course.Id, true)
                 : Host.Vm.Page == 2 ? Model.RefreshCatalogAsync(true) : Host.Vm.Page == 1 && Route is null

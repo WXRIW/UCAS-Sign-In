@@ -1,20 +1,28 @@
 import SwiftUI
 import CoreImage.CIFilterBuiltins
 
+enum CourseDestination: Hashable {
+    case signIn(Course)
+    case course(Course)
+}
+
 struct CourseDetailView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.scenePhase) private var scenePhase
     let course: Course
     let isActive: Bool
+    let openCourseInformation: (Course) -> Void
     @State private var accountGeneration: UUID
     @State private var isVisible = false
+    @State private var openingCourseInformation = false
     @State private var snapshot: QRSnapshot?
     @State private var qrImage: CGImage?
     @State private var qrError: String?
     @State private var retry = UUID()
-    init(course: Course, isActive: Bool, accountGeneration: UUID) {
+    init(course: Course, isActive: Bool, accountGeneration: UUID, openCourseInformation: @escaping (Course) -> Void) {
         self.course = course
         self.isActive = isActive
+        self.openCourseInformation = openCourseInformation
         _accountGeneration = State(initialValue: accountGeneration)
     }
 
@@ -77,7 +85,27 @@ struct CourseDetailView: View {
         .accessibilityIdentifier("courseDetail.scroll")
         .background(Palette.background)
         .navigationTitle("课程签到").appNavigationStyle(inline: true)
-        .onAppear { isVisible = true }
+        .toolbar {
+            if isVisible {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        guard !openingCourseInformation, belongsToCurrentAccount else { return }
+                        openingCourseInformation = true
+                        openCourseInformation(currentCourse)
+                    } label: {
+                        Image(systemName: "info.circle").foregroundStyle(Palette.green)
+                    }
+                    .accessibilityLabel("查看课程详情")
+                    .accessibilityIdentifier("courseDetail.showCourseInfo")
+                    .help("查看课程详情")
+                    .disabled(!belongsToCurrentAccount || openingCourseInformation)
+                }
+            }
+        }
+        .onAppear {
+            isVisible = true
+            openingCourseInformation = false
+        }
         .onDisappear {
             isVisible = false
             clearQR()

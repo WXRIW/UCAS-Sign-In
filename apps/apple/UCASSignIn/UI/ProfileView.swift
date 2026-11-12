@@ -6,11 +6,18 @@ enum ProfileDestination: Hashable {
     case about
     case openSource
     case disclaimer
+    case autoSign
+    case autoSignPlans
+    case autoSignSelectOccurrence
+    case autoSignPlan(String)
+    case signIn(Course)
+    case course(Course)
 }
 
 struct ProfileView: View {
     @EnvironmentObject private var model: AppModel
     @Binding var path: [ProfileDestination]
+    let isActive: Bool
     @AppStorage("accountDetailsHidden") private var accountDetailsHidden = false
     @State private var showLogout = false
     @State private var accountToRemove: String?
@@ -85,6 +92,19 @@ struct ProfileView: View {
                     OpenSourceView()
                 case .disclaimer:
                     DisclaimerView()
+                case .autoSign:
+                    AutoSignView()
+                case .autoSignPlans:
+                    AutoSignPlansView()
+                case .autoSignSelectOccurrence:
+                    AutoSignSelectOccurrenceView()
+                case .autoSignPlan(let key):
+                    AutoSignPlanDetail(key: key)
+                case .signIn(let course):
+                    CourseDetailView(course: course, isActive: isActive, accountGeneration: model.accountGeneration,
+                                     openCourseInformation: { path.append(.course($0)) })
+                case .course(let course):
+                    ScheduledCourseDetailView(scheduledCourse: course)
                 }
             }
         }

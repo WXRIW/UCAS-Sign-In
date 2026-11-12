@@ -97,9 +97,7 @@ struct SettingsView: View {
                         }.toggleStyle(.switch).accessibilityIdentifier("settings.confirmation")
                             .padding(.vertical, 18)
                         PreferenceDivider()
-                        NavigationLink {
-                            AutoSignView()
-                        } label: {
+                        NavigationLink(value: ProfileDestination.autoSign) {
                             PreferenceNavigationRow(title: "自动签到", symbol: "clock.arrow.circlepath", value: model.autoSignSettingsStatus)
                         }.buttonStyle(.plain).accessibilityIdentifier("settings.autoSign")
                     }.tint(Palette.green)

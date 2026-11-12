@@ -13,6 +13,7 @@ public sealed partial class MainWindow
     string? route;
     Course? detail;
     CatalogCourse? catalogDetail;
+    Guid? courseInformationRequest;
     string courseSearch = "";
     readonly Dictionary<string, (string? Route, Course? Detail, CatalogCourse? CatalogDetail)> paths = [];
     bool dark => Root.ActualTheme == ElementTheme.Dark;
@@ -183,6 +184,7 @@ public sealed partial class MainWindow
         AppTitleBar.IsBackButtonVisible = route is not null;
         AppTitleBar.IsBackButtonEnabled = route is not null;
         UpdateRefreshButton();
+        UpdateCourseInformationButton();
         PageTitle.Text = route switch
         {
             "detail" => "课程签到",
@@ -586,6 +588,12 @@ public sealed partial class MainWindow
     }
     Task Navigate(string page)
     {
+        courseInformationRequest = null;
+        if (page is not ("detail" or "catalog-detail" or "course-schedule"))
+        {
+            detail = null;
+            catalogDetail = null;
+        }
         route = page;
         Render(NavigationMotion.Forward);
         EnsureCatalogPage();
@@ -593,8 +601,11 @@ public sealed partial class MainWindow
     }
     void GoBack(object sender, RoutedEventArgs e)
     {
-        route = AutoSignParentRoute(route) ?? (route == "source" ? "about" : route == "course-schedule" ? "catalog-detail" : null);
-        detail = null;
+        courseInformationRequest = null;
+        // A retained meeting identifies the QR page beneath its catalog and schedule pages.
+        route = AutoSignParentRoute(route) ?? (route == "source" ? "about" : route == "course-schedule" ? "catalog-detail"
+            : route == "catalog-detail" && detail is not null ? "detail" : null);
+        if (route is not ("detail" or "catalog-detail" or "course-schedule")) detail = null;
         if (route != "catalog-detail") catalogDetail = null;
         Render(NavigationMotion.Back);
         EnsureCurrentPage();
@@ -605,14 +616,50 @@ public sealed partial class MainWindow
             await Run(() => Model.SelectScheduleDateAsync(DateOnly.FromDateTime(d.DateTime), datePickerGeneration, datePickerSemester));
     }
     async void RefreshClicked(object sender, RoutedEventArgs e) => await Run(RefreshCurrentCoursesAsync);
+    void UpdateCourseInformationButton()
+    {
+        CourseInformationButton.Visibility = route == "detail" && detail is not null ? Visibility.Visible : Visibility.Collapsed;
+        CourseInformationButton.IsEnabled = courseInformationRequest is null;
+    }
+    async void CourseInformationClicked(object sender, RoutedEventArgs e) => await Run(OpenCourseInformationAsync);
+    async Task OpenCourseInformationAsync()
+    {
+        if (courseInformationRequest is not null || route != "detail" || detail is not { } requested) return;
+        var request = Guid.NewGuid();
+        var generation = Model.Generation;
+        var originSection = section;
+        courseInformationRequest = request;
+        UpdateCourseInformationButton();
+        try
+        {
+            var date = CourseTime.Date(requested.Day);
+            await Model.EnsureCatalogForDateAsync(date);
+            if (closed || courseInformationRequest != request || generation != Model.Generation || section != originSection
+                || route != "detail" || detail?.Id != requested.Id || detail?.Day != requested.Day) return;
+            var course = Model.Courses.FirstOrDefault(c => c.Id == requested.Id && c.Day == requested.Day) ?? requested;
+            var catalogCourse = Model.CatalogFor(course) ?? new CatalogCourse("", course.CourseNumber ?? "", course.Name,
+                course.Teacher, course.Classroom, CourseIdentity.Semester(date, Model.Semesters)?.Id ?? "", course.Day, course.Day);
+            await CatalogDetail(catalogCourse, fromDetail: true);
+        }
+        finally
+        {
+            if (courseInformationRequest == request)
+            {
+                courseInformationRequest = null;
+                if (!closed) UpdateCourseInformationButton();
+            }
+        }
+    }
     async Task Detail(Course course)
     {
+        catalogDetail = null;
         detail = course;
         await Navigate("detail");
         await Model.EnterDayAsync(CourseTime.Date(course.Day));
     }
-    Task CatalogDetail(CatalogCourse course)
+    Task CatalogDetail(CatalogCourse course, bool fromDetail = false)
     {
+        if (!fromDetail) detail = null;
         catalogDetail = course;
         return Navigate("catalog-detail");
     }

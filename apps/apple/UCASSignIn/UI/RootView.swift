@@ -11,8 +11,8 @@ struct RootView: View {
     @AppStorage("appearanceMode") private var appearance = AppAppearance.system
     @Binding var selection: Int
     @State private var refreshTodayOnSelection = false
-    @State private var todayPath: [Course] = []
-    @State private var schedulePath: [ScheduleDestination] = []
+    @State private var todayPath: [CourseDestination] = []
+    @State private var schedulePath: [CourseDestination] = []
     @State private var coursesPath: [CatalogCourse] = []
     @State private var profilePath: [ProfileDestination] = []
     @State private var deferLoginPresentation = false
@@ -167,7 +167,7 @@ struct RootView: View {
                 switch selection {
                 case 1: ScheduleView(path: activePath($schedulePath, for: 1), isActive: selection == 1)
                 case 2: CoursesView(path: activePath($coursesPath, for: 2))
-                case 3: ProfileView(path: activePath($profilePath, for: 3))
+                case 3: ProfileView(path: activePath($profilePath, for: 3), isActive: selection == 3)
                 default: TodayView(path: activePath($todayPath, for: 0), isActive: selection == 0, openSchedule: { selectTab(1) })
                 }
             }
@@ -186,7 +186,7 @@ struct RootView: View {
             CoursesView(path: $coursesPath)
                 .tabItem { Label("课程", systemImage: "book.closed") }
                 .tag(2)
-            ProfileView(path: $profilePath)
+            ProfileView(path: $profilePath, isActive: selection == 3)
                 .tabItem { Label("账户", systemImage: "person.crop.circle") }
                 .tag(3)
         }
@@ -286,7 +286,7 @@ struct RootView: View {
 
 struct TodayView: View {
     @EnvironmentObject private var model: AppModel
-    @Binding var path: [Course]
+    @Binding var path: [CourseDestination]
     let isActive: Bool
     var openSchedule: () -> Void
 
@@ -300,7 +300,7 @@ struct TodayView: View {
                             if model.isDemo { demoBanner }
                             if model.isCached(on: .now) { CachedCoursesBanner(date: .now) }
                             if let course = model.featuredCourse {
-                                FeaturedCourseCard(course: course, accountGeneration: model.accountGeneration, openDetail: { path.append(course) })
+                                FeaturedCourseCard(course: course, accountGeneration: model.accountGeneration, openDetail: { path.append(.signIn(course)) })
                                     .id(model.accountGeneration)
                             } else if model.todayCourses.isEmpty {
                                 emptyDay
@@ -343,8 +343,14 @@ struct TodayView: View {
                 #endif
             }
             .courseRefreshable(enabled: model.isConnected) { await model.refresh(on: .now) }
-            .navigationDestination(for: Course.self) { course in
-                CourseDetailView(course: course, isActive: isActive, accountGeneration: model.accountGeneration)
+            .navigationDestination(for: CourseDestination.self) { destination in
+                switch destination {
+                case .signIn(let course):
+                    CourseDetailView(course: course, isActive: isActive, accountGeneration: model.accountGeneration,
+                                     openCourseInformation: { path.append(.course($0)) })
+                case .course(let course):
+                    ScheduledCourseDetailView(scheduledCourse: course)
+                }
             }
         }
     }
@@ -443,7 +449,7 @@ struct TodayView: View {
                 }.buttonStyle(.plain).fixedSize()
             }
             ForEach(Array(model.todayCourses.enumerated()), id: \.element.id) { index, course in
-                CourseRow(course: course, index: index) { path.append(course) }
+                CourseRow(course: course, index: index) { path.append(.signIn(course)) }
             }
             if let updated = model.lastUpdated(on: .now) {
                 HStack(spacing: 4) {

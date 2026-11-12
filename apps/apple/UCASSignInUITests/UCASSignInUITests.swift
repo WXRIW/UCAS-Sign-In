@@ -350,6 +350,55 @@ final class UCASSignInUITests: XCTestCase {
     }
 
     @MainActor
+    func testQRCodeCourseInformationPreservesNavigationAndUpdatesSignIn() {
+        let app = launchDemo()
+        selectTab("课表", in: app)
+        let nextWeek = schoolCalendar.date(byAdding: .day, value: 7, to: Date())!
+        app.buttons["下一周"].tap()
+        assertScheduleSelectionAndCourses(nextWeek, in: app)
+        let course = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "高级人工智能")).firstMatch
+        tapAfterScrolling(course, in: app)
+        assertCoursePage(in: app)
+
+        let information = app.buttons["courseDetail.showCourseInfo"]
+        XCTAssertEqual(information.label, "查看课程详情")
+        information.tap()
+        XCTAssertTrue(app.navigationBars["高级人工智能"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.scrollViews["catalogCourseDetail.scroll"].exists)
+        XCTAssertTrue(app.staticTexts["CS6002"].exists, "应关联课程目录 ID，而非本节课的签到 ID")
+        XCTAssertFalse(information.exists)
+        selectTab("今日", in: app)
+        selectTab("课表", in: app)
+        XCTAssertTrue(app.navigationBars["高级人工智能"].waitForExistence(timeout: 5))
+
+        tapAfterScrolling(app.buttons["courseSchedule.showAll"], in: app)
+        XCTAssertTrue(app.navigationBars["排课信息"].waitForExistence(timeout: 5))
+        let meeting = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "courseSchedule.meeting.")).firstMatch
+        XCTAssertTrue(meeting.waitForExistence(timeout: 10))
+        XCTAssertFalse(information.exists)
+        returnToParent(from: "排课信息", to: "高级人工智能", in: app)
+
+        let disabled = app.switches["coursePreference.signInDisabled"]
+        tapAfterScrolling(disabled, in: app)
+        returnToParent(from: "高级人工智能", to: "课程签到", in: app)
+        assertCoursePage(in: app)
+        let sign = app.buttons["已禁用签到"]
+        XCTAssertTrue(sign.waitForExistence(timeout: 5))
+        XCTAssertFalse(sign.isEnabled)
+        XCTAssertTrue(app.staticTexts["高级人工智能"].exists)
+        capture(app, name: "二维码返回课程详情-禁用签到")
+
+        information.tap()
+        XCTAssertTrue(app.scrollViews["catalogCourseDetail.scroll"].waitForExistence(timeout: 5))
+        tapAfterScrolling(disabled, in: app)
+        returnToParent(from: "高级人工智能", to: "课程签到", in: app)
+        assertCoursePage(in: app)
+        XCTAssertTrue(app.buttons["为本节课程签到"].isEnabled)
+        returnToParent(from: "课程签到", to: "课表", in: app)
+        assertScheduleSelectionAndCourses(nextWeek, in: app)
+    }
+
+    @MainActor
     func testCourseEntrypointsRestoreIndependentTabPathsAndScheduleDate() {
         let app = launchDemo()
         tapAfterScrolling(app.buttons["查看课程和签到二维码"], in: app)
@@ -1133,6 +1182,8 @@ final class UCASSignInUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["课程签到"].waitForExistence(timeout: 5), file: file, line: line)
         XCTAssertTrue(app.scrollViews["courseDetail.scroll"].exists, file: file, line: line)
         XCTAssertTrue(app.staticTexts["演示二维码 · 无签到效力"].waitForExistence(timeout: 5), file: file, line: line)
+        let information = app.buttons["courseDetail.showCourseInfo"]
+        XCTAssertTrue(information.waitForExistence(timeout: 5) && information.isHittable, file: file, line: line)
         XCTAssertFalse(app.buttons["完成"].exists, file: file, line: line)
         XCTAssertEqual(app.sheets.count, 0, file: file, line: line)
         assertMainNavigationAvailable(in: app, file: file, line: line)

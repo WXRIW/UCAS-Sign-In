@@ -430,6 +430,7 @@ public sealed class MainActivity : AppCompatActivity
         if (course is null || IsDestroyed || IsFinishing) return;
         Vm.Routes[1] = "detail";
         Vm.Details[1] = course;
+        Vm.CatalogDetails[1] = null;
         Vm.Page = 1;
         navigation!.SelectedItemId = 2;
         ShowPage();

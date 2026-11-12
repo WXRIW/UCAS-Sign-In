@@ -1,13 +1,8 @@
 import SwiftUI
 
-enum ScheduleDestination: Hashable {
-    case signIn(Course)
-    case course(Course)
-}
-
 struct ScheduleView: View {
     @EnvironmentObject private var model: AppModel
-    @Binding var path: [ScheduleDestination]
+    @Binding var path: [CourseDestination]
     let isActive: Bool
     @State private var showDatePicker = false
     @State private var datePickerGeneration: UUID?
@@ -42,12 +37,13 @@ struct ScheduleView: View {
             .courseRefreshable(enabled: model.isConnected) { await model.refreshSchedule() }
             .navigationTitle("课表")
             .appNavigationStyle()
-            .navigationDestination(for: ScheduleDestination.self) { destination in
+            .navigationDestination(for: CourseDestination.self) { destination in
                 switch destination {
                 case .signIn(let course):
-                    CourseDetailView(course: course, isActive: isActive, accountGeneration: model.accountGeneration)
+                    CourseDetailView(course: course, isActive: isActive, accountGeneration: model.accountGeneration,
+                                     openCourseInformation: { path.append(.course($0)) })
                 case .course(let course):
-                    ScheduleCatalogCourseView(scheduledCourse: course)
+                    ScheduledCourseDetailView(scheduledCourse: course)
                 }
             }
             .toolbar {
@@ -481,17 +477,5 @@ private struct ScheduleWeekPicker: View {
             .disabled(targetDate == nil)
             .accessibilityIdentifier("schedule.weekPicker.confirm")
         }
-    }
-}
-
-private struct ScheduleCatalogCourseView: View {
-    @EnvironmentObject private var model: AppModel
-    let scheduledCourse: Course
-
-    var body: some View {
-        let course = model.catalogCourse(for: scheduledCourse)
-        CatalogCourseDetailView(course: course, initialPreferences: model.coursePreferences(for: course.id))
-            .id(course.id)
-            .task { await model.refreshCatalog() }
     }
 }

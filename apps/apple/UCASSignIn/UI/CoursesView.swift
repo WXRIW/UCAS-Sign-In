@@ -222,6 +222,18 @@ private struct EmptyCoursesCard: View {
     }
 }
 
+struct ScheduledCourseDetailView: View {
+    @EnvironmentObject private var model: AppModel
+    let scheduledCourse: Course
+
+    var body: some View {
+        let course = model.catalogCourse(for: scheduledCourse)
+        CatalogCourseDetailView(course: course, initialPreferences: model.coursePreferences(for: course.id))
+            .id(course.id)
+            .task { await model.refreshCatalog() }
+    }
+}
+
 struct CatalogCourseDetailView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.scenePhase) private var scenePhase

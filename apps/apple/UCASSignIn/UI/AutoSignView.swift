@@ -57,7 +57,7 @@ struct AutoSignView: View {
                     }.buttonStyle(.plain).accessibilityIdentifier("autoSign.rules")
                     if model.autoSignRunning {
                         PreferenceDivider()
-                        NavigationLink { AutoSignPlansView() } label: {
+                        NavigationLink(value: ProfileDestination.autoSignPlans) {
                             PreferenceNavigationRow(title: "未来七天计划", symbol: "calendar.badge.clock")
                         }.buttonStyle(.plain).accessibilityIdentifier("autoSign.plans")
                     }
@@ -133,14 +133,14 @@ private struct AutoSignDefaultRulesView: View {
     }
 }
 
-private struct AutoSignPlansView: View {
+struct AutoSignPlansView: View {
     @EnvironmentObject private var model: AppModel
     private var plans: [AutoSignPlan] { model.autoSignPlans.filter(\.isParticipating) }
 
     var body: some View {
         AutoSignPage(title: "未来七天计划", identifier: "autoSign.planList") {
             AutoSignSection("课次") {
-                NavigationLink { AutoSignSelectOccurrenceView() } label: {
+                NavigationLink(value: ProfileDestination.autoSignSelectOccurrence) {
                     PreferenceNavigationRow(title: "选择课次", symbol: "plus.circle")
                 }.buttonStyle(.plain).accessibilityIdentifier("autoSign.selectOccurrence")
             }
@@ -151,7 +151,7 @@ private struct AutoSignPlansView: View {
                     VStack(spacing: 0) {
                         ForEach(Array(plans.enumerated()), id: \.element.key) { index, plan in
                             if index > 0 { PreferenceDivider() }
-                            NavigationLink { AutoSignPlanDetail(key: plan.key) } label: {
+                            NavigationLink(value: ProfileDestination.autoSignPlan(plan.key)) {
                                 AutoSignPlanRow(plan: plan)
                             }.buttonStyle(.plain)
                         }
@@ -163,7 +163,7 @@ private struct AutoSignPlansView: View {
     }
 }
 
-private struct AutoSignSelectOccurrenceView: View {
+struct AutoSignSelectOccurrenceView: View {
     @EnvironmentObject private var model: AppModel
 
     var body: some View {
@@ -175,7 +175,7 @@ private struct AutoSignSelectOccurrenceView: View {
                     VStack(spacing: 0) {
                         ForEach(Array(model.autoSignPlans.enumerated()), id: \.element.key) { index, plan in
                             if index > 0 { PreferenceDivider() }
-                            NavigationLink { AutoSignPlanDetail(key: plan.key) } label: {
+                            NavigationLink(value: ProfileDestination.autoSignPlan(plan.key)) {
                                 AutoSignPlanRow(plan: plan)
                             }.buttonStyle(.plain)
                         }
@@ -206,7 +206,7 @@ private struct AutoSignPlanRow: View {
     }
 }
 
-private struct AutoSignPlanDetail: View {
+struct AutoSignPlanDetail: View {
     @EnvironmentObject private var model: AppModel
     let key: String
     private var plan: AutoSignPlan? { model.autoSignPlans.first { $0.key == key } }
@@ -228,9 +228,7 @@ private struct AutoSignPlanDetail: View {
                 }
                 if [.missed, .needsAttention].contains(plan.stage) {
                     AutoSignSection("手动处理") {
-                        NavigationLink {
-                            CourseDetailView(course: plan.course, isActive: true, accountGeneration: model.accountGeneration)
-                        } label: {
+                        NavigationLink(value: ProfileDestination.signIn(plan.course)) {
                             PreferenceNavigationRow(title: "打开课程签到", symbol: "checkmark.circle")
                         }.buttonStyle(.plain).accessibilityIdentifier("autoSign.manualCourse")
                     }

@@ -41,6 +41,7 @@ public sealed partial class MainWindow : Window
                 route = null;
                 detail = null;
                 catalogDetail = null;
+                courseInformationRequest = null;
                 qrCancellation?.Cancel();
                 renderedGeneration = Model.Generation;
             }
@@ -138,6 +139,7 @@ public sealed partial class MainWindow : Window
     }
     void NavigationChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
     {
+        courseInformationRequest = null;
         paths[section] = (route, detail, catalogDetail);
         section = (args.SelectedItem as NavigationViewItem)?.Tag?.ToString() ?? "today";
         (route, detail, catalogDetail) = paths.GetValueOrDefault(section);
