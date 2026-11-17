@@ -158,7 +158,7 @@ public struct CourseQueryResult: Codable, Sendable {
 }
 
 public enum SignOutcome: String, Codable, Sendable {
-    case signed, qrExpired, outsideSignWindow, unknown
+    case signed, qrExpired, outsideSignWindow, unknown, timestampRejected
 }
 
 public struct SignResult: Sendable {

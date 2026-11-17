@@ -10,7 +10,7 @@ public interface ISchoolClient
     Task<IReadOnlyList<CatalogCourse>> CatalogCoursesAsync(SchoolSession session, string semesterId, CancellationToken ct = default);
     Task<CourseAttendanceSummary> CourseAttendanceAsync(SchoolSession session, string courseId, CancellationToken ct = default);
     Task<SignResult> SignAsync(Course course, SchoolSession session, CancellationToken ct = default, Func<bool>? authorize = null,
-        Func<Task<bool>>? authorizeAsync = null, Func<DateTimeOffset, Task<bool>>? authorizeAt = null);
+        Func<Task<bool>>? authorizeAsync = null, Func<DateTimeOffset, Task<bool>>? authorizeAt = null, bool retryUnconfirmed = true);
     Task<QrSnapshot> QrAsync(Course course, CancellationToken ct = default);
     Task<DateTimeOffset> SchoolNowAsync(CancellationToken ct = default);
     void ClearClock();

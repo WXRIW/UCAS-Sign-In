@@ -40,6 +40,7 @@ public sealed class AutoSignExecutionTests
         await h.Model.SetAutoSignSettingsAsync(running: true);
         await h.Model.TickAsync();
         Assert.Equal(1, h.School.Signs);
+        Assert.False(h.School.RetryUnconfirmed);
         h.Clock.Now = h.School.Now = h.Clock.Now.AddMinutes(2);
         await h.Model.TickAsync();
         Assert.Equal(1, h.School.Signs);

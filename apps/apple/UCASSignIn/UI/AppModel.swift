@@ -890,7 +890,7 @@ final class AppModel: ObservableObject {
         guard let session else { return }
         var autoSubmissionReserved = false
         do {
-            let result = try await service.sign(course: course, session: session, authorizeSynchronizedSubmission: { [self] schoolNow in
+            let result = try await service.sign(course: course, session: session, retryUnconfirmed: !automatically, authorizeSynchronizedSubmission: { [self] schoolNow in
                 // School clock synchronization can suspend before the actual submission.
                 guard token == generation, !isSignInDisabled(for: course),
                       attendanceStatus(for: course) == .unsigned, !needsCourseRefresh(course),
@@ -929,7 +929,8 @@ final class AppModel: ObservableObject {
             }
             if automatically { await notifyAutoSign(course, message: result.message, succeeded: succeeded) }
             saveRecords()
-            // Only a read is allowed after an uncertain result; never automatically resubmit.
+            // The service has completed its bounded retries and reconciliation. Refresh the
+            // visible page without adding another submission outside that budget.
             if let date = CourseTime.parse(day: course.day, time: "00:00") {
                 // A request started before signing cannot confirm the new attendance state.
                 if let read = refreshTasks[SchoolDate.key(date)] { await read.task.value }

@@ -13,7 +13,7 @@ public sealed record Course(string Id, string Uuid, string Name, string Teacher,
 public sealed record CourseQueryResult(IReadOnlyList<Course> Courses, string Message, bool FromWeeklyFallback = false, bool FromCache = false);
 public enum SignOutcome
 {
-    Signed, QrExpired, OutsideSignWindow, Unknown
+    Signed, QrExpired, OutsideSignWindow, Unknown, TimestampRejected
 }
 public sealed record SignResult(SignOutcome Outcome, string Message, string Status = "", string ErrCode = "", string StuSignId = "");
 public sealed record SignInFailure(Guid Id, string Message);

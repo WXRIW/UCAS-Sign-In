@@ -9,14 +9,17 @@ public sealed class SchoolClient : ISchoolClient, IDisposable
     public static readonly Uri BaseUri = new("https://iclass.ucas.edu.cn:8181/app/");
     const string VerificationUrl = "http://iclass.ucas.edu.cn:88/ve/webservices/mobileCheck.shtml?method=mobileLogin&username=${0}&password=${1}&lx=${2}";
     readonly HttpClient http; readonly TimeProvider clock; readonly object clockLock = new();
+    readonly Func<TimeSpan, CancellationToken, Task> retryDelay;
     ClockSample? sample; Task<ClockSample>? pending; int generation;
     sealed record ClockSample(long Timestamp, long Received);
-    public SchoolClient(HttpMessageHandler? handler = null, TimeProvider? timeProvider = null)
+    public SchoolClient(HttpMessageHandler? handler = null, TimeProvider? timeProvider = null,
+        Func<TimeSpan, CancellationToken, Task>? retryDelay = null)
     {
         // Redirects are rejected, so credentials can never leave the configured HTTPS origin.
         http = new(handler ?? new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false });
         http.Timeout = TimeSpan.FromSeconds(20);
         clock = timeProvider ?? TimeProvider.System;
+        this.retryDelay = retryDelay ?? ((delay, ct) => Task.Delay(delay, ct));
     }
     public async Task<SchoolSession> LoginAsync(string username, string password, CancellationToken ct = default)
     {
@@ -82,26 +85,97 @@ public sealed class SchoolClient : ISchoolClient, IDisposable
             ["courseId"] = courseId
         }, ct: ct), courseId);
     public async Task<SignResult> SignAsync(Course course, SchoolSession session, CancellationToken ct = default, Func<bool>? authorize = null,
-        Func<Task<bool>>? authorizeAsync = null, Func<DateTimeOffset, Task<bool>>? authorizeAt = null)
+        Func<Task<bool>>? authorizeAsync = null, Func<DateTimeOffset, Task<bool>>? authorizeAt = null, bool retryUnconfirmed = true)
     {
         if (!Regex.IsMatch(course.Id, "^[0-9]{7}$"))
             throw new SchoolException("COURSE_ID_INVALID", "课程缺少有效的 7 位签到 ID，请刷新课表");
-        var reading = await ReadingAsync(ct);
-        if (authorize is not null && !authorize())
-            throw new OperationCanceledException("签到设置已改变，未向学校提交", ct);
-        if (authorizeAsync is not null && !await authorizeAsync())
-            throw new OperationCanceledException("自动签到记录未能保存，未向学校提交", ct);
-        if (authorizeAt is not null && !await authorizeAt(DateTimeOffset.FromUnixTimeMilliseconds(reading.Timestamp)))
-            throw new OperationCanceledException("自动签到计划已改变，未向学校提交", ct);
-        var json = await ExecuteAsync("course/stu_scan_sign.action", session, query: new()
+        // Scheduled signing owns its verification cadence and submission limits.
+        var limit = retryUnconfirmed ? 3 : 1;
+        SignResult? previous = null;
+        SchoolException? previousError = null;
+        for (var attempt = 0; attempt < limit; attempt++)
         {
-            ["courseSchedId"] = course.Id,
-            ["timestamp"] = reading.Timestamp.ToString(),
-            ["id"] = session.UserId
-        }, timeout: 10, ct: ct);
-        ResponseParser.RejectSessionError(json);
-        return ResponseParser.Sign(json);
+            ct.ThrowIfCancellationRequested();
+            var reading = await ReadingAsync(ct);
+            var schoolNow = DateTimeOffset.FromUnixTimeMilliseconds(reading.Timestamp);
+            if (attempt > 0 && !CourseTime.InSignWindow(course, schoolNow)) break;
+            if ((authorize is not null && !authorize())
+                || (authorizeAsync is not null && !await authorizeAsync())
+                || (authorizeAt is not null && !await authorizeAt(schoolNow)))
+            {
+                if (attempt > 0) break;
+                throw new OperationCanceledException("签到设置或计划已改变，未向学校提交", ct);
+            }
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var json = await ExecuteAsync("course/stu_scan_sign.action", session, query: new()
+                {
+                    ["courseSchedId"] = course.Id,
+                    ["timestamp"] = reading.Timestamp.ToString(),
+                    ["id"] = session.UserId
+                }, timeout: 10, ct: ct);
+                ResponseParser.RejectSessionError(json);
+                previous = ResponseParser.Sign(json);
+                previousError = null;
+            }
+            catch (SchoolException e) when (IsTransient(e)) { previous = null; previousError = e; }
+            if (previous is { } result)
+            {
+                if (result.Outcome == SignOutcome.Signed) return result;
+                if (result.Outcome is SignOutcome.QrExpired or SignOutcome.TimestampRejected)
+                {
+                    // This timestamp was explicitly rejected; never reuse its cached sample.
+                    ClearClock();
+                    if (attempt + 1 < limit) await retryDelay(TimeSpan.FromSeconds(attempt + 1), ct);
+                    continue;
+                }
+                if (result.Outcome == SignOutcome.OutsideSignWindow && result.Message != "学校提示已签到，请刷新课程状态") return result;
+            }
+            if (!retryUnconfirmed) break;
+            // An unclear reply may have committed. Require two fresh, explicit unsigned
+            // daily observations before retrying; never infer unsigned from missing data.
+            var state = await VerifySubmissionAsync(course, session, ct);
+            if (state == SubmissionState.Signed)
+                return new(SignOutcome.Signed, "签到成功（已向学校核实）", "0", StuSignId: previous?.StuSignId ?? "");
+            if (state != SubmissionState.Unsigned || previous?.Outcome == SignOutcome.OutsideSignWindow) break;
+            ClearClock();
+        }
+        if (previous is not null) return previous;
+        throw previousError ?? new SchoolException("SIGN_UNCONFIRMED", "学校未明确确认签到完成，请刷新课程状态后再决定是否重试");
     }
+    enum SubmissionState { Signed, Unsigned, Unknown }
+    async Task<SubmissionState> VerifySubmissionAsync(Course course, SchoolSession session, CancellationToken ct)
+    {
+        foreach (var delay in new[] { 1, 2 })
+        {
+            await retryDelay(TimeSpan.FromSeconds(delay), ct);
+            ct.ThrowIfCancellationRequested();
+            JsonElement json;
+            try
+            {
+                json = await ExecuteAsync("course/get_stu_course_sched.action", session,
+                    new() { ["id"] = session.UserId, ["dateStr"] = course.Day }, ct: ct);
+            }
+            catch (SchoolException e) when (IsTransient(e)) { return SubmissionState.Unknown; }
+            ResponseParser.RejectSessionError(json);
+            if (ResponseParser.Text(json, "STATUS") != "0" || ResponseParser.Text(json, "ERRCODE") is not ("" or "0")
+                || ResponseParser.Text(json, "ERRMSG") != ""
+                || ResponseParser.Field(json, "success").ValueKind is not (JsonValueKind.Undefined or JsonValueKind.True)
+                || ResponseParser.Field(json, "result").ValueKind != JsonValueKind.Array) return SubmissionState.Unknown;
+            var matches = ResponseParser.Field(json, "result").EnumerateArray().Where(x => ResponseParser.Text(x, "id") == course.Id).ToArray();
+            if (matches.Length != 1) return SubmissionState.Unknown;
+            switch (ResponseParser.Text(matches[0], "signStatus"))
+            {
+                case "1": return SubmissionState.Signed;
+                case "0": break;
+                default: return SubmissionState.Unknown;
+            }
+        }
+        return SubmissionState.Unsigned;
+    }
+    static bool IsTransient(SchoolException e) => e.Code is "NETWORK_UNAVAILABLE" or "NETWORK_TIMEOUT"
+        or "HTTP_408" or "HTTP_500" or "HTTP_502" or "HTTP_503" or "HTTP_504" or "BAD_RESPONSE";
     public static string QrUrl(string identifier, long timestamp)
     {
         identifier = identifier.Trim();
@@ -159,17 +233,24 @@ public sealed class SchoolClient : ISchoolClient, IDisposable
     }
     async Task<ClockSample> SyncAsync()
     {
-        var start = clock.GetTimestamp();
-        var json = await ExecuteAsync("common/get_timestamp.do", fields: [], query: new()
+        for (var attempt = 0; ; attempt++)
         {
-            ["id"] = "0"
-        }, timeout: 6);
-        var timestamp = ResponseParser.Timestamp(json);
-        var received = clock.GetTimestamp();
-        var trip = clock.GetElapsedTime(start, received);
-        if (trip < TimeSpan.Zero || trip >= TimeSpan.FromSeconds(30))
-            throw new SchoolException("TIME_SYNC_EXPIRED", "学校校时已过期，请重试");
-        return new(timestamp + (long)(trip.TotalMilliseconds / 2), received);
+            var start = clock.GetTimestamp();
+            try
+            {
+                var json = await ExecuteAsync("common/get_timestamp.do", fields: [], query: new() { ["id"] = "0" }, timeout: 6);
+                var timestamp = ResponseParser.Timestamp(json);
+                var received = clock.GetTimestamp();
+                var trip = clock.GetElapsedTime(start, received);
+                if (trip < TimeSpan.Zero || trip >= TimeSpan.FromSeconds(30))
+                    throw new SchoolException("TIME_SYNC_EXPIRED", "学校校时已过期，请重试");
+                return new(timestamp + (long)(trip.TotalMilliseconds / 2), received);
+            }
+            catch (SchoolException e) when (attempt < 2 && IsTransient(e))
+            {
+                await retryDelay(TimeSpan.FromSeconds(attempt + 1), CancellationToken.None);
+            }
+        }
     }
     async Task<JsonElement> ExecuteAsync(string path, SchoolSession? session = null, Dictionary<string, string>? fields = null,
         Dictionary<string, string>? query = null, bool login = false, int timeout = 15, CancellationToken ct = default)

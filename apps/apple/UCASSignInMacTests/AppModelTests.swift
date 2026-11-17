@@ -324,6 +324,48 @@ final class AppModelTests: XCTestCase {
         XCTAssertFalse(model.todayCourses.first?.signed == true)
     }
 
+    func testUnclearSignWaitsForSchoolVerificationBeforeShowingResult() async throws {
+        let gate = ResponseGate()
+        let signed = courseResponse("课程").replacingOccurrences(of: "\"signStatus\":\"0\"", with: "\"signStatus\":\"1\"")
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("课程")), .init(signed, gate: gate), .init(signed)],
+            "clock": [.init(clockJSON(CourseTime.parse(day: SchoolDate.key(.now), time: "08:30")!))],
+            "sign": [.init("{}")]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), transport)
+        await model.restore()
+        let signing = Task { await model.sign(try XCTUnwrap(model.todayCourses.first)) }
+        await assertEventually { await transport.count("courses:session-a") == 2 }
+        XCTAssertNil(model.errorMessage)
+        XCTAssertNotNil(model.signingID)
+        await gate.open()
+        try await signing.value
+        XCTAssertNil(model.errorMessage)
+        XCTAssertTrue(try XCTUnwrap(model.todayCourses.first).signed)
+        XCTAssertTrue(try XCTUnwrap(model.records.first).succeeded)
+        let signs = await transport.count("sign")
+        XCTAssertEqual(signs, 1)
+    }
+
+    func testManualUnclearSignRetriesInsideOneOperationAndRecordsFinalResult() async throws {
+        let clock = clockJSON(CourseTime.parse(day: SchoolDate.key(.now), time: "08:30")!)
+        let signed = courseResponse("课程").replacingOccurrences(of: "\"signStatus\":\"0\"", with: "\"signStatus\":\"1\"")
+        let transport = PlannedTransport([
+            "courses:session-a": [.init(courseResponse("课程")), .init(courseResponse("课程")), .init(courseResponse("课程")), .init(signed)],
+            "clock": [.init(clock), .init(clock)],
+            "sign": [.init("{}"), .init(#"{"STATUS":"0","result":{"stuSignStatus":"1"}}"#)]
+        ])
+        let model = makeModel(MemoryAccountStore(accounts: [accountA], active: accountA.id), transport)
+        await model.restore()
+        await model.sign(try XCTUnwrap(model.todayCourses.first))
+        XCTAssertNil(model.errorMessage)
+        XCTAssertTrue(try XCTUnwrap(model.todayCourses.first).signed)
+        XCTAssertEqual(model.records.count, 1)
+        XCTAssertTrue(try XCTUnwrap(model.records.first).succeeded)
+        let signs = await transport.count("sign")
+        XCTAssertEqual(signs, 2)
+    }
+
     func testLateNotificationAuthorizationSuccessAndFailureCannotChangeNewAccount() async {
         for fails in [false, true] {
             let permissionGate = ResponseGate()
@@ -2524,7 +2566,7 @@ final class AppModelTests: XCTestCase {
                            cloudSync: CloudSyncCoordinator? = nil) -> AppModel {
         let now = CourseTime.parse(day: SchoolDate.key(.now), time: "08:30")!
         let localClock = clock ?? TestClock(now)
-        let model = AppModel(service: QingxinService(transport: transport, now: { localClock.get() }, monotonicNow: { localClock.elapsed() }), accountStore: store, defaults: defaults,
+        let model = AppModel(service: QingxinService(transport: transport, now: { localClock.get() }, monotonicNow: { localClock.elapsed() }, retryDelay: { _ in }), accountStore: store, defaults: defaults,
                              notifications: notifications ?? TestNotifications(), widgets: widgets ?? TestWidgets(), cloudSync: cloudSync)
         model.attendanceNow = { localClock.get() }
         model.autoSignMonotonicNow = { localClock.elapsed() }

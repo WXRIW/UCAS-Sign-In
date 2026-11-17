@@ -155,6 +155,7 @@ public sealed class FakeSchool : ISchoolClient
     public Func<string, Task<CourseAttendanceSummary>> AttendanceQuery = course => Task.FromResult(new CourseAttendanceSummary(0, 0, []));
     public int Logins, Reads, Signs, ClockReads, SemesterReads, CatalogReads, AttendanceReads;
     public Course? LastSignedCourse;
+    public bool? RetryUnconfirmed;
     public Task<SchoolSession> LoginAsync(string username, string password, CancellationToken ct = default)
     {
         Logins++;
@@ -169,13 +170,14 @@ public sealed class FakeSchool : ISchoolClient
     public Task<IReadOnlyList<CatalogCourse>> CatalogCoursesAsync(SchoolSession session, string semesterId, CancellationToken ct = default) { CatalogReads++; return CatalogQuery(semesterId); }
     public Task<CourseAttendanceSummary> CourseAttendanceAsync(SchoolSession session, string courseId, CancellationToken ct = default) { AttendanceReads++; return AttendanceQuery(courseId); }
     public async Task<SignResult> SignAsync(Course course, SchoolSession session, CancellationToken ct = default, Func<bool>? authorize = null,
-        Func<Task<bool>>? authorizeAsync = null, Func<DateTimeOffset, Task<bool>>? authorizeAt = null)
+        Func<Task<bool>>? authorizeAsync = null, Func<DateTimeOffset, Task<bool>>? authorizeAt = null, bool retryUnconfirmed = true)
     {
         await BeforeSignAuthorization();
         if (authorize is not null && !authorize()) throw new OperationCanceledException();
         if (authorizeAsync is not null && !await authorizeAsync()) throw new OperationCanceledException();
         if (authorizeAt is not null && !await authorizeAt(Now)) throw new OperationCanceledException();
         Signs++;
+        RetryUnconfirmed = retryUnconfirmed;
         LastSignedCourse = course;
         return await Sign();
     }

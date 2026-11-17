@@ -547,7 +547,7 @@ public sealed partial class AccountCoordinator(ISchoolClient school, IAccountSto
                 result = new(SignOutcome.Signed, "演示签到成功 · 未向学校提交");
             }
             else result = await school.SignAsync(course, ActiveAccount!.Session, lifetime.Token, Authorize,
-                authorizeAt: automatically ? ReserveAutomaticSubmission : null);
+                authorizeAt: automatically ? ReserveAutomaticSubmission : null, retryUnconfirmed: !automatically);
             if (epoch != Generation)
                 return;
             Records = new[] { new AttendanceRecord(course.Name, clock.GetUtcNow(), result.Message, result.Outcome == SignOutcome.Signed, course.CourseId, course.Id) }.Concat(Records).ToList();

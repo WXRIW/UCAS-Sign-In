@@ -195,6 +195,146 @@ final class QingxinServiceTests: XCTestCase {
         XCTAssertEqual(Dictionary(uniqueKeysWithValues: query.map { ($0.name, $0.value!) }), ["courseSchedId": "1234567", "timestamp": "1789430400000", "id": "student-id"])
     }
 
+    func testUnclearSignReconcilesSuccessWithoutResubmitting() async throws {
+        let transport = FixtureTransport([clockFixture, "{}", signState("1")])
+        let result = try await retryService(transport).sign(course: sampleCourse(), session: testSession)
+        XCTAssertEqual(result.outcome, .signed)
+        let requests = await transport.requests
+        XCTAssertEqual(requests.filter { $0.url!.path.hasSuffix("stu_scan_sign.action") }.count, 1)
+        XCTAssertEqual(requests.count, 3)
+    }
+
+    func testUnclearSignRetriesOnlyAfterTwoUnsignedReadsAndUsesNewClock() async throws {
+        let transport = FixtureTransport([clockFixture, "{}", signState("0"), signState("0"),
+                                          #"{"STATUS":"0","timestamp":1789430405000}"#, signSuccess])
+        let counter = await AuthorizationCounter()
+        let result = try await retryService(transport).sign(course: sampleCourse(), session: testSession,
+                                                            authorizeSubmission: { counter.count += 1 })
+        XCTAssertEqual(result.outcome, .signed)
+        let requests = await transport.requests
+        XCTAssertEqual(requests.map { $0.url!.lastPathComponent }, ["get_timestamp.do", "stu_scan_sign.action",
+            "get_stu_course_sched.action", "get_stu_course_sched.action", "get_timestamp.do", "stu_scan_sign.action"])
+        XCTAssertTrue(requests.last!.url!.absoluteString.contains("timestamp=1789430405000"))
+        let authorizations = await counter.count
+        XCTAssertEqual(authorizations, 2)
+    }
+
+    func testUnknownOrMissingAttendanceNeverAuthorizesRetry() async throws {
+        for state in ["{}", #"{"STATUS":"0","result":[]}"#,
+                      #"{"STATUS":"0","result":[{"id":"7654321","signStatus":"0"}]}"#,
+                      #"{"STATUS":"0","result":[{"id":"1234567","signStatus":false}]}"#,
+                      #"{"STATUS":"0","success":false,"result":[{"id":"1234567","signStatus":"0"}]}"#,
+                      #"{"STATUS":"0","result":[{"id":"1234567","signStatus":"0"},{"id":"1234567","signStatus":"1"}]}"#,
+                      "bad gateway"] {
+            let transport = FixtureTransport([clockFixture, "{}", state])
+            let result = try await retryService(transport).sign(course: sampleCourse(), session: testSession)
+            XCTAssertEqual(result.outcome, .unknown)
+            let requests = await transport.requests
+            XCTAssertEqual(requests.count, 3, state)
+        }
+    }
+
+    func testSecondReadCanConfirmDelayedSuccess() async throws {
+        let transport = FixtureTransport([clockFixture, "{}", signState("0"), signState("1")])
+        let result = try await retryService(transport).sign(course: sampleCourse(), session: testSession)
+        XCTAssertEqual(result.outcome, .signed)
+        let requests = await transport.requests
+        XCTAssertEqual(requests.count, 4)
+    }
+
+    func testSubmissionRetryLimitAndScheduledSubmissionBudget() async throws {
+        for retry in [true, false] {
+            let attempts = retry ? 3 : 1
+            let transport = FixtureTransport(Array(repeating: [clockFixture, "{}", signState("0"), signState("0")], count: attempts).flatMap { $0 })
+            let result = try await retryService(transport).sign(course: sampleCourse(), session: testSession, retryUnconfirmed: retry)
+            XCTAssertEqual(result.outcome, .unknown)
+            let requests = await transport.requests
+            XCTAssertEqual(requests.filter { $0.url!.path.hasSuffix("stu_scan_sign.action") }.count, attempts)
+            XCTAssertEqual(requests.count, retry ? attempts * 4 : 2)
+        }
+    }
+
+    func testTimestampRejectionForcesCalibrationBeforeRetry() async throws {
+        let rejected = #"{"STATUS":"1","ERRCODE":"100","ERRMSG":"时间戳传入异常！"}"#
+        XCTAssertEqual(ResponseParser.sign(try json(rejected)).outcome, .timestampRejected)
+        let transport = FixtureTransport([clockFixture, rejected, #"{"STATUS":"0","timestamp":1789430405000}"#, signSuccess])
+        let result = try await retryService(transport).sign(course: sampleCourse(), session: testSession)
+        XCTAssertEqual(result.outcome, .signed)
+        let requests = await transport.requests
+        XCTAssertEqual(requests.count, 4)
+        XCTAssertTrue(requests[3].url!.absoluteString.contains("timestamp=1789430405000"))
+    }
+
+    func testRetryRechecksAuthorizationAndSchoolSignWindow() async throws {
+        let counter = await AuthorizationCounter()
+        let transport = FixtureTransport([clockFixture, "{}", signState("0"), signState("0"), clockFixture])
+        let result = try await retryService(transport).sign(course: sampleCourse(), session: testSession, authorizeSubmission: {
+            counter.count += 1
+            if counter.count > 1 { throw APIError(code: "SIGN_NOT_ALLOWED", message: "已停用") }
+        })
+        XCTAssertEqual(result.outcome, .unknown)
+        let requests = await transport.requests
+        XCTAssertEqual(requests.filter { $0.url!.path.hasSuffix("stu_scan_sign.action") }.count, 1)
+        let ended = FixtureTransport([clockFixture, "{}", signState("0"), signState("0"), #"{"STATUS":"0","timestamp":1789437600000}"#])
+        let endedResult = try await retryService(ended).sign(course: sampleCourse(), session: testSession)
+        XCTAssertEqual(endedResult.outcome, .unknown)
+        let endedRequests = await ended.requests
+        XCTAssertEqual(endedRequests.count, 5)
+    }
+
+    func testClockTransientFailureRetriesAndDoesNotIncludeBackoffInClockOffset() async throws {
+        let clock = TestClock()
+        let transport = FixtureTransport(["bad gateway", clockFixture], onResponse: { clock.advance(0.2) })
+        let service = QingxinService(transport: transport, now: { clock.date }, retryDelay: { clock.advance($0) })
+        let timestamp = try await service.schoolNow()
+        XCTAssertEqual(timestamp.timeIntervalSince1970, 1789430400.1, accuracy: 0.001)
+        let requests = await transport.requests
+        XCTAssertEqual(requests.count, 2)
+    }
+
+    func testCancellationDuringVerificationNeverResubmits() async throws {
+        let transport = FixtureTransport([clockFixture, "{}"])
+        let service = QingxinService(transport: transport, retryDelay: { _ in throw CancellationError() })
+        do {
+            _ = try await service.sign(course: sampleCourse(), session: testSession)
+            XCTFail("Cancellation ignored")
+        } catch is CancellationError { }
+        let requests = await transport.requests
+        XCTAssertEqual(requests.count, 2)
+    }
+
+    func testLostNetworkResponseChecksStateWithoutResubmitting() async throws {
+        let transport = FixtureTransport([clockFixture, signState("1")], failures: [2: .networkConnectionLost])
+        let result = try await retryService(transport).sign(course: sampleCourse(), session: testSession)
+        XCTAssertEqual(result.outcome, .signed)
+        let requests = await transport.requests
+        XCTAssertEqual(requests.count, 3)
+        XCTAssertEqual(requests.filter { $0.url!.path.hasSuffix("stu_scan_sign.action") }.count, 1)
+    }
+
+    func testExplicitRefusalsAndExpiredSessionAreNotRetried() async throws {
+        for message in ["未在上课时间", "请使用扫码签到", "用户不存在"] {
+            let transport = FixtureTransport([clockFixture, #"{"STATUS":"1","ERRMSG":"\#(message)"}"#])
+            let result = try await retryService(transport).sign(course: sampleCourse(), session: testSession)
+            XCTAssertEqual(result.outcome, .outsideSignWindow)
+            let requests = await transport.requests
+            XCTAssertEqual(requests.count, 2)
+        }
+        let transport = FixtureTransport([clockFixture, #"{"ERRCODE":"401"}"#])
+        do {
+            _ = try await retryService(transport).sign(course: sampleCourse(), session: testSession)
+            XCTFail("Expired session accepted")
+        } catch let error as APIError { XCTAssertTrue(error.isSessionExpired) }
+        let requests = await transport.requests
+        XCTAssertEqual(requests.count, 2)
+    }
+
+    func testUnclearResponseRetainsSchoolExplanation() throws {
+        let result = ResponseParser.sign(try json(#"{"STATUS":"1","ERRMSG":"学校服务繁忙"}"#))
+        XCTAssertEqual(result.outcome, .unknown)
+        XCTAssertTrue(result.message.contains("学校服务繁忙"))
+    }
+
     func testAmbiguousOrContradictoryResponsesNeverClaimSuccess() throws {
         for payload in [#"{}"#, #"{"STATUS":"0"}"#, #"{"STATUS":"0","result":{"stuSignStatus":"0"}}"#, #"{"STATUS":"1","result":{"stuSignStatus":"1"}}"#, #"{"STATUS":"0","ERRCODE":"5","result":{"stuSignStatus":"1"}}"#, #"{"STATUS":"0","success":false,"result":{"stuSignStatus":"1"}}"#, #"{"STATUS":"0","success":"true","result":{"stuSignStatus":"1"}}"#] {
             XCTAssertEqual(ResponseParser.sign(try json(payload)).outcome, .unknown)
@@ -276,22 +416,35 @@ final class QingxinServiceTests: XCTestCase {
     }
 }
 
+private let clockFixture = #"{"STATUS":"0","timestamp":1789430400000}"#
+private let signSuccess = #"{"STATUS":"0","result":{"stuSignStatus":"1"}}"#
+private func signState(_ status: String) -> String {
+    #"{"STATUS":"0","result":[{"id":"1234567","signStatus":"\#(status)"}]}"#
+}
+private func retryService(_ transport: FixtureTransport) -> QingxinService {
+    QingxinService(transport: transport, now: { Date(timeIntervalSince1970: 100) }, retryDelay: { _ in })
+}
+@MainActor private final class AuthorizationCounter { var count = 0 }
+
 private actor FixtureTransport: HTTPTransport {
     private var fixtures: [String]
     private let status: Int
     private let onResponse: @Sendable () -> Void
     private let delayNanoseconds: UInt64
+    private let failures: [Int: URLError.Code]
     private(set) var requests: [URLRequest] = []
 
-    init(_ fixtures: [String], status: Int = 200, delayNanoseconds: UInt64 = 0, onResponse: @escaping @Sendable () -> Void = {}) {
+    init(_ fixtures: [String], status: Int = 200, delayNanoseconds: UInt64 = 0, failures: [Int: URLError.Code] = [:], onResponse: @escaping @Sendable () -> Void = {}) {
         self.fixtures = fixtures
         self.status = status
         self.onResponse = onResponse
         self.delayNanoseconds = delayNanoseconds
+        self.failures = failures
     }
 
     func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         requests.append(request)
+        if let failure = failures[requests.count] { throw URLError(failure) }
         guard !fixtures.isEmpty else { throw URLError(.badServerResponse) }
         let value = fixtures.removeFirst()
         if delayNanoseconds > 0 { try await Task.sleep(nanoseconds: delayNanoseconds) }

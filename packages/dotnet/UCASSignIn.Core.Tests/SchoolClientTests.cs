@@ -157,7 +157,7 @@ public class SchoolClientTests
         await Assert.ThrowsAsync<OperationCanceledException>(() => task);
     }
     [Fact]
-    public async Task SignUsesClockAndIsNeverRetried()
+    public async Task SuccessfulSignUsesClockAndDoesNotRetry()
     {
         using var handler = new FakeHttp(r => r.Uri.AbsolutePath.EndsWith("get_timestamp.do") ? """{"STATUS":0,"timestamp":1789518600000}""" : Fixture("sign-success"));
         using var client = new SchoolClient(handler, new FakeClock(TestData.Now));
@@ -166,6 +166,159 @@ public class SchoolClientTests
         Assert.Equal(HttpMethod.Get, handler.Requests[1].Method);
         Assert.Contains("timestamp=1789518600000", handler.Requests[1].Uri.Query);
         Assert.Contains("&id=u-a", handler.Requests[1].Uri.Query);
+    }
+    static Task NoDelay(TimeSpan delay, CancellationToken ct) => Task.CompletedTask;
+    const string SchoolClock = """{"STATUS":0,"timestamp":1789518600000}""";
+    static string SignState(string status) => "{\"STATUS\":0,\"result\":[{\"id\":\"1234567\",\"signStatus\":\"" + status + "\"}]}";
+    static bool IsSign(FakeHttp.Request r) => r.Uri.AbsolutePath.EndsWith("stu_scan_sign.action");
+
+    [Fact]
+    public async Task UnclearSignReconcilesSuccessWithoutResubmitting()
+    {
+        using var handler = new FakeHttp(r => r.Uri.AbsolutePath.EndsWith("get_timestamp.do") ? SchoolClock : IsSign(r) ? "{}" : SignState("1"));
+        using var client = new SchoolClient(handler, new FakeClock(TestData.Now), NoDelay);
+        var result = await client.SignAsync(TestData.Course(), TestData.Session());
+        Assert.Equal(SignOutcome.Signed, result.Outcome);
+        Assert.Single(handler.Requests, IsSign);
+        Assert.Equal(3, handler.Requests.Count);
+    }
+    [Fact]
+    public async Task UnclearSignRequiresTwoUnsignedReadsAndNewClockBeforeRetry()
+    {
+        var fixtures = new Queue<string>([SchoolClock, "{}", SignState("0"), SignState("0"),
+            """{"STATUS":0,"timestamp":1789518605000}""", Fixture("sign-success")]);
+        using var handler = new FakeHttp(_ => fixtures.Dequeue());
+        using var client = new SchoolClient(handler, new FakeClock(TestData.Now), NoDelay);
+        var authorizations = 0;
+        var result = await client.SignAsync(TestData.Course(), TestData.Session(), authorize: () => { authorizations++; return true; });
+        Assert.Equal(SignOutcome.Signed, result.Outcome);
+        Assert.Equal(new[] { "get_timestamp.do", "stu_scan_sign.action", "get_stu_course_sched.action",
+            "get_stu_course_sched.action", "get_timestamp.do", "stu_scan_sign.action" }, handler.Requests.Select(r => r.Uri.Segments.Last()));
+        Assert.Contains("timestamp=1789518605000", handler.Requests.Last().Uri.Query);
+        Assert.Equal(2, authorizations);
+    }
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("""{"STATUS":0,"result":[]}""")]
+    [InlineData("""{"STATUS":0,"result":[{"id":"7654321","signStatus":"0"}]}""")]
+    [InlineData("""{"STATUS":0,"result":[{"id":"1234567","signStatus":false}]}""")]
+    [InlineData("""{"STATUS":0,"success":false,"result":[{"id":"1234567","signStatus":"0"}]}""")]
+    [InlineData("""{"STATUS":0,"result":[{"id":"1234567","signStatus":"0"},{"id":"1234567","signStatus":"1"}]}""")]
+    [InlineData("bad gateway")]
+    public async Task MissingOrUnknownAttendanceNeverAuthorizesRetry(string state)
+    {
+        using var handler = new FakeHttp(r => r.Uri.AbsolutePath.EndsWith("get_timestamp.do") ? SchoolClock : IsSign(r) ? "{}" : state);
+        using var client = new SchoolClient(handler, new FakeClock(TestData.Now), NoDelay);
+        Assert.Equal(SignOutcome.Unknown, (await client.SignAsync(TestData.Course(), TestData.Session())).Outcome);
+        Assert.Single(handler.Requests, IsSign);
+        Assert.Equal(3, handler.Requests.Count);
+    }
+    [Fact]
+    public async Task SecondReadCanConfirmDelayedSuccess()
+    {
+        var fixtures = new Queue<string>([SchoolClock, "{}", SignState("0"), SignState("1")]);
+        using var handler = new FakeHttp(_ => fixtures.Dequeue());
+        using var client = new SchoolClient(handler, new FakeClock(TestData.Now), NoDelay);
+        Assert.Equal(SignOutcome.Signed, (await client.SignAsync(TestData.Course(), TestData.Session())).Outcome);
+        Assert.Single(handler.Requests, IsSign);
+    }
+    [Theory]
+    [InlineData(true, 3)]
+    [InlineData(false, 1)]
+    public async Task SubmissionRetryLimitRespectsScheduledBudget(bool retry, int attempts)
+    {
+        using var handler = new FakeHttp(r => r.Uri.AbsolutePath.EndsWith("get_timestamp.do") ? SchoolClock : IsSign(r) ? "{}" : SignState("0"));
+        using var client = new SchoolClient(handler, new FakeClock(TestData.Now), NoDelay);
+        Assert.Equal(SignOutcome.Unknown, (await client.SignAsync(TestData.Course(), TestData.Session(), retryUnconfirmed: retry)).Outcome);
+        Assert.Equal(attempts, handler.Requests.Count(IsSign));
+        Assert.Equal(retry ? attempts * 4 : 2, handler.Requests.Count);
+    }
+    [Fact]
+    public async Task TimestampRejectionForcesCalibrationBeforeRetry()
+    {
+        const string rejected = """{"STATUS":1,"ERRCODE":100,"ERRMSG":"时间戳传入异常！"}""";
+        Assert.Equal(SignOutcome.TimestampRejected, ResponseParser.Sign(Json(rejected)).Outcome);
+        var fixtures = new Queue<string>([SchoolClock, rejected, """{"STATUS":0,"timestamp":1789518605000}""", Fixture("sign-success")]);
+        using var handler = new FakeHttp(_ => fixtures.Dequeue());
+        using var client = new SchoolClient(handler, new FakeClock(TestData.Now), NoDelay);
+        Assert.Equal(SignOutcome.Signed, (await client.SignAsync(TestData.Course(), TestData.Session())).Outcome);
+        Assert.Equal(4, handler.Requests.Count);
+        Assert.Contains("timestamp=1789518605000", handler.Requests.Last().Uri.Query);
+    }
+    [Fact]
+    public async Task RetryRechecksAuthorization()
+    {
+        using var handler = new FakeHttp(r => r.Uri.AbsolutePath.EndsWith("get_timestamp.do") ? SchoolClock : IsSign(r) ? "{}" : SignState("0"));
+        using var client = new SchoolClient(handler, new FakeClock(TestData.Now), NoDelay);
+        var authorizations = 0;
+        Assert.Equal(SignOutcome.Unknown, (await client.SignAsync(TestData.Course(), TestData.Session(), authorize: () => ++authorizations == 1)).Outcome);
+        Assert.Single(handler.Requests, IsSign);
+        Assert.Equal(2, authorizations);
+    }
+    [Fact]
+    public async Task RetryStopsWhenSchoolSignWindowEnds()
+    {
+        var fixtures = new Queue<string>([SchoolClock, "{}", SignState("0"), SignState("0"),
+            "{\"STATUS\":0,\"timestamp\":" + TestData.Course().End!.Value.ToUnixTimeMilliseconds() + "}"]);
+        using var handler = new FakeHttp(_ => fixtures.Dequeue());
+        using var client = new SchoolClient(handler, new FakeClock(TestData.Now), NoDelay);
+        Assert.Equal(SignOutcome.Unknown, (await client.SignAsync(TestData.Course(), TestData.Session())).Outcome);
+        Assert.Single(handler.Requests, IsSign);
+        Assert.Equal(5, handler.Requests.Count);
+    }
+    [Fact]
+    public async Task LostNetworkResponseChecksAttendanceBeforeAnotherSubmit()
+    {
+        using var handler = new FakeHttp(r => r.Uri.AbsolutePath.EndsWith("get_timestamp.do") ? SchoolClock
+            : IsSign(r) ? throw new HttpRequestException("connection reset") : SignState("1"));
+        using var client = new SchoolClient(handler, new FakeClock(TestData.Now), NoDelay);
+        Assert.Equal(SignOutcome.Signed, (await client.SignAsync(TestData.Course(), TestData.Session())).Outcome);
+        Assert.Single(handler.Requests, IsSign);
+    }
+    [Fact]
+    public async Task TransientClockFailureRetriesWithoutAddingBackoffToOffset()
+    {
+        var clock = new FakeClock(TestData.Now);
+        var requests = 0;
+        using var handler = new FakeHttp(_ => { clock.Now += TimeSpan.FromMilliseconds(200); return ++requests == 1 ? "bad gateway" : SchoolClock; });
+        using var client = new SchoolClient(handler, clock, (delay, _) => { clock.Now += delay; return Task.CompletedTask; });
+        Assert.Equal(DateTimeOffset.FromUnixTimeMilliseconds(1789518600100), await client.SchoolNowAsync());
+        Assert.Equal(2, handler.Requests.Count);
+    }
+    [Fact]
+    public async Task CancellationDuringVerificationNeverResubmits()
+    {
+        using var cancel = new CancellationTokenSource();
+        using var handler = new FakeHttp(r => r.Uri.AbsolutePath.EndsWith("get_timestamp.do") ? SchoolClock : "{}");
+        using var client = new SchoolClient(handler, new FakeClock(TestData.Now), (_, ct) => { cancel.Cancel(); ct.ThrowIfCancellationRequested(); return Task.CompletedTask; });
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => client.SignAsync(TestData.Course(), TestData.Session(), cancel.Token));
+        Assert.Equal(2, handler.Requests.Count);
+    }
+    [Theory]
+    [InlineData("未在上课时间")]
+    [InlineData("请使用扫码签到")]
+    [InlineData("用户不存在")]
+    public async Task ExplicitRefusalIsNotRetried(string message)
+    {
+        using var handler = new FakeHttp(r => IsSign(r) ? JsonSerializer.Serialize(new { STATUS = "1", ERRMSG = message }) : SchoolClock);
+        using var client = new SchoolClient(handler, new FakeClock(TestData.Now), NoDelay);
+        Assert.Equal(SignOutcome.OutsideSignWindow, (await client.SignAsync(TestData.Course(), TestData.Session())).Outcome);
+        Assert.Equal(2, handler.Requests.Count);
+    }
+    [Fact]
+    public async Task ExpiredSubmissionDoesNotResubmit()
+    {
+        using var handler = new FakeHttp(r => IsSign(r) ? """{"ERRCODE":"401"}""" : SchoolClock);
+        using var client = new SchoolClient(handler, new FakeClock(TestData.Now), NoDelay);
+        Assert.True((await Assert.ThrowsAsync<SchoolException>(() => client.SignAsync(TestData.Course(), TestData.Session()))).IsSessionExpired);
+        Assert.Equal(2, handler.Requests.Count);
+    }
+    [Fact]
+    public void UnclearResponseRetainsSchoolExplanation()
+    {
+        var result = ResponseParser.Sign(Json("""{"STATUS":1,"ERRMSG":"学校服务繁忙"}"""));
+        Assert.Equal(SignOutcome.Unknown, result.Outcome);
+        Assert.Contains("学校服务繁忙", result.Message);
     }
     [Fact]
     public async Task HttpAuthenticationAndInvalidJsonAreActionable()

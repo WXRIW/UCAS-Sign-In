@@ -165,18 +165,24 @@ public static class ResponseParser
         var error = Text(json, "ERRCODE");
         var message = new[] { Text(r, "msg"), Text(json, "ERRMSG"), Text(json, "msg"), Text(json, "message") }.FirstOrDefault(s => s.Length > 0) ?? "";
         var expired = Matches("(二维码|签到码).*(失效|过期)|timestamp.*(invalid|expired)", message);
-        var outside = Matches("未在上课时间|不在.*签到时间|不是上课时间|未选.*课|不属于.*课|已签到|重复签到", message);
+        var timestampRejected = Matches("(时间戳|timestamp).*(异常|无效|失效|过期|错误|invalid|expired)", message);
+        var outside = Matches("未在上课时间|不在.*签到时间|不是上课时间|未选.*课|不属于.*课|已签到|重复签到|请.*(扫码|扫描)|用户不存在|课程不存在|无.*权限", message);
+        var detail = string.Join(" ", message.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        detail = detail[..Math.Min(120, detail.Length)];
         var success = Field(json, "success");
-        var outcome = expired ? SignOutcome.QrExpired : status == "0" && error is "" or "0" && Text(r, "stuSignStatus") == "1"
+        var outcome = timestampRejected ? SignOutcome.TimestampRejected : expired ? SignOutcome.QrExpired : status == "0" && error is "" or "0" && Text(r, "stuSignStatus") == "1"
             && success.ValueKind is JsonValueKind.Undefined or JsonValueKind.True && !outside ? SignOutcome.Signed : outside ? SignOutcome.OutsideSignWindow : SignOutcome.Unknown;
         var display = outcome switch
         {
             SignOutcome.Signed => "签到成功",
             SignOutcome.QrExpired => "学校提示签到码已失效，请刷新后重试",
+            SignOutcome.TimestampRejected => "学校判定签到时间戳异常，请重新校时后重试",
             SignOutcome.OutsideSignWindow when message.Contains("已签到") || message.Contains("重复签到") => "学校提示已签到，请刷新课程状态",
             SignOutcome.OutsideSignWindow when message.Contains("未选") || message.Contains("不属于") => "学校提示当前身份未选此课程",
+            SignOutcome.OutsideSignWindow when Matches("请.*(扫码|扫描)", message) => "学校要求使用扫码签到，请使用轻新课堂扫码",
+            SignOutcome.OutsideSignWindow when Matches("用户不存在|课程不存在|无.*权限", message) => "学校拒绝了签到请求，请刷新课程并检查登录身份",
             SignOutcome.OutsideSignWindow => "学校未完成签到，请确认上课时间和课程状态",
-            _ => "学校未明确确认签到完成，请刷新课程状态后再决定是否重试"
+            _ => "学校未明确确认签到完成" + (detail.Length == 0 ? "" : $"（学校提示：{detail}）") + "，请刷新课程状态后再决定是否重试"
         };
         return new(outcome, display, status, error[..Math.Min(64, error.Length)], Text(r, "stuSignId"));
     }

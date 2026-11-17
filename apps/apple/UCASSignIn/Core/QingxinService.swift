@@ -53,14 +53,19 @@ public actor QingxinService {
     private let transport: any HTTPTransport
     private let now: @Sendable () -> Date
     private let monotonicNow: @Sendable () -> TimeInterval
+    private let retryDelay: @Sendable (TimeInterval) async throws -> Void
     private var sample: ClockSample?
     private var pendingSync: Task<ClockSample, Error>?
     private var clockGeneration = 0
 
     public init(transport: any HTTPTransport = URLSessionTransport(), now: (@Sendable () -> Date)? = nil,
-                monotonicNow: (@Sendable () -> TimeInterval)? = nil) {
+                monotonicNow: (@Sendable () -> TimeInterval)? = nil,
+                retryDelay: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
+                    try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                }) {
         self.transport = transport
         self.now = now ?? { Date() }
+        self.retryDelay = retryDelay
         if let monotonicNow { self.monotonicNow = monotonicNow }
         else if let now { self.monotonicNow = { now().timeIntervalSinceReferenceDate } }
         else { self.monotonicNow = { ProcessInfo.processInfo.systemUptime } }
@@ -149,23 +154,100 @@ public actor QingxinService {
         return try ResponseParser.courseAttendance(json, courseId: courseId)
     }
 
-    /// A sign-in is never retried automatically: an ambiguous network response may already have committed.
+    /// Reconcile ambiguous submissions with fresh daily reads before allowing a bounded retry.
+    /// Scheduled signing owns its verification cadence and submission limits, and disables this loop.
     public func sign(course: Course, session: SchoolSession,
+                     retryUnconfirmed: Bool = true,
                      authorizeSubmission: @MainActor @Sendable () async throws -> Void = {},
                      authorizeSynchronizedSubmission: (@MainActor @Sendable (Date) async throws -> Void)? = nil) async throws -> SignResult {
         guard course.id.range(of: "^[0-9]{7}$", options: .regularExpression) != nil else {
             throw APIError(code: "COURSE_ID_INVALID", message: "课程缺少有效的 7 位签到 ID，请刷新课表")
         }
-        let reading = try await synchronizedReading()
-        try await authorizeSubmission()
-        try await authorizeSynchronizedSubmission?(Date(timeIntervalSince1970: Double(reading.timestamp) / 1000))
-        let json = try await execute(path: "course/stu_scan_sign.action", session: session, query: [
-            URLQueryItem(name: "courseSchedId", value: course.id),
-            URLQueryItem(name: "timestamp", value: String(reading.timestamp)),
-            URLQueryItem(name: "id", value: session.userId)
-        ], timeout: 10)
-        try ResponseParser.rejectSessionError(json)
-        return ResponseParser.sign(json)
+        let limit = retryUnconfirmed ? 3 : 1
+        var previous: SignResult?
+        var previousError: Error?
+        for attempt in 0..<limit {
+            try Task.checkCancellation()
+            let reading = try await synchronizedReading()
+            let schoolNow = Date(timeIntervalSince1970: Double(reading.timestamp) / 1000)
+            if attempt > 0, !CourseTime.isWithinSignWindow(course, now: schoolNow) { break }
+            do {
+                try await authorizeSubmission()
+                try await authorizeSynchronizedSubmission?(schoolNow)
+            } catch {
+                if attempt == 0 || error is CancellationError { throw error }
+                break
+            }
+            try Task.checkCancellation()
+            do {
+                let json = try await execute(path: "course/stu_scan_sign.action", session: session, query: [
+                    URLQueryItem(name: "courseSchedId", value: course.id),
+                    URLQueryItem(name: "timestamp", value: String(reading.timestamp)),
+                    URLQueryItem(name: "id", value: session.userId)
+                ], timeout: 10)
+                try ResponseParser.rejectSessionError(json)
+                previous = ResponseParser.sign(json)
+                previousError = nil
+            } catch let error as APIError where Self.isTransient(error) {
+                previous = nil
+                previousError = error
+            }
+            if let result = previous {
+                if result.outcome == .signed { return result }
+                if result.outcome == .qrExpired || result.outcome == .timestampRejected {
+                    // The school explicitly rejected this timestamp; discard the cached sample.
+                    clearClock()
+                    if attempt + 1 < limit { try await retryDelay(Double(attempt + 1)) }
+                    continue
+                }
+                if result.outcome == .outsideSignWindow && result.message != "学校提示已签到，请刷新课程状态" { return result }
+            }
+            guard retryUnconfirmed else { break }
+            // A timeout or unclear reply may already have committed. Never resubmit on a
+            // missing, malformed, or unknown state, or on just one unsigned observation.
+            let state = try await verifySubmission(course: course, session: session)
+            if state == .signed {
+                return SignResult(outcome: .signed, message: "签到成功（已向学校核实）", status: "0", errCode: "", stuSignId: previous?.stuSignId ?? "")
+            }
+            guard state == .unsigned, previous?.outcome != .outsideSignWindow else { break }
+            clearClock()
+        }
+        if let previous { return previous }
+        throw previousError ?? APIError(code: "SIGN_UNCONFIRMED", message: "学校未明确确认签到完成，请刷新课程状态后再决定是否重试")
+    }
+
+    private enum SubmissionState { case signed, unsigned, unknown }
+
+    private func verifySubmission(course: Course, session: SchoolSession) async throws -> SubmissionState {
+        for delay in [1.0, 2.0] {
+            try await retryDelay(delay)
+            try Task.checkCancellation()
+            let json: [String: Any]
+            do {
+                json = try await execute(path: "course/get_stu_course_sched.action", session: session,
+                                         fields: [("id", session.userId), ("dateStr", course.day)])
+            } catch let error as APIError where Self.isTransient(error) { return .unknown }
+            try ResponseParser.rejectSessionError(json)
+            if let flag = json["success"] {
+                guard let value = flag as? NSNumber, CFGetTypeID(value) == CFBooleanGetTypeID(), value.boolValue else { return .unknown }
+            }
+            guard ResponseParser.scalar(json["STATUS"]) == "0",
+                  ["", "0"].contains(ResponseParser.scalar(json["ERRCODE"])),
+                  ResponseParser.scalar(json["ERRMSG"]).isEmpty,
+                  let entries = json["result"] as? [[String: Any]] else { return .unknown }
+            let matches = entries.filter { ResponseParser.scalar($0["id"]) == course.id }
+            guard matches.count == 1 else { return .unknown }
+            switch ResponseParser.scalar(matches[0]["signStatus"]) {
+            case "1": return .signed
+            case "0": continue
+            default: return .unknown
+            }
+        }
+        return .unsigned
+    }
+
+    private static func isTransient(_ error: APIError) -> Bool {
+        ["NETWORK_UNAVAILABLE", "NETWORK_TIMEOUT", "HTTP_408", "HTTP_500", "HTTP_502", "HTTP_503", "HTTP_504", "HTTP_BAD_RESPONSE", "BAD_RESPONSE"].contains(error.code)
     }
 
     public func qr(course: Course) async throws -> QRSnapshot {
@@ -230,16 +312,7 @@ public actor QingxinService {
         let task: Task<ClockSample, Error>
         if let pendingSync { task = pendingSync } else {
             task = Task {
-                let startedUptime = self.monotonicNow()
-                let json = try await self.execute(path: "common/get_timestamp.do", fields: [], query: [URLQueryItem(name: "id", value: "0")], timeout: 6)
-                let timestamp = try ResponseParser.timestamp(json)
-                let receivedAt = self.now()
-                let receivedUptime = self.monotonicNow()
-                let roundTrip = receivedUptime - startedUptime
-                guard roundTrip >= 0 && roundTrip < Self.timeSyncTTL else {
-                    throw APIError(code: "TIME_SYNC_EXPIRED", message: "学校校时已过期，请重试")
-                }
-                return ClockSample(schoolAtReceive: timestamp + Int64(roundTrip * 500), receivedAt: receivedAt, receivedUptime: receivedUptime)
+                try await self.syncClock()
             }
             pendingSync = task
         }
@@ -259,6 +332,26 @@ public actor QingxinService {
             if generation == clockGeneration { pendingSync = nil }
             throw error
         }
+    }
+
+    private func syncClock() async throws -> ClockSample {
+        for attempt in 0..<3 {
+            try Task.checkCancellation()
+            let startedUptime = monotonicNow()
+            do {
+                let json = try await execute(path: "common/get_timestamp.do", fields: [], query: [URLQueryItem(name: "id", value: "0")], timeout: 6)
+                let timestamp = try ResponseParser.timestamp(json)
+                let receivedUptime = monotonicNow()
+                let roundTrip = receivedUptime - startedUptime
+                guard roundTrip >= 0 && roundTrip < Self.timeSyncTTL else {
+                    throw APIError(code: "TIME_SYNC_EXPIRED", message: "学校校时已过期，请重试")
+                }
+                return ClockSample(schoolAtReceive: timestamp + Int64(roundTrip * 500), receivedAt: now(), receivedUptime: receivedUptime)
+            } catch let error as APIError where attempt < 2 && Self.isTransient(error) {
+                try await retryDelay(Double(attempt + 1))
+            }
+        }
+        throw APIError(code: "TIME_SYNC_BAD_RESPONSE", message: "学校校时数据异常，请重试")
     }
 
     private func execute(path: String, session: SchoolSession? = nil, fields: [(String, String)]? = nil, query: [URLQueryItem] = [], login: Bool = false, timeout: TimeInterval = 15) async throws -> [String: Any] {
@@ -288,6 +381,7 @@ public actor QingxinService {
         catch is CancellationError { throw CancellationError() }
         catch let error as URLError where error.code == .cancelled { throw CancellationError() }
         catch let error as APIError { throw error }
+        catch let error as URLError where error.code == .timedOut { throw APIError(code: "NETWORK_TIMEOUT", message: "学校服务连接超时，请重试") }
         catch { throw APIError(code: "NETWORK_UNAVAILABLE", message: "暂时无法连接学校服务，请检查网络后重试") }
         guard (200...299).contains(response.statusCode) else {
             let message = [401, 403].contains(response.statusCode) ? "登录已失效，请重新登录" : "学校服务请求失败（\(response.statusCode)）"
@@ -465,7 +559,8 @@ enum ResponseParser {
         let status = scalar(json["STATUS"]), errCode = String(scalar(json["ERRCODE"]).prefix(64))
         let message = [result["msg"], json["ERRMSG"], json["msg"], json["message"]].map(scalar).first { !$0.isEmpty } ?? ""
         let expired = matches("(二维码|签到码).*(失效|过期)|timestamp.*(invalid|expired)", message)
-        let outside = matches("未在上课时间|不在.*签到时间|不是上课时间|未选.*课|不属于.*课|已签到|重复签到", message)
+        let timestampRejected = matches("(时间戳|timestamp).*(异常|无效|失效|过期|错误|invalid|expired)", message)
+        let outside = matches("未在上课时间|不在.*签到时间|不是上课时间|未选.*课|不属于.*课|已签到|重复签到|请.*(扫码|扫描)|用户不存在|课程不存在|无.*权限", message)
         let explicitlySuccessful: Bool
         if let flag = json["success"] {
             if let number = flag as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() { explicitlySuccessful = number.boolValue }
@@ -473,7 +568,10 @@ enum ResponseParser {
         } else { explicitlySuccessful = true }
         let outcome: SignOutcome
         let display: String
-        if expired {
+        if timestampRejected {
+            outcome = .timestampRejected
+            display = "学校判定签到时间戳异常，请重新校时后重试"
+        } else if expired {
             outcome = .qrExpired
             display = "学校提示签到码已失效，请刷新后重试"
         } else if status == "0", (errCode.isEmpty || errCode == "0"), scalar(result["stuSignStatus"]) == "1", explicitlySuccessful, !outside {
@@ -483,10 +581,13 @@ enum ResponseParser {
             outcome = .outsideSignWindow
             if message.contains("已签到") || message.contains("重复签到") { display = "学校提示已签到，请刷新课程状态" }
             else if message.contains("未选") || message.contains("不属于") { display = "学校提示当前身份未选此课程" }
+            else if matches("请.*(扫码|扫描)", message) { display = "学校要求使用扫码签到，请使用轻新课堂扫码" }
+            else if matches("用户不存在|课程不存在|无.*权限", message) { display = "学校拒绝了签到请求，请刷新课程并检查登录身份" }
             else { display = "学校未完成签到，请确认上课时间和课程状态" }
         } else {
             outcome = .unknown
-            display = "学校未明确确认签到完成，请刷新课程状态后再决定是否重试"
+            let detail = String(message.split(whereSeparator: \.isWhitespace).joined(separator: " ").prefix(120))
+            display = "学校未明确确认签到完成" + (detail.isEmpty ? "" : "（学校提示：\(detail)）") + "，请刷新课程状态后再决定是否重试"
         }
         return SignResult(outcome: outcome, message: display, status: status, errCode: errCode, stuSignId: scalar(result["stuSignId"]))
     }
