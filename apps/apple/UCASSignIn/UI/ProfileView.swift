@@ -211,21 +211,7 @@ struct ProfileView: View {
             if model.records.isEmpty {
                 CompatibleContentUnavailableView("还没有签到记录", systemImage: "checkmark.seal", description: "在此设备完成签到后，结果会显示在这里。")
             } else {
-                List(model.records) { record in
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text(record.courseName).font(.headline)
-                            Spacer()
-                            Image(systemName: record.succeeded ? "checkmark.circle.fill" : "exclamationmark.circle")
-                                .foregroundStyle(record.succeeded ? Palette.green : .orange)
-                        }
-                        Text(record.message).font(.subheadline).foregroundStyle(.secondary)
-                        Text(SchoolDate.text(record.date, "M月d日 HH:mm:ss")).font(.caption).foregroundStyle(.secondary)
-                    }.padding(.vertical, 5)
-                        .listRowBackground(Palette.surface)
-                }
-                .scrollContentBackground(.hidden)
-                .appListPageMargins()
+                recordsList
             }
         }
         .frame(maxWidth: 680)
@@ -234,5 +220,46 @@ struct ProfileView: View {
         .accessibilityIdentifier("records.content")
         .navigationTitle(model.isDemo ? "演示签到记录" : recordsTitle)
         .appNavigationStyle(inline: true)
+    }
+
+    private var recordsList: some View {
+        #if os(iOS)
+        ScrollView {
+            // Keep the surface and dividers within the same safe-area layout as the rows.
+            LazyVStack(spacing: 0) {
+                ForEach(model.records) { record in
+                    VStack(spacing: 0) {
+                        if record.id != model.records.first?.id {
+                            Divider().accessibilityHidden(true)
+                        }
+                        recordRow(record).padding(.vertical, 20)
+                    }
+                }
+            }
+            .padding(.horizontal, 20)
+            .cardSurface()
+            .appPageHorizontalPadding()
+            .padding(.vertical, 24)
+        }
+        #else
+        List(model.records) { record in
+            recordRow(record).padding(.vertical, 5)
+                .listRowBackground(Palette.surface)
+        }
+        .scrollContentBackground(.hidden)
+        #endif
+    }
+
+    private func recordRow(_ record: AttendanceRecord) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(record.courseName).font(.headline)
+                Spacer()
+                Image(systemName: record.succeeded ? "checkmark.circle.fill" : "exclamationmark.circle")
+                    .foregroundStyle(record.succeeded ? Palette.green : .orange)
+            }
+            Text(record.message).font(.subheadline).foregroundStyle(.secondary)
+            Text(SchoolDate.text(record.date, "M月d日 HH:mm:ss")).font(.caption).foregroundStyle(.secondary)
+        }
     }
 }

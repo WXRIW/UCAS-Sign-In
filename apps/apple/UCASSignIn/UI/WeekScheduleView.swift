@@ -7,6 +7,7 @@ struct WeekScheduleView: View {
     @ScaledMetric(relativeTo: .subheadline) private var courseTitleSize: CGFloat = 14
     @ScaledMetric(relativeTo: .footnote) private var courseDetailSize: CGFloat = 12
     @ScaledMetric(relativeTo: .caption2) private var timeLabelSize: CGFloat = 10
+    @ScaledMetric(relativeTo: .caption2) private var gutter: CGFloat = 36
     let pinnedHeaderTop: CGFloat?
     let selectDate: (Date) -> Void
     let openCourse: (Course) -> Void
@@ -14,7 +15,6 @@ struct WeekScheduleView: View {
     @State private var pendingCourse: Course?
 
     private var days: [Date] { SchoolDate.week(containing: model.selectedDate) }
-    private var gutter: CGFloat { dynamicTypeSize.isAccessibilitySize ? 64 : 36 }
     private var headerHeight: CGFloat { dynamicTypeSize.isAccessibilitySize ? 100 : 64 }
     private var timelineTopInset: CGFloat { max(10, timeLabelSize) }
 
@@ -69,6 +69,8 @@ struct WeekScheduleView: View {
                         .frame(width: contentWidth)
                         .padding(.bottom, 12)
                     }
+                    // Keep horizontally scrolling columns out of the side controls' safe area.
+                    .clipped()
                 }
             }
             .accessibilityIdentifier("schedule.weekGrid")
@@ -149,7 +151,7 @@ struct WeekScheduleView: View {
                 Text(String(format: "%02d:00", hour))
                     .font(.system(size: timeLabelSize).monospacedDigit()).foregroundStyle(.secondary)
                     .padding(.trailing, 4)
-                    .offset(y: CGFloat(hour - hours.lowerBound) * hourHeight - 7)
+                    .offset(y: CGFloat(hour - hours.lowerBound) * hourHeight - timeLabelSize * 0.7)
                     .accessibilityIdentifier("schedule.hour.\(hour)")
             }
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
@@ -187,6 +189,8 @@ struct WeekScheduleView: View {
         let groups = block.groups
         let course = (block.entries.first { !$0.isOutsideWeek } ?? block.entries[0]).course
         let tint = block.isOutsideWeek ? Color.gray : courseColor(course, palette: colors)
+        let title = (groups.count > 1 ? Text("\(groups.count) 项安排") : Text(course.name))
+            .font(.system(size: courseTitleSize, weight: .semibold))
         return Button {
             if groups.count > 1 { overlappingBlock = block }
             else { openCourse(course) }
@@ -195,24 +199,22 @@ struct WeekScheduleView: View {
                 if block.isOutsideWeek {
                     Text("非本周").font(.system(size: courseDetailSize))
                 }
-                if groups.count > 1 {
-                    Text("\(groups.count) 项安排").font(.system(size: courseTitleSize, weight: .semibold))
-                    Image(systemName: "square.stack").font(.system(size: courseDetailSize))
-                    let outsideCount = groups.filter(\.isOutsideWeek).count
-                    if outsideCount > 0 && !block.isOutsideWeek {
-                        Text("\(outsideCount) 项非本周").font(.system(size: courseDetailSize))
+                ViewThatFits(in: .vertical) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        title
+                        if groups.count > 1 {
+                            Image(systemName: "square.stack").font(.system(size: courseDetailSize))
+                            let outsideCount = groups.filter(\.isOutsideWeek).count
+                            if outsideCount > 0 && !block.isOutsideWeek {
+                                Text("\(outsideCount) 项非本周").font(.system(size: courseDetailSize))
+                            }
+                        } else if let classroom = course.classroom {
+                            Text(classroom).font(.system(size: courseDetailSize))
+                        }
                     }
-                } else {
-                    Text(course.name)
-                        .font(.system(size: courseTitleSize, weight: .semibold))
-                        .fixedSize(horizontal: false, vertical: true)
-                    if let classroom = course.classroom {
-                        Text(classroom)
-                            .font(.system(size: courseDetailSize))
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                    .fixedSize(horizontal: false, vertical: true)
+                    title.truncationMode(.tail)
                 }
-                Spacer(minLength: 0)
             }
             .padding(.horizontal, 3).padding(.vertical, 6)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

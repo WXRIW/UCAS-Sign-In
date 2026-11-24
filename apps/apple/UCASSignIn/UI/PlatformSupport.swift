@@ -49,22 +49,6 @@ extension View {
         appPageHorizontalPadding(default: vertical).padding(.vertical, vertical)
     }
 
-    @ViewBuilder
-    func appListPageMargins() -> some View {
-        #if os(iOS)
-        if UIDevice.current.userInterfaceIdiom == .phone {
-            if #available(iOS 17.0, *) {
-                self.contentMargins(.horizontal, PageLayout.phoneMargin, for: .scrollContent)
-            } else {
-                // Inset-grouped lists already provide a 20-point content margin.
-                self.listStyle(.insetGrouped).padding(.horizontal, PageLayout.phoneMargin - 20)
-            }
-        } else { self }
-        #else
-        self
-        #endif
-    }
-
     /// macOS sheets need an explicit size because their content often scrolls.
     @ViewBuilder
     func appSheetSize(width: CGFloat = 560, height: CGFloat = 700) -> some View {
