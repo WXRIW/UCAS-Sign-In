@@ -62,11 +62,15 @@ pwsh scripts/signing/windows/new-certificate.ps1
 
 统一发布默认生成未签名 iOS IPA，以及临时签名的 macOS 通用包，不要求开发者证书。若需要真机开发签名，可配置被 Git 忽略的 `apps/apple/Config/Signing.local.xcconfig`。
 
-普通和最新 SDK 的未签名 iOS 打包均固定使用发布 App Group `group.cn.ucas.signin`，本机内部测试可以在本地配置中使用其他组。正式签名打包使用其指定的签名配置。
+未签名 iOS 包使用发布 App Group `group.cn.ucas.signin`，本机内部测试可以在本地配置中使用其他组。正式签名打包使用其指定的签名配置。
 
 ## 3. 正式构建
 
 ### 在 macOS 生成 Apple 产物
+
+常规包和默认签名包每次都使用本机已安装的最新正式版 Xcode 和随附的 SDK。脚本检查 `/Applications`、`~/Applications`、`DEVELOPER_DIR` 和 `xcode-select` 指向的安装位置，跳过 Beta 和 RC。构建开头会打印选中的 Xcode 版本和构建号。
+
+GitHub Actions 每次打包都会读取官方镜像清单，选择提供最新正式版 Xcode 的标准 Apple Silicon runner。新主版本或小版本进入镜像后，下一次构建会自动使用。[GitHub runner 镜像清单](https://github.com/actions/runner-images#available-images)
 
 ```sh
 scripts/publish/all-on-macos.sh
@@ -79,9 +83,25 @@ scripts/publish/all-on-macos.sh
 
 也可只执行 `scripts/publish/platforms/apple.sh`，结果相同。
 
+### 用 Xcode 16.4 生成 lagacy-sdk 兼容包
+
+```sh
+scripts/publish/lagacy-sdk.sh
+```
+
+该入口使用 Xcode 16.4 自带的 iOS 18.5 和 macOS 15.5 SDK。Apple 支持在 macOS 15.3 至 26.1.x 上运行这版 Xcode。[Apple 的 Xcode 系统要求](https://developer.apple.com/xcode/system-requirements/)
+
+脚本优先使用 `DEVELOPER_DIR`，其次查找 `/Applications/Xcode_16.4.app`，最后检查 `xcode-select` 当前选中的版本。Xcode 安装在其他位置时，可按下面的示例指定路径。
+
+```sh
+DEVELOPER_DIR="/Applications/Xcode 16.4.app/Contents/Developer" scripts/publish/lagacy-sdk.sh
+```
+
+兼容包与常规包共用打包、签名和校验步骤。IPA、通用 ZIP、PKG、日志以及 SHA-256 文件的名称都包含 `lagacy-sdk`，可与常规包一起保存在同一版本目录。GitHub Actions 的 **Package Apple with lagacy-sdk** 使用 `macos-15` runner，在相关主分支推送、Pull Request 或手动触发时运行。
+
 ### Apple 正式签名、iCloud 与公证
 
-在普通入口增加 `--signed`，或使用 `latest-apple-sdk.sh --signed`，启用独立的 archive/export 通道。默认无签名行为和原隐私扫描保持不变。正式通道的配置不完整或签名/公证失败会直接失败，不生成无签名替代包。
+在 `scripts/publish/all-on-macos.sh` 或 `scripts/publish/lagacy-sdk.sh` 后增加 `--signed` 即可使用对应工具链执行归档、导出和公证。签名配置不完整或签名、公证失败时，脚本会停止发布。
 
 在开发者门户创建同一 Team 下的 iOS App/Widget、Mac App/Widget 标识和匹配的发行描述文件；两主 App 共享 CloudKit 容器及 iCloud 钥匙串访问组，Widget 保留 App Groups。生产 schema 的配置与部署见 [Apple 开发说明](../../apps/apple/README.md#开发者容器与-production-schema)。Mac 需 Developer ID Application 与 Developer ID Installer 两个证书及私钥；iOS 需 Apple Distribution 证书及私钥。
 
@@ -97,17 +117,17 @@ export UCAS_MACOS_EXPORT_OPTIONS="$PWD/.local/apple-signing/MacExportOptions.pli
 export UCAS_MACOS_INSTALLER_IDENTITY='Developer ID Installer: Your Organization (YOURTEAMID)'
 export UCAS_NOTARY_PROFILE=your-notary-profile
 scripts/publish/all-on-macos.sh --signed
-# 或以本机最新已安装的 Xcode / SDK 构建同一签名通道：
-bash scripts/publish/latest-apple-sdk.sh --signed
 ```
 
 `UCAS_NOTARY_KEYCHAIN` 可指定保存公证凭据的钥匙串路径。脚本不会自动更新开发者门户、上传 App Store 或创建 GitHub Release。它依次 archive/export 两个平台、检查代码签名与嵌入 profiles、核对两个主 App 的 Production 容器和共享钥匙串组、对 Mac App 公证和 staple，再制作与公证签名 PKG。`Archive.xcconfig` 示例按 target 选择 profile，不要把单个 `PROVISIONING_PROFILE_SPECIFIER` 强制套给 App 和 Widget。
 
-输出文件为 `*-ios-signed.ipa`、`*-macos-universal-signed.zip`、`*-macos-universal-signed.pkg` 及 SHA-256；最新 SDK 版本增加 `latest-sdk` 标记。两平台验证和公证全部成功后才将产物放入发布目录。签名日志仅保存在本地 `logs/*-signed.log`，可能包含签名身份，不应公开上传。签名包允许经过验证的 App/Widget 固定位置包含 provisioning profile，其他私钥、本机配置和私人路径仍被隐私扫描拒绝。
+输出文件为 `*-ios-signed.ipa`、`*-macos-universal-signed.zip`、`*-macos-universal-signed.pkg` 及对应的 SHA-256 校验文件。两平台验证和公证全部成功后才将产物放入发布目录。签名日志仅保存在本地 `logs/*-signed.log`，可能包含签名身份，不应公开上传。签名包允许经过验证的 App/Widget 固定位置包含 provisioning profile，其他私钥、本机配置和私人路径仍被隐私扫描拒绝。
 
 正式验收必须使用有效签名设备与同一 Apple 账户检查双向资料/凭据恢复、离线冲突自动合并、密码清除及删除传播；无签名构建通过不代表 iCloud 权限或 Production schema 可用。
 
 #### 受保护的手动 Apple 签名 CI
+
+手动运行时，`toolchain` 默认为 `stable`，自动选择 runner 上可用的最新正式版 Xcode。选择 `lagacy-sdk` 可在 `macos-15` runner 上生成 Xcode 16.4 签名包。
 
 `.github/workflows/package-apple-signed.yml` 仅响应 `main` 分支的 `workflow_dispatch`，不处理 PR、push 或计划任务，也不创建 Release。仓库管理员需先创建 **`apple-release` Environment**，设置 required reviewers 与只允许 `main` 的 deployment branch 规则；这些远端规则不是工作流文件自动创建的。
 
@@ -125,25 +145,7 @@ bash scripts/publish/latest-apple-sdk.sh --signed
 | `APPLE_NOTARY_KEY_BASE64` | App Store Connect team API 私钥 `.p8` 的单行 Base64 |
 | `APPLE_NOTARY_KEY_ID` / `APPLE_NOTARY_ISSUER_ID` | 对应 API key ID 和 issuer ID |
 
-选择 `stable` 使用 Xcode 16.4，`latest` 使用 runner 上已安装的最高 Xcode。CI 建立临时钥匙串并安装 profiles，结束后恢复钥匙串搜索列表、删除本次安装的 profiles 和敏感文件；不会输出证书、密码或私钥内容。Artifacts 仅包含验证过的安装包和校验文件，不上传签名日志。现有 PR 工作流仍运行无签名构建。尚未配置 Secrets、环境保护或 Production schema 时，手动签名运行不会被视为已完成验收。
-
-### 使用最新 Apple SDK 构建兼容性包
-
-独立的 latest SDK 构建会选择机器上版本最高的 Xcode，使用其中实际安装的 iOS、macOS SDK 和 Swift 编译器，并仅在本次构建中把 Swift language mode 提升为当前编译器的主版本。iOS 和 macOS deployment target 继续使用 Xcode 工程中的配置，不会随 SDK 版本提高。
-
-latest 通道使用专用的 `platforms/apple-latest-sdk.sh`，不调用也不向普通 `platforms/apple.sh` 注入参数；普通发布脚本仍保持固定 Xcode 流程原有的构建行为。它不会改写 `Package.swift` 或 Xcode 工程，因此不会改变正式发布包对旧系统的兼容范围。生成的文件名包含 `latest-sdk`，并附带一份记录实际工具链和构建要求的 `apple-latest-sdk-build-info.txt`：
-
-```sh
-bash scripts/publish/latest-apple-sdk.sh
-```
-
-也可显式指定本机 Xcode：
-
-```sh
-bash scripts/publish/latest-apple-sdk.sh --xcode /Applications/Xcode.app
-```
-
-`.github/workflows/package-apple-latest.yml` 会从 GitHub 官方 `actions/runner-images` 清单解析最高的 `xcode-N` runner 标签（当前为 `xcode-27`），再在相关主分支推送、Pull Request、每周计划任务或手动触发时构建。新的 Xcode 大版本 runner 发布后无需手动修改工作流。它分别上传 `UCAS-SignIn-Latest-SDK-iOS`、`UCAS-SignIn-Latest-SDK-macOS` 和 `UCAS-SignIn-Latest-SDK-Info` 三个 Artifact。该 runner 和最新 SDK 通道可能处于预览状态，适合尽早发现兼容问题；固定 Xcode 的正式 Apple 发布流程保持不变。
+CI 建立临时钥匙串并安装 profiles，结束后恢复钥匙串搜索列表、删除本次安装的 profiles 和敏感文件；不会输出证书、密码或私钥内容。Artifacts 仅包含验证过的安装包和校验文件，不上传签名日志。现有 PR 工作流仍运行无签名构建。尚未配置 Secrets、环境保护或 Production schema 时，手动签名运行不会被视为已完成验收。
 
 ### 在 Windows 生成 Android 与 Windows 产物
 

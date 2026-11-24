@@ -12,9 +12,6 @@ macos_artifacts_dir="$release_root"
 ios_logs_dir="$release_root/logs"
 macos_logs_dir="$release_root/logs"
 checksums_dir="$release_root/sha256"
-ios_name="UCAS-SignIn-$release_version-ios-unsigned.ipa"
-macos_name="UCAS-SignIn-$release_version-macos-universal.zip"
-macos_pkg_name="UCAS-SignIn-$release_version-macos-universal.pkg"
 
 if [[ "$#" -eq 1 && ( "$1" == --help || "$1" == -h ) ]]; then
     printf '用法：%s [--signed]\n独立生成未签名的 iOS IPA，以及包含临时签名 App 的 macOS 通用 ZIP 和 PKG。\n' "$0"
@@ -31,6 +28,12 @@ if [[ "$#" -ne 0 ]]; then
     printf '用法：%s [--signed | --help]\n' "$0" >&2
     exit 2
 fi
+
+. "$repo_root/scripts/lib/apple-toolchain.sh"
+select_apple_toolchain
+ios_name="UCAS-SignIn-$release_version-ios${apple_sdk_suffix}-unsigned.ipa"
+macos_name="UCAS-SignIn-$release_version-macos${apple_sdk_suffix}-universal.zip"
+macos_pkg_name="UCAS-SignIn-$release_version-macos${apple_sdk_suffix}-universal.pkg"
 
 mkdir -p "$ios_logs_dir" "$macos_logs_dir" "$checksums_dir"
 package_dir=
@@ -276,7 +279,8 @@ export_macos() {
 
     while IFS= read -r -d '' binary; do
         if /usr/bin/file -b "$binary" | grep -q 'Mach-O'; then
-            /usr/bin/lipo "$binary" -verify_arch arm64 x86_64
+            /usr/bin/lipo "$binary" -verify_arch arm64
+            /usr/bin/lipo "$binary" -verify_arch x86_64
             signature_info="$(/usr/bin/codesign --display --verbose=4 "$binary" 2>&1)"
             if ! printf '%s\n' "$signature_info" | grep -Fxq 'Signature=adhoc'; then
                 printf 'macOS 导出失败：预期临时签名：%s\n' "$binary" >&2
@@ -324,9 +328,9 @@ run_export() {
 }
 
 run_export '[1/2] 生成 iOS IPA（未签名）' "$ios_name" \
-    "$ios_logs_dir/release-ios.log" export_ios "$ios_artifacts_dir"
+    "$ios_logs_dir/release-ios${apple_sdk_suffix}.log" export_ios "$ios_artifacts_dir"
 run_export '[2/2] 生成 macOS ZIP 和 PKG（Intel + Apple Silicon，App 临时签名）' "$macos_name" \
-    "$macos_logs_dir/release-macos.log" export_macos "$macos_artifacts_dir" "$macos_pkg_name"
+    "$macos_logs_dir/release-macos${apple_sdk_suffix}.log" export_macos "$macos_artifacts_dir" "$macos_pkg_name"
 
 if [[ "$failed" -ne 0 ]]; then
     printf '\n部分产物生成失败，已成功的产物仍保存在版本目录。\n' >&2

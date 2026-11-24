@@ -112,7 +112,9 @@ def verify_app(path, platform, team):
         root = bundle / "Contents" if is_mac else bundle
         info = plist(root / "Info.plist")
         binary = root / "MacOS" / info["CFBundleExecutable"] if is_mac else root / info["CFBundleExecutable"]
-        command("/usr/bin/lipo", str(binary), "-verify_arch", *(('arm64', 'x86_64') if is_mac else ('arm64',)))
+        command("/usr/bin/lipo", str(binary), "-verify_arch", "arm64")
+        if is_mac:
+            command("/usr/bin/lipo", str(binary), "-verify_arch", "x86_64")
         entitlements = plistlib.loads(command("/usr/bin/codesign", "--display", "--entitlements", ":-", str(bundle)))
         profile_file = root / ("embedded.provisionprofile" if is_mac else "embedded.mobileprovision")
         # security cms authenticates signed CMS data; codesign verifies bundle sealing.

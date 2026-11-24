@@ -107,7 +107,7 @@ struct RootView: View {
                 switch presentation {
                 case .release(let release):
                     Alert(title: Text("检测到新版本"),
-                          message: Text("果壳签到 \(release.version) 已发布，当前版本为 \(UpdateCoordinator.currentVersion)。"),
+                          message: Text("果壳签到 \(release.version.description) 已发布，当前版本为 \(UpdateCoordinator.currentVersion)。"),
                           primaryButton: .default(Text("前往下载")) { openURL(release.url) },
                           secondaryButton: .cancel(Text("稍后")))
                 case .current:

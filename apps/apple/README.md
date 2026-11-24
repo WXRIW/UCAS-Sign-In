@@ -10,7 +10,8 @@ cd apps/apple
 
 ## 环境要求
 
-- macOS、Xcode 16 或更新版本。
+- 开发时可用最新正式版 Xcode 打开工程。常规打包自动使用本机已安装的最新正式版 Xcode 及其 SDK。`lagacy-sdk` 使用 Xcode 16.4 构建同一工程。
+- 应用和小组件最低支持 iOS / iPadOS 16、macOS 14。iPhone 和 iPad 的 UI 测试最低支持系统 17，使用 iOS 18 SDK 编译时最低支持系统 16。
 - 核心逻辑可通过 Swift Package 单独测试，需要 Swift 5.9+、macOS 13+。
 
 ## iPhone / iPad 模拟器

@@ -7,11 +7,8 @@ repo_root="$(cd "$(dirname "$0")/../../.." && pwd)"
 apple_root="$repo_root/apps/apple"
 . "$repo_root/scripts/lib/release-version.sh"
 . "$repo_root/scripts/signing/apple/release-privacy.sh"
-latest_suffix=''
-if [[ "$#" -eq 1 && "$1" == --latest-sdk ]]; then
-    latest_suffix=-latest-sdk
-elif [[ "$#" -ne 0 ]]; then
-    printf 'Usage: %s [--latest-sdk]\n' "$0" >&2
+if [[ "$#" -ne 0 ]]; then
+    printf 'Usage: %s\n' "$0" >&2
     exit 2
 fi
 
@@ -24,6 +21,8 @@ require_variable() {
 for setting in UCAS_APPLE_TEAM_ID UCAS_IOS_EXPORT_OPTIONS UCAS_MACOS_EXPORT_OPTIONS UCAS_MACOS_INSTALLER_IDENTITY UCAS_NOTARY_PROFILE; do
     require_variable "$setting"
 done
+. "$repo_root/scripts/lib/apple-toolchain.sh"
+select_apple_toolchain
 for options in "$UCAS_IOS_EXPORT_OPTIONS" "$UCAS_MACOS_EXPORT_OPTIONS"; do
     if [[ ! -f "$options" ]]; then
         printf 'Signed Apple release: missing export options file.\n' >&2
@@ -41,14 +40,6 @@ if [[ -n "${UCAS_APPLE_ARCHIVE_XCCONFIG:-}" ]]; then
     [[ -f "$UCAS_APPLE_ARCHIVE_XCCONFIG" ]] || { printf 'Missing archive xcconfig.\n' >&2; exit 2; }
     archive_config=(-xcconfig "$UCAS_APPLE_ARCHIVE_XCCONFIG")
 fi
-language_args=()
-if [[ -n "$latest_suffix" ]]; then
-    if [[ ! "${UCAS_LATEST_SWIFT_LANGUAGE_VERSION:-}" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]; then
-        printf 'Latest SDK signing requires a valid detected Swift language version.\n' >&2
-        exit 2
-    fi
-    language_args=("SWIFT_VERSION=$UCAS_LATEST_SWIFT_LANGUAGE_VERSION")
-fi
 notary_args=(--keychain-profile "$UCAS_NOTARY_PROFILE")
 if [[ -n "${UCAS_NOTARY_KEYCHAIN:-}" ]]; then
     notary_args+=(--keychain "$UCAS_NOTARY_KEYCHAIN")
@@ -59,7 +50,7 @@ umask 077
 package_dir="$(mktemp -d "${TMPDIR:-/tmp}/ucas-signed-release.XXXXXX")"
 trap 'rm -rf -- "$package_dir"' EXIT
 # Build logs stay local and may contain signing identities. CI does not upload them.
-log="$release_root/logs/release-apple${latest_suffix}-signed.log"
+log="$release_root/logs/release-apple${apple_sdk_suffix}-signed.log"
 privacy_build_args=(
     DEBUG_INFORMATION_FORMAT=
     GCC_GENERATE_DEBUGGING_SYMBOLS=NO
@@ -77,7 +68,7 @@ build_distribution() {
         ${archive_config[@]+"${archive_config[@]}"} \
         DEVELOPMENT_TEAM="$UCAS_APPLE_TEAM_ID" ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
         CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES ICLOUD_CONTAINER_ENVIRONMENT=Production APS_ENVIRONMENT=production \
-        ${language_args[@]+"${language_args[@]}"} "${privacy_build_args[@]}" archive
+        "${privacy_build_args[@]}" archive
     xcodebuild -exportArchive -archivePath "$package_dir/iOS.xcarchive" \
         -exportPath "$package_dir/iOS-export" -exportOptionsPlist "$UCAS_IOS_EXPORT_OPTIONS"
     shopt -s nullglob
@@ -98,7 +89,7 @@ build_distribution() {
         CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES \
         'CODE_SIGN_IDENTITY=Developer ID Application' ENABLE_HARDENED_RUNTIME=YES \
         ICLOUD_CONTAINER_ENVIRONMENT=Production APS_ENVIRONMENT=production \
-        ${language_args[@]+"${language_args[@]}"} "${privacy_build_args[@]}" archive
+        "${privacy_build_args[@]}" archive
     xcodebuild -exportArchive -archivePath "$package_dir/macOS.xcarchive" \
         -exportPath "$package_dir/macOS-export" -exportOptionsPlist "$UCAS_MACOS_EXPORT_OPTIONS"
     local apps=("$package_dir/macOS-export/"*.app)
@@ -117,9 +108,9 @@ build_distribution() {
     xcrun stapler staple "$mac_app"
     xcrun stapler validate "$mac_app"
     /usr/sbin/spctl --assess --type execute "$mac_app"
-    local ios_name="UCAS-SignIn-$release_version-ios${latest_suffix}-signed.ipa"
-    local mac_name="UCAS-SignIn-$release_version-macos${latest_suffix}-universal-signed.zip"
-    local pkg_name="UCAS-SignIn-$release_version-macos${latest_suffix}-universal-signed.pkg"
+    local ios_name="UCAS-SignIn-$release_version-ios${apple_sdk_suffix}-signed.ipa"
+    local mac_name="UCAS-SignIn-$release_version-macos${apple_sdk_suffix}-universal-signed.zip"
+    local pkg_name="UCAS-SignIn-$release_version-macos${apple_sdk_suffix}-universal-signed.pkg"
     /usr/bin/ditto --norsrc --noextattr --noqtn -c -k --keepParent "$mac_app" "$package_dir/$mac_name"
     /usr/bin/productbuild --sign "$UCAS_MACOS_INSTALLER_IDENTITY" --timestamp \
         --component "$mac_app" /Applications "$package_dir/$pkg_name"

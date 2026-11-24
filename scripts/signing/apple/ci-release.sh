@@ -108,8 +108,4 @@ export UCAS_NOTARY_KEYCHAIN="$keychain"
 unset APPLE_CERTIFICATES_P12_BASE64 APPLE_CERTIFICATES_PASSWORD APPLE_PROFILES_ZIP_BASE64 \
     APPLE_ARCHIVE_XCCONFIG_BASE64 APPLE_IOS_EXPORT_OPTIONS_BASE64 APPLE_MACOS_EXPORT_OPTIONS_BASE64 \
     APPLE_NOTARY_KEY_BASE64 APPLE_NOTARY_KEY_ID APPLE_NOTARY_ISSUER_ID
-case "${UCAS_SIGNED_TOOLCHAIN:-stable}" in
-    stable) bash "$repo_root/scripts/publish/all-on-macos.sh" --signed ;;
-    latest) bash "$repo_root/scripts/publish/latest-apple-sdk.sh" --signed ;;
-    *) printf 'Unsupported signing toolchain.\n' >&2; exit 2 ;;
-esac
+bash "$repo_root/scripts/publish/all-on-macos.sh" --signed

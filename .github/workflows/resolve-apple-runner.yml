@@ -1,0 +1,49 @@
+name: Select Apple build runner
+
+on:
+  workflow_call:
+    inputs:
+      toolchain:
+        type: string
+        default: stable
+    outputs:
+      label:
+        value: ${{ jobs.resolve.outputs.label }}
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      label: ${{ steps.runner.outputs.label }}
+    steps:
+      - uses: actions/checkout@v7
+        if: inputs.toolchain == 'stable'
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/lib
+      - name: Read published GitHub runner inventories
+        if: inputs.toolchain == 'stable'
+        uses: actions/checkout@v7
+        with:
+          repository: actions/runner-images
+          path: runner-images
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /README.md
+            /images/macos/*-arm64-Readme.md
+      - name: Choose runner for the requested Xcode
+        id: runner
+        env:
+          TOOLCHAIN: ${{ inputs.toolchain }}
+        run: |
+          case "$TOOLCHAIN" in
+            stable) label="$(python3 scripts/lib/apple_xcode.py runner runner-images)" ;;
+            lagacy-sdk) label=macos-15 ;;
+            *) exit 2 ;;
+          esac
+          printf 'label=%s\n' "$label" | tee -a "$GITHUB_OUTPUT"

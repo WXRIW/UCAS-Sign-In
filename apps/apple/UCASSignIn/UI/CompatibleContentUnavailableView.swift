@@ -16,15 +16,23 @@ struct CompatibleContentUnavailableView<Actions: View>: View {
         self.actions = actions()
     }
 
+    @available(iOS 17.0, macOS 14.0, *)
+    private var nativeContent: some View {
+        ContentUnavailableView {
+            Label(title, systemImage: systemImage)
+        } description: {
+            Text(description)
+        } actions: {
+            actions
+        }
+    }
+
     var body: some View {
+        #if os(macOS)
+        nativeContent
+        #else
         if #available(iOS 17.0, *) {
-            ContentUnavailableView {
-                Label(title, systemImage: systemImage)
-            } description: {
-                Text(description)
-            } actions: {
-                actions
-            }
+            nativeContent
         } else {
             VStack(spacing: 16) {
                 VStack(spacing: 12) {
@@ -49,6 +57,7 @@ struct CompatibleContentUnavailableView<Actions: View>: View {
             .padding(.vertical, 32)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        #endif
     }
 }
 

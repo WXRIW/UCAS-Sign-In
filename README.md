@@ -235,7 +235,7 @@
   </tr>
 </table>
 
-竖向超大号需要使用 Xcode 27 或更新的 SDK 构建，并运行在支持该尺寸的 iOS 27、iPadOS 27 或 macOS 27 设备上；使用 Xcode 16.4 构建时仍提供前四种尺寸。
+使用 Xcode 27 或更高版本构建时，支持该尺寸的 iOS 27、iPadOS 27、macOS 27 或更新系统可显示竖向超大号小组件。`lagacy-sdk` 兼容包使用 Xcode 16.4 构建，提供小号、中号、大号和超大号。
 
 </details>
 

@@ -245,10 +245,32 @@ class DistributionTests(unittest.TestCase):
     def test_missing_signing_config_never_falls_back(self):
         import os
         env = {k: v for k, v in os.environ.items() if not k.startswith('UCAS_')}
-        for script in ('apple.sh', 'apple-latest-sdk.sh'):
-            result = subprocess.run(['bash', str(ROOT / 'scripts/publish/platforms' / script), '--signed'], capture_output=True, env=env)
-            self.assertEqual(result.returncode, 2)
-            self.assertIn(b'requires UCAS_APPLE_TEAM_ID', result.stderr)
+        for entry in ('all-on-macos.sh', 'lagacy-sdk.sh'):
+            with self.subTest(entry=entry):
+                result = subprocess.run(['bash', str(ROOT / 'scripts/publish' / entry), '--signed'], capture_output=True, env=env)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(b'requires UCAS_APPLE_TEAM_ID', result.stderr)
+
+    def test_lagacy_package_requires_xcode_16_4(self):
+        probe = r'''
+            set -eu
+            UCAS_APPLE_SDK=lagacy-sdk
+            DEVELOPER_DIR=/test/Developer
+            installed="$1"
+            xcodebuild() { printf 'Xcode %s\n' "$installed"; }
+            source "$2/scripts/lib/apple-toolchain.sh"
+            select_apple_toolchain
+            printf 'suffix=%s\n' "$apple_sdk_suffix"
+        '''
+        for installed in ('16.4', '17.0'):
+            with self.subTest(installed=installed):
+                result = subprocess.run(['bash', '-c', probe, 'test', installed, str(ROOT)], capture_output=True, text=True)
+                if installed == '16.4':
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn('suffix=-lagacy-sdk', result.stdout.splitlines())
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn('lagacy-sdk 需要 Xcode 16.4', result.stderr)
 
     def test_ci_blocks_non_manual_or_non_main(self):
         import os
@@ -257,6 +279,62 @@ class DistributionTests(unittest.TestCase):
             result = subprocess.run(['bash', str(HERE / 'ci-release.sh')], capture_output=True, env=env)
             self.assertEqual(result.returncode, 2)
             self.assertIn(b'manual dispatch on main', result.stderr)
+
+
+class XcodeSelectionTests(unittest.TestCase):
+    def pick(self, *args):
+        return subprocess.run(['python3', str(ROOT / 'scripts/lib/apple_xcode.py'), *args],
+                              text=True, capture_output=True)
+
+    def test_latest_installed_compares_versions_and_skips_prereleases(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            apps = Path(tmp)
+            for name, version, license_type in (
+                ('Selected', '41.9', 'GM'), ('New Xcode', '41.10.1', 'GM'),
+                ('Xcode', '42.0', 'Beta'), ('Xcode 42 RC 2', '42.0', 'GM'),
+            ):
+                contents = apps / (name + '.app') / 'Contents'
+                executable = contents / 'Developer/usr/bin/xcodebuild'
+                executable.parent.mkdir(parents=True)
+                executable.touch(mode=0o755)
+                (contents / 'Info.plist').write_bytes(plistlib.dumps({
+                    'CFBundleIdentifier': 'com.apple.dt.Xcode', 'CFBundleShortVersionString': version,
+                }))
+                (contents / 'Resources').mkdir()
+                (contents / 'Resources/LicenseInfo.plist').write_bytes(plistlib.dumps({'licenseType': license_type}))
+            alias = apps / 'Xcode_42.app'
+            alias.symlink_to(apps / 'Xcode 42 RC 2.app')
+            selected = apps / 'Selected.app/Contents/Developer'
+            result = self.pick('installed', selected, *apps.glob('*.app'))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(Path(result.stdout.strip()), (apps / 'New Xcode.app/Contents/Developer').resolve())
+            self.assertNotEqual(self.pick('installed', apps / 'Xcode.app', alias).returncode, 0)
+
+    def test_runner_follows_new_stable_releases_across_images(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            catalog = Path(tmp)
+            inventories = catalog / 'images/macos'
+            inventories.mkdir(parents=True)
+            labels = ('macos-40', 'xcode-41', 'xcode-42')
+            (catalog / 'README.md').write_text(''.join(
+                f'| Image | arm64 | `{label}` or `{label}-xlarge` | [Inventory] |\n' for label in labels))
+
+            def inventory(label, version, app):
+                (inventories / f'{label}-arm64-Readme.md').write_text(
+                    f'| {version} | 1A123 | /Applications/{app}.app | |\n')
+
+            inventory('macos-40', '41.10 (default)', 'Xcode_41.10')
+            inventory('xcode-41', '41.9', 'Xcode_41.9')
+            for version, app, expected in (
+                ('42.0 beta 1', 'Xcode_42', 'macos-40'),
+                ('42.0', 'Xcode_42_RC', 'macos-40'),
+                ('42.0', 'Xcode_42', 'xcode-42'),
+            ):
+                with self.subTest(version=version, app=app):
+                    inventory('xcode-42', version, app)
+                    result = self.pick('runner', catalog)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout.strip(), expected)
 
 
 class PrivacyTests(unittest.TestCase):
@@ -286,20 +364,18 @@ class PrivacyTests(unittest.TestCase):
             (app / 'link').symlink_to('/tmp')
             self.assertNotEqual(self.scan(app).returncode, 0)
 
-    def test_unsigned_scanners_still_forbid_profiles(self):
-        # Regression test: signed exceptions do not change either unsigned mode.
-        for name in ('apple.sh', 'apple-latest-sdk.sh'):
-            source = (ROOT / 'scripts/publish/platforms' / name).read_text()
-            start = source.index('check_release_privacy() {')
-            end = source.index('\npublish_artifact()', start)
-            function = source[start:end]
-            with tempfile.TemporaryDirectory() as temporary:
-                app = Path(temporary) / 'Example.app'
-                app.mkdir()
-                (app / 'embedded.mobileprovision').write_bytes(b'profile')
-                result = subprocess.run(['bash', '-c', function + '\ncheck_release_privacy "$1"', 'scan', str(app)], capture_output=True)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn(b'embedded-provisioning', result.stderr)
+    def test_unsigned_scanner_forbids_profiles(self):
+        source = (ROOT / 'scripts/publish/platforms/apple.sh').read_text()
+        start = source.index('check_release_privacy() {')
+        end = source.index('\npublish_artifact()', start)
+        function = source[start:end]
+        with tempfile.TemporaryDirectory() as temporary:
+            app = Path(temporary) / 'Example.app'
+            app.mkdir()
+            (app / 'embedded.mobileprovision').write_bytes(b'profile')
+            result = subprocess.run(['bash', '-c', function + '\ncheck_release_privacy "$1"', 'scan', str(app)], capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(b'embedded-provisioning', result.stderr)
 
 
 if __name__ == '__main__':

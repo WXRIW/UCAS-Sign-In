@@ -1,0 +1,77 @@
+name: Package Apple with lagacy-sdk
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/package-apple-lagacy-sdk.yml
+      - apps/apple/**
+      - eng/**
+      - scripts/lib/apple-toolchain.sh
+      - scripts/lib/release-version.sh
+      - scripts/publish/lagacy-sdk.sh
+      - scripts/publish/platforms/apple.sh
+      - scripts/signing/apple/**
+      - shared/fixtures/**
+  pull_request:
+    paths:
+      - .github/workflows/package-apple-lagacy-sdk.yml
+      - apps/apple/**
+      - eng/**
+      - scripts/lib/apple-toolchain.sh
+      - scripts/lib/release-version.sh
+      - scripts/publish/lagacy-sdk.sh
+      - scripts/publish/platforms/apple.sh
+      - scripts/signing/apple/**
+      - shared/fixtures/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-apple-lagacy-sdk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lagacy-sdk:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Run Swift core tests with Xcode 16.4
+        shell: bash
+        env:
+          UCAS_APPLE_SDK: lagacy-sdk
+        run: |
+          source scripts/lib/apple-toolchain.sh
+          select_apple_toolchain
+          xcrun swift test --package-path apps/apple
+
+      - name: Build lagacy-sdk packages
+        run: scripts/publish/lagacy-sdk.sh
+
+      - name: Upload lagacy-sdk iOS package
+        uses: actions/upload-artifact@v7
+        with:
+          name: UCAS-SignIn-iOS-lagacy-sdk
+          path: |
+            artifacts/publish/*/*-ios-lagacy-sdk-unsigned.ipa
+            artifacts/publish/*/sha256/*-ios-lagacy-sdk-unsigned.ipa.sha256
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Upload lagacy-sdk macOS packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: UCAS-SignIn-macOS-lagacy-sdk
+          path: |
+            artifacts/publish/*/*-macos-lagacy-sdk-universal.zip
+            artifacts/publish/*/*-macos-lagacy-sdk-universal.pkg
+            artifacts/publish/*/sha256/*-macos-lagacy-sdk-universal.zip.sha256
+            artifacts/publish/*/sha256/*-macos-lagacy-sdk-universal.pkg.sha256
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0

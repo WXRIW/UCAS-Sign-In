@@ -4,12 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       toolchain:
-        description: Installed Xcode toolchain
+        description: Apple packaging toolchain
         type: choice
+        default: stable
         options:
           - stable
-          - latest
-        default: stable
+          - lagacy-sdk
 
 permissions:
   contents: read
@@ -19,23 +19,33 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  signed:
+  apple-runner:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
-    runs-on: macos-15
+    uses: ./.github/workflows/resolve-apple-runner.yml
+    with:
+      toolchain: ${{ inputs.toolchain }}
+
+  signed:
+    needs: apple-runner
+    runs-on: ${{ needs.apple-runner.outputs.label }}
     timeout-minutes: 120
     # Configure required reviewers and main-only deployment branches in repository settings.
     environment: apple-release
+    env:
+      UCAS_APPLE_SDK: ${{ inputs.toolchain }}
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - name: Select stable Xcode
-        if: inputs.toolchain == 'stable'
-        run: sudo xcode-select --switch /Applications/Xcode_16.4.app/Contents/Developer
+      - name: Select release Xcode
+        shell: bash
+        run: |
+          source scripts/lib/apple-toolchain.sh
+          select_apple_toolchain
+          printf 'DEVELOPER_DIR=%s\n' "$DEVELOPER_DIR" >> "$GITHUB_ENV"
       - name: Import temporary signing assets, archive, export and notarize
         shell: bash
         env:
-          UCAS_SIGNED_TOOLCHAIN: ${{ inputs.toolchain }}
           UCAS_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           UCAS_MACOS_INSTALLER_IDENTITY: ${{ secrets.APPLE_INSTALLER_IDENTITY }}
           APPLE_CERTIFICATES_P12_BASE64: ${{ secrets.APPLE_CERTIFICATES_P12_BASE64 }}
@@ -51,7 +61,7 @@ jobs:
       - name: Upload verified distribution packages
         uses: actions/upload-artifact@v7
         with:
-          name: UCAS-SignIn-Apple-Signed
+          name: UCAS-SignIn-Apple-Signed${{ inputs.toolchain == 'lagacy-sdk' && '-lagacy-sdk' || '' }}
           path: |
             artifacts/publish/*/*-signed.ipa
             artifacts/publish/*/*-signed.zip
