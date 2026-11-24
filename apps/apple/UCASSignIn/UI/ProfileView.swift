@@ -22,6 +22,8 @@ struct ProfileView: View {
     @State private var showLogout = false
     @State private var accountToRemove: String?
     @State private var logoutWasDemo = false
+    private let recordsContentWidth: CGFloat = 680
+
     var body: some View {
         NavigationStack(path: $path) {
             ScrollView {
@@ -210,11 +212,11 @@ struct ProfileView: View {
         Group {
             if model.records.isEmpty {
                 CompatibleContentUnavailableView("还没有签到记录", systemImage: "checkmark.seal", description: "在此设备完成签到后，结果会显示在这里。")
+                    .frame(maxWidth: recordsContentWidth)
             } else {
                 recordsList
             }
         }
-        .frame(maxWidth: 680)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Palette.background)
         .accessibilityIdentifier("records.content")
@@ -223,8 +225,15 @@ struct ProfileView: View {
     }
 
     private var recordsList: some View {
-        #if os(iOS)
-        ScrollView {
+        #if os(macOS)
+        let rowPadding: CGFloat = 10
+        let pagePadding: CGFloat = 16
+        #else
+        let rowPadding: CGFloat = 20
+        let pagePadding: CGFloat = 24
+        #endif
+
+        return ScrollView {
             // Keep the surface and dividers within the same safe-area layout as the rows.
             LazyVStack(spacing: 0) {
                 ForEach(model.records) { record in
@@ -232,22 +241,16 @@ struct ProfileView: View {
                         if record.id != model.records.first?.id {
                             Divider().accessibilityHidden(true)
                         }
-                        recordRow(record).padding(.vertical, 20)
+                        recordRow(record).padding(.vertical, rowPadding)
                     }
                 }
             }
             .padding(.horizontal, 20)
             .cardSurface()
-            .appPageHorizontalPadding()
-            .padding(.vertical, 24)
+            .appPagePadding(pagePadding)
+            .frame(maxWidth: recordsContentWidth)
+            .frame(maxWidth: .infinity)
         }
-        #else
-        List(model.records) { record in
-            recordRow(record).padding(.vertical, 5)
-                .listRowBackground(Palette.surface)
-        }
-        .scrollContentBackground(.hidden)
-        #endif
     }
 
     private func recordRow(_ record: AttendanceRecord) -> some View {
